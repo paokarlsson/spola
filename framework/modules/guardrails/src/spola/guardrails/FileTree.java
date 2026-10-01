@@ -12,7 +12,11 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.function.Predicate;
 
-/** File-system helpers shared by the checks. Symbolic links are not followed. */
+/**
+ * File-system helpers shared by the checks. Symbolic links are never followed: what a link
+ * points to is not checked, so the file check reports every link instead (see
+ * {@link #filesAndLinks(Path)}).
+ */
 final class FileTree {
 
     private FileTree() {
@@ -20,6 +24,18 @@ final class FileTree {
 
     /** Every regular file below {@code root} matching {@code filter}, skipping {@code excluded} trees. */
     static List<Path> files(Path root, List<Path> excluded, Predicate<Path> filter) {
+        return walk(root, excluded, filter, false);
+    }
+
+    /**
+     * Every regular file and every symbolic link (to a file, a directory or nothing) below
+     * {@code root}, with nothing excluded. Links are listed but not followed.
+     */
+    static List<Path> filesAndLinks(Path root) {
+        return walk(root, List.of(), f -> true, true);
+    }
+
+    private static List<Path> walk(Path root, List<Path> excluded, Predicate<Path> filter, boolean links) {
         var normalizedRoot = root.toAbsolutePath().normalize();
         var skip = excluded.stream().map(p -> p.toAbsolutePath().normalize()).toList();
         var result = new ArrayList<Path>();
@@ -32,7 +48,8 @@ final class FileTree {
 
                 @Override
                 public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) {
-                    if (attrs.isRegularFile() && filter.test(file)) {
+                    // Without FOLLOW_LINKS, a link to a directory also arrives here, as a link.
+                    if ((attrs.isRegularFile() || links && attrs.isSymbolicLink()) && filter.test(file)) {
                         result.add(file);
                     }
                     return FileVisitResult.CONTINUE;

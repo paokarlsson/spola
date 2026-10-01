@@ -6,3 +6,7 @@ modules/demo/libs/Thing.JAR
 out/allowed.jar
 out/nested/also-allowed.jar
 notes/jar-files.txt
+vendor/jdk.foo.jmod
+deploy/app.war
+deploy/app.ear
+out/allowed.jmod

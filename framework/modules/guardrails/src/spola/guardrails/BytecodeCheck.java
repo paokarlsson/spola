@@ -6,6 +6,7 @@ import java.lang.classfile.Annotation;
 import java.lang.classfile.AnnotationValue;
 import java.lang.classfile.Attribute;
 import java.lang.classfile.ClassFile;
+import java.lang.classfile.ClassModel;
 import java.lang.classfile.TypeAnnotation;
 import java.lang.classfile.attribute.AnnotationDefaultAttribute;
 import java.lang.classfile.attribute.CodeAttribute;
@@ -53,7 +54,7 @@ final class BytecodeCheck {
         } catch (IOException e) {
             throw new UncheckedIOException(e);
         }
-        var model = ClassFile.of().parse(bytes);
+        var model = parse(bytes, file);
         var className = model.thisClass().asInternalName().replace('/', '.');
         if (model.flags().has(AccessFlag.ANNOTATION)) {
             out.add(new Violation(file, 0, Rule.ANNOTATION_DECLARATION, "@interface " + className, "class"));
@@ -65,6 +66,18 @@ final class BytecodeCheck {
         for (var method : model.methods()) {
             attributes(method.attributes(),
                     "method " + method.methodName().stringValue() + method.methodType().stringValue());
+        }
+    }
+
+    /**
+     * Parses a class file; a malformed one is an analysis error that names the file (the
+     * check cannot vouch for what it cannot read).
+     */
+    static ClassModel parse(byte[] bytes, String relative) {
+        try {
+            return ClassFile.of().parse(bytes);
+        } catch (IllegalArgumentException e) {
+            throw new IllegalStateException(relative + ": cannot read class file (" + e.getMessage() + ")", e);
         }
     }
 

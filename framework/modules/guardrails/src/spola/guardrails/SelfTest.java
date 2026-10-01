@@ -25,7 +25,11 @@ import javax.tools.ToolProvider;
  */
 final class SelfTest {
 
-    /** A row of the allowlist table in REGLER.md, e.g. {@code | `java.lang.Override` | SOURCE |}. */
+    /**
+     * A row of the allowlist table in REGLER.md, e.g. {@code | `java.lang.Override` | SOURCE |}.
+     * Coupled to the table's format on purpose: if the format changes, the self-test fails
+     * and says so, rather than silently reading fewer rows.
+     */
     private static final Pattern ALLOWLIST_ROW =
             Pattern.compile("^\\|\\s*`([\\w.]+)`\\s*\\|\\s*(SOURCE|CLASS|RUNTIME)\\s*\\|", Pattern.MULTILINE);
 
@@ -99,7 +103,7 @@ final class SelfTest {
             }
             case FILES -> {
                 materialize(dir.resolve("tree.txt"), scratch);
-                yield FileCheck.run(scratch, FileTree.files(scratch, List.of(), f -> true), scratch.resolve("out"));
+                yield FileCheck.run(scratch, FileTree.filesAndLinks(scratch), scratch.resolve("out"));
             }
         };
     }
@@ -122,19 +126,37 @@ final class SelfTest {
         }
     }
 
-    /** Creates every path listed in {@code tree} (one per line, {@code #} comments) as an empty file. */
+    /**
+     * Creates the tree described in {@code tree} below {@code scratch}. One entry per line,
+     * {@code #} starts a comment line:
+     * <ul>
+     *   <li>{@code path/to/file} creates an empty file (and its parent directories),</li>
+     *   <li>{@code dir/} (trailing slash) creates a directory,</li>
+     *   <li>{@code path -> target} creates a symbolic link {@code path} pointing at
+     *       {@code target}, written exactly as given (relative to the link's directory).
+     *       The target need not exist.</li>
+     * </ul>
+     */
     private static void materialize(Path tree, Path scratch) throws IOException {
         for (var line : Files.readAllLines(tree, StandardCharsets.UTF_8)) {
             var entry = line.strip();
             if (entry.isEmpty() || entry.startsWith("#")) {
                 continue;
             }
-            var file = scratch.resolve(entry).normalize();
+            var arrow = entry.indexOf(" -> ");
+            var path = arrow < 0 ? entry : entry.substring(0, arrow).strip();
+            var file = scratch.resolve(path).normalize();
             if (!file.startsWith(scratch) || file.equals(scratch)) {
                 throw new IllegalArgumentException("tree.txt entry escapes the scratch directory: " + entry);
             }
             Files.createDirectories(file.getParent());
-            Files.createFile(file);
+            if (arrow >= 0) {
+                Files.createSymbolicLink(file, Path.of(entry.substring(arrow + 4).strip()));
+            } else if (path.endsWith("/")) {
+                Files.createDirectories(file);
+            } else {
+                Files.createFile(file);
+            }
         }
     }
 
@@ -150,7 +172,9 @@ final class SelfTest {
                 .collect(Collectors.toCollection(TreeSet::new));
         if (!documented.equals(new TreeSet<>(Allowlist.ANNOTATIONS))) {
             failures.add("annotation allowlist in code " + new TreeSet<>(Allowlist.ANNOTATIONS)
-                    + " does not match " + rules.getFileName() + " " + documented);
+                    + " does not match " + rules.getFileName() + " " + documented
+                    + " (table rows are read with the pattern | `name` | SOURCE|CLASS|RUNTIME |;"
+                    + " if the table format changed, update ALLOWLIST_ROW in SelfTest.java)");
         } else {
             out.println("guardrails: allowlist ok (" + documented.size() + " annotations match "
                     + rules.getFileName() + ")");

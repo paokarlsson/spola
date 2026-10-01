@@ -32,14 +32,14 @@ static final Path FIXTURES = Path.of("modules/guardrails/fixtures");
 static final Path OUT = Path.of("out");
 static final Path CLASSES = OUT.resolve("classes");
 
-/// javac options for framework code. Lint warnings are errors; `-deprecation` is left out
-/// so that marking an API `@Deprecated` never breaks the build. Doclint enforces Javadoc
-/// on public and protected API (REGLER.md §5).
+/// javac options for framework code. Lint warnings are errors; `-deprecation` and `-removal`
+/// are left out so that marking an API `@Deprecated` (also `forRemoval = true`) never breaks
+/// the build. Doclint enforces Javadoc on public and protected API (REGLER.md §5).
 static final List<String> JAVAC_OPTIONS = List.of(
         "--release", "25",
         "-encoding", "UTF-8",
         "-proc:none",
-        "-Xlint:all,-deprecation",
+        "-Xlint:all,-deprecation,-removal",
         "-Xdoclint:all/protected",
         "-Werror");
 
@@ -89,7 +89,9 @@ void build() throws IOException {
 
 /// Reads `module-info.java` of every listed module and returns name -> required modules.
 /// Fails early, with file and line, on a `requires` that is neither a JDK module nor a
-/// listed module (guardrails checks the compiled `module-info.class` as well).
+/// listed module. This duplicates guardrails' DependencyCheck (which checks the compiled
+/// `module-info.class`) on purpose: javac would otherwise stop first with a "module not
+/// found" that does not name the rule. Change both if the rule changes.
 Map<String, List<String>> readRequires() throws IOException {
     var compiler = javax.tools.ToolProvider.getSystemJavaCompiler();
     var requires = new LinkedHashMap<String, List<String>>();
@@ -169,8 +171,19 @@ void visit(String name, Map<String, ModuleDir> byName, Map<String, List<String>>
 
 void compile(ModuleDir module) throws IOException {
     List<Path> sources;
-    try (var files = Files.walk(module.sources())) {
-        sources = files.filter(f -> f.toString().endsWith(".java")).sorted().toList();
+    try (var files = Files.walk(module.sources())) { // does not follow links
+        var all = files.sorted().toList();
+        // Guardrails only checks regular files, so a linked .java (or directory) would be
+        // compiled without being checked. Stop here; guardrails reports links as well.
+        var links = all.stream().filter(Files::isSymbolicLink).map(Path::toString).toList();
+        if (!links.isEmpty()) {
+            throw new BuildFailure("symbolic link in the sources of " + module.name() + ": "
+                    + String.join(", ", links) + " (REGLER.md 1. Inga tredjepartsberoenden;"
+                    + " links can bring in unchecked code, copy the file instead)");
+        }
+        sources = all.stream()
+                .filter(f -> f.toString().endsWith(".java") && Files.isRegularFile(f, LinkOption.NOFOLLOW_LINKS))
+                .toList();
     }
     var options = new ArrayList<>(JAVAC_OPTIONS);
     options.addAll(List.of(

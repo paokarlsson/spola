@@ -1,0 +1,15 @@
+# Fixture: the self-test creates this tree in a scratch directory before running the file
+# check. "path -> target" is a symbolic link (target relative to the link's directory),
+# "dir/" is a directory, any other line is an empty file.
+# Regular files outside the links: allowed.
+vendor/Evil.java
+vendor/real.bin
+vendor/lib/
+# A linked .java file inside a module's sources.
+modules/a/src/a/Evil.java -> ../../../../vendor/Evil.java
+# A linked jar (also a jar outside out/).
+lib/x.jar -> ../vendor/real.bin
+# A linked directory: its contents are not walked, the link itself is reported.
+modules/b/lib -> ../../vendor/lib
+# A dangling link pointing outside the tree.
+dangling.txt -> ../../nowhere/at/all

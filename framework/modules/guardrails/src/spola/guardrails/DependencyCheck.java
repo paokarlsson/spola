@@ -3,7 +3,6 @@ package spola.guardrails;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.lang.classfile.Attributes;
-import java.lang.classfile.ClassFile;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -14,6 +13,10 @@ import java.util.Set;
  * Dependency check: reads {@code module-info.class} files and reports every {@code requires}
  * (including {@code static} and {@code transitive}) that is neither a JDK module nor a
  * project module.
+ *
+ * <p>{@code Build.java} (method {@code readRequires}) applies the same rule to
+ * {@code module-info.java} before compiling, to give a clear error before javac's "module
+ * not found". Change both if the rule changes.
  */
 final class DependencyCheck {
 
@@ -29,8 +32,8 @@ final class DependencyCheck {
             } catch (IOException e) {
                 throw new UncheckedIOException(e);
             }
-            var model = ClassFile.of().parse(bytes);
             var file = FileTree.relative(root, moduleInfo);
+            var model = BytecodeCheck.parse(bytes, file);
             model.findAttribute(Attributes.module()).ifPresent(module -> {
                 var self = module.moduleName().name().stringValue();
                 for (var requires : module.requires()) {

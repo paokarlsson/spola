@@ -133,7 +133,15 @@ public final class GuardrailsTool implements ToolProvider {
         }
     }
 
-    /** Bridges a {@link PrintWriter} to the {@link PrintStream} based implementation. */
+    /**
+     * Bridges a {@link PrintWriter} to the {@link PrintStream} based implementation.
+     *
+     * <p>Bytes are buffered and only decoded as UTF-8 on {@link #flush()}, never byte by
+     * byte, so a multi-byte character is never split. The {@code PrintStream}s above are
+     * created with auto-flush, which flushes after every {@code println}, i.e. after whole
+     * lines; {@code run} flushes once more at the end. Nothing is lost as long as all
+     * output goes through those streams, which it does.
+     */
     private static final class WriterOutputStream extends OutputStream {
         private final PrintWriter writer;
         private final ByteArrayOutputStream buffer = new ByteArrayOutputStream();

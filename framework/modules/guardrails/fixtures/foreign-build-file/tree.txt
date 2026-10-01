@@ -6,3 +6,7 @@ modules/b/build.gradle.kts
 settings.gradle
 build.xml
 docs/pom.xml.md
+third_party/BUILD
+MODULE.bazel
+Makefile
+docs/building.md

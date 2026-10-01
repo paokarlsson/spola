@@ -27,14 +27,18 @@ framework/
 - **Tidig kontroll av `requires`:** en `requires` som varken är en JDK-modul
   (`ModuleFinder.ofSystem()`) eller en listad modul stoppar bygget direkt med fil, rad och
   regel. Annars skulle javac fela med ett "module not found" som inte nämner regeln.
-  Guardrails kontrollerar dessutom den kompilerade `module-info.class`.
+  Guardrails kontrollerar dessutom den kompilerade `module-info.class` (`DependencyCheck`).
+  Regeln finns alltså på två ställen, med korsreferenser i kommentarerna; ändra båda.
 - **Kompilering:** en javac-körning per modul via `javax.tools.ToolProvider`, i
   beroendeordning, med `--module-path out/classes` (redan byggda moduler) och
-  `-d out/classes/<modul>`. Flaggor: `--release 25 -proc:none -Xlint:all,-deprecation
+  `-d out/classes/<modul>`. Flaggor: `--release 25 -proc:none -Xlint:all,-deprecation,-removal
   -Xdoclint:all/protected -Werror`.
   - `-Werror` + lint: varningar är fel (kompileringsfel framför runtime-fel).
   - `-Xdoclint:all/protected` maskinverifierar REGLER §5 (Javadoc på publikt API).
-  - `-deprecation` är avstängd så att `@Deprecated` på ett API aldrig gör bygget rött.
+  - `-deprecation` och `-removal` är avstängda så att `@Deprecated` (även
+    `forRemoval = true`) på ett API aldrig gör bygget rött.
+  - Symboliska länkar i en moduls källträd stoppar bygget innan kompileringen (se
+    "Symboliska länkar" nedan).
 - **Paketering:** en jar per modul med JDK:ns jar-verktyg
   (`java.util.spi.ToolProvider.findFirst("jar")`).
 - **Guardrails körs från den nybyggda jar-filen:** bygget skapar ett `ModuleLayer` med
@@ -61,10 +65,10 @@ Kontroller (paketprivata klasser):
 
 | Kontroll | Hur | Regler |
 |---|---|---|
-| `SourceCheck` | `JavacTask.parse()` + `analyze()` (attribuering), `TreePathScanner`, `Trees.getElement` | annotering utanför tillåtelselistan (fullt kvalificerat namn efter attribuering, så en egen `Override` skiljs från `java.lang.Override`), annoteringar som inte går att lösa upp, `@interface`, import från annat än JDK/projekt, läsning av annoteringar via reflektion (`AnnotatedElement.getAnnotation` m.fl., även method references) |
+| `SourceCheck` | `JavacTask.parse()` + `analyze()` (attribuering), `TreePathScanner`, `Trees.getElement` | annotering utanför tillåtelselistan (fullt kvalificerat namn efter attribuering, så en egen `Override` skiljs från `java.lang.Override`), annoteringar som inte går att lösa upp, `@interface`, import från annat än JDK/projekt, läsning av annoteringar via reflektion: anrop och method references till `java.base`-metoder vars returtyp (efter erasure, även arrayer) är `Annotation` eller `AnnotatedType`, samt `isAnnotationPresent` och `Method.getDefaultValue` |
 | `BytecodeCheck` | `java.lang.classfile` | `Runtime(In)Visible{,Parameter,Type}Annotations` på klass, fält, metod, record-komponent och i `Code` (typannoteringar i metodkroppar), `AnnotationDefault`, nästlade annoteringar, klasser med `ACC_ANNOTATION` |
 | `DependencyCheck` | `module-info.class` → `ModuleAttribute` | `requires` (även `static`/`transitive`) som varken är JDK-modul eller projektmodul |
-| `FileCheck` | filträd | `.jar` (skiftlägesokänsligt) utanför `out/`; byggfiler från Maven, Gradle, Ant, Ivy, Bazel och sbt (`pom.xml`, `build.gradle(.kts)`, `settings.gradle(.kts)`, `gradlew`, `mvnw`, `build.xml`, …) |
+| `FileCheck` | filträd inklusive länkar | `.jar`, `.jmod`, `.war`, `.ear` (skiftlägesokänsligt) utanför `out/`; byggfiler från Maven, Gradle, Ant, Ivy, Bazel, sbt och Make (`pom.xml`, `build.gradle(.kts)`, `settings.gradle(.kts)`, `gradlew`, `mvnw`, `build.xml`, `BUILD`, `MODULE.bazel`, `Makefile`, …); varje symbolisk länk |
 
 Beslut:
 
@@ -79,12 +83,24 @@ Beslut:
   avbryts den (exitkod 2) eftersom resultatet annars kunde vara ofullständigt.
 - **Gruppering av källfiler:** alla listade moduler analyseras i en javac-task med
   modulspecifik `--module-source-path namn=katalog`. Övriga `.java`-filer (i dag bara
-  `Build.java`) analyseras som en grupp i den namnlösa modulen. En `module-info.java`
+  `Build.java`) är launcher-program och analyseras en katalog i taget i den namnlösa
+  modulen, så att två skript i olika kataloger får ha samma klassnamn. En `module-info.java`
   utanför de listade modulerna är ett fel med tydligt meddelande ("lägg till modulen i
   `MODULES`").
 - **Vad som undantas:** fixtures-katalogen undantas från käll-, bytekod- och
   beroendekontrollen men *inte* från filkontrollen. `out/` undantas från källkontrollen och
   är den enda plats där `.jar` får finnas.
+- **Symboliska länkar är förbjudna** (regel `SYMBOLIC_LINK`, REGLER §1). Ingen kontroll
+  följer länkar, så det som en länk pekar på (en jar utanför repot, en `.java` med otillåtna
+  annoteringar) skulle annars passera okontrollerat. Filkontrollen listar därför alla
+  vanliga filer *och* länkar (`FileTree.filesAndLinks`) och rapporterar varje länk, även
+  länkar till kataloger och trasiga länkar. `Build.java` vägrar dessutom kompilera en modul
+  vars källträd innehåller en länk, så att ingen länkad fil hamnar i en jar. Alternativet,
+  att följa länkar, skulle kräva cykeldetektering och kontroll av filer utanför repot.
+- **Oläsbara `.class`-filer** är ett analysfel med filnamn (exitkod 2), inte en tyst lucka.
+- **Tillåtelselistan mot REGLER.md:** självtestet läser tabellen med ett reguljärt uttryck
+  (`| `namn` | SOURCE/CLASS/RUNTIME |`). Ändras tabellens format blir självtestet rött och
+  felmeddelandet pekar på `ALLOWLIST_ROW` i `SelfTest.java`.
 - **Utskrift i ASCII:** regelavsnitt skrivs som `REGLER.md 2. Annoteringar` (inte `§`) så att
   felen går att läsa i terminaler utan UTF-8.
 
@@ -104,7 +120,10 @@ modules/x/src/spola/x/Marker.java:3: ANNOTATION_DECLARATION (REGLER.md 2. Annote
 - Typer: `SOURCE` (källkontroll direkt på filerna), `BYTECODE` (kompileras till en
   temporär katalog, bytekodkontroll), `DEPENDENCIES` (`src/` kompileras som moduler till en
   temporär katalog, beroendekontroll), `FILES` (varje rad i `tree.txt` skapas som tom fil i
-  en temporär katalog, filkontroll).
+  en temporär katalog, filkontroll). `tree.txt` kan också beskriva kataloger (`dir/`) och
+  symboliska länkar (`sökväg -> mål`).
+- Radnumren i `Fixtures.ALL` gäller fixture-filerna som de är. Ändras en fixture-fil ska
+  numren uppdateras i samma ändring; självtestet skriver ut de faktiska raderna.
 - **Inga riktiga `.jar`- eller byggfiler i repot, inte ens som fixtures.** Fixtures för
   dessa beskrivs i `tree.txt` och skapas först i en temporär katalog. Därför håller
   acceptanskriteriet "inga jar-/byggfiler i repot" och filkontrollen kan köras utan
@@ -117,7 +136,7 @@ modules/x/src/spola/x/Marker.java:3: ANNOTATION_DECLARATION (REGLER.md 2. Annote
 
 Fixtures i dag: `source-annotation`, `annotation-declaration`, `bytecode-annotation`,
 `foreign-requires`, `foreign-import`, `reflective-annotation-read`, `foreign-jar`,
-`foreign-build-file`.
+`foreign-build-file`, `symbolic-link`.
 
 Lägga till en fixture: skapa katalogen, lägg till en `Fixture` i `Fixtures.ALL` med de exakta
 förväntade överträdelserna och kör `java Build.java`.

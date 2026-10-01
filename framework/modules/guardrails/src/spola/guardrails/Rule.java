@@ -17,10 +17,17 @@ public enum Rule {
     FOREIGN_IMPORT("1. Inga tredjepartsberoenden", "only JDK and project packages may be imported"),
     /** §1: a module may only require JDK modules and project modules. */
     FOREIGN_REQUIRES("1. Inga tredjepartsberoenden", "only JDK modules and project modules may be required"),
-    /** §1: jar files may only exist in the build output directory. */
-    FOREIGN_JAR("1. Inga tredjepartsberoenden", "no jar files outside the build output directory (framework/out/)"),
+    /** §1: jar archives ({@code .jar}, {@code .jmod}, {@code .war}, {@code .ear}) may only exist in the build output directory. */
+    FOREIGN_JAR("1. Inga tredjepartsberoenden",
+            "no jar/jmod/war/ear archives outside the build output directory (framework/out/)"),
     /** §1: no build files from Maven, Gradle or other third-party build tools. */
-    FOREIGN_BUILD_FILE("1. Inga tredjepartsberoenden", "no files from Maven, Gradle or other third-party build tools");
+    FOREIGN_BUILD_FILE("1. Inga tredjepartsberoenden", "no files from Maven, Gradle or other third-party build tools"),
+    /**
+     * §1: no symbolic links in the checked tree. A link can pull in code or jars from outside
+     * the repository, and the checks do not follow links, so its target would go unchecked.
+     */
+    SYMBOLIC_LINK("1. Inga tredjepartsberoenden",
+            "no symbolic links; they can bring in unchecked code or jars from outside the tree");
 
     private final String section;
     private final String description;

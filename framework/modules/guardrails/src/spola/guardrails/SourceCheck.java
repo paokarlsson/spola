@@ -27,7 +27,9 @@ import javax.lang.model.element.ExecutableElement;
 import javax.lang.model.element.ModuleElement;
 import javax.lang.model.element.PackageElement;
 import javax.lang.model.element.TypeElement;
+import javax.lang.model.type.ArrayType;
 import javax.lang.model.type.TypeKind;
+import javax.lang.model.type.TypeMirror;
 import javax.lang.model.util.Elements;
 import javax.lang.model.util.Types;
 import javax.tools.Diagnostic;
@@ -42,12 +44,6 @@ import javax.tools.ToolProvider;
  * reads of annotations.
  */
 final class SourceCheck {
-
-    /** Methods of {@link java.lang.reflect.AnnotatedElement} that read annotations. */
-    private static final Set<String> ANNOTATION_READERS = Set.of(
-            "getAnnotation", "getAnnotations", "getAnnotationsByType",
-            "getDeclaredAnnotation", "getDeclaredAnnotations", "getDeclaredAnnotationsByType",
-            "isAnnotationPresent");
 
     /**
      * Result of analysing one group of files.
@@ -117,6 +113,8 @@ final class SourceCheck {
         private final Set<String> projectModules;
         private final List<Violation> out;
         private final TypeElement annotatedElement;
+        private final TypeElement annotation;
+        private final TypeElement annotatedType;
         private CompilationUnitTree unit;
         private String file;
 
@@ -128,8 +126,10 @@ final class SourceCheck {
             this.types = types;
             this.projectModules = projectModules;
             this.out = out;
-            this.annotatedElement = elements.getTypeElement(
-                    elements.getModuleElement("java.base"), "java.lang.reflect.AnnotatedElement");
+            var javaBase = elements.getModuleElement("java.base");
+            this.annotatedElement = elements.getTypeElement(javaBase, "java.lang.reflect.AnnotatedElement");
+            this.annotation = elements.getTypeElement(javaBase, "java.lang.annotation.Annotation");
+            this.annotatedType = elements.getTypeElement(javaBase, "java.lang.reflect.AnnotatedType");
         }
 
         void scanUnit(CompilationUnitTree compilationUnit) {
@@ -222,13 +222,44 @@ final class SourceCheck {
         }
 
         private void checkReflectiveRead(Tree node, Element element) {
-            if (annotatedElement != null
-                    && element instanceof ExecutableElement method
-                    && ANNOTATION_READERS.contains(method.getSimpleName().toString())
+            if (element instanceof ExecutableElement method
                     && method.getEnclosingElement() instanceof TypeElement owner
-                    && types.isSubtype(types.erasure(owner.asType()), types.erasure(annotatedElement.asType()))) {
+                    && readsAnnotations(owner, method)) {
                 report(node, Rule.ANNOTATION_REFLECTION, owner.getQualifiedName() + "." + method.getSimpleName());
             }
+        }
+
+        /**
+         * A JDK ({@code java.base}) method reads annotations reflectively if it returns
+         * annotations or annotated types ({@code Annotation}, {@code AnnotatedType}, or
+         * arrays of them, after erasure: {@code getAnnotation}, {@code getParameterAnnotations},
+         * {@code getAnnotatedReturnType}, ...), or if it is
+         * {@code AnnotatedElement.isAnnotationPresent} or {@code Method.getDefaultValue}
+         * (the default of an annotation element). Matching on the return type instead of a
+         * list of names also covers methods a future JDK adds.
+         */
+        private boolean readsAnnotations(TypeElement owner, ExecutableElement method) {
+            var module = elements.getModuleOf(owner);
+            if (module == null || !module.getQualifiedName().contentEquals("java.base")) {
+                return false;
+            }
+            var name = method.getSimpleName().toString();
+            if (name.equals("isAnnotationPresent")) {
+                return isSubtype(owner.asType(), annotatedElement);
+            }
+            if (name.equals("getDefaultValue")) {
+                return owner.getQualifiedName().contentEquals("java.lang.reflect.Method");
+            }
+            TypeMirror type = types.erasure(method.getReturnType());
+            while (type instanceof ArrayType array) {
+                type = array.getComponentType();
+            }
+            return type.getKind() == TypeKind.DECLARED
+                    && (isSubtype(type, annotation) || isSubtype(type, annotatedType));
+        }
+
+        private boolean isSubtype(TypeMirror type, TypeElement supertype) {
+            return supertype != null && types.isSubtype(types.erasure(type), types.erasure(supertype.asType()));
         }
 
         private void report(Tree node, Rule rule, String subject) {
@@ -240,7 +271,11 @@ final class SourceCheck {
             return position < 0 ? 0 : (int) unit.getLineMap().getLineNumber(position);
         }
 
-        /** Line of the {@code @interface} keyword, after any modifiers and annotations. */
+        /**
+         * Line of the {@code @interface} keyword, after any modifiers and annotations.
+         * The tree API has no position for the keyword itself, so this skips whitespace and
+         * comments from the end of the modifiers; nothing else can stand between them.
+         */
         private int annotationKeywordLine(ClassTree node) {
             var positions = trees.getSourcePositions();
             long position = positions.getEndPosition(unit, node.getModifiers());

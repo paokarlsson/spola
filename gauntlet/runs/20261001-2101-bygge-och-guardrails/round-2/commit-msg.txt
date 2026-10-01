@@ -1,0 +1,13 @@
+fix(guardrails): flag symlinks and all reflective annotation reads
+
+Guardrails now reports every symbolic link under framework/, and Build.java
+refuses to compile linked sources. The reflection check now flags any JDK
+call that returns annotations, including getParameterAnnotations. Bazel
+BUILD, Makefile and .jmod are caught, and broken .class files name their
+path. Still open: the fixtures root is unchecked, and renamed jars pass.
+
+Gauntlet-Run: 20261001-2101-bygge-och-guardrails
+Gauntlet-Round: 2/5
+Gauntlet-Verdict: FAIL (0 blocker, 2 major, 5 minor upheld)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>

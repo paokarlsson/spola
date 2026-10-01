@@ -7,6 +7,8 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.TreeMap;
+import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 /**
@@ -20,7 +22,8 @@ import java.util.stream.Stream;
  *       (including parameter and type annotations) and annotation types are reported,</li>
  *   <li>dependencies: every {@code module-info.class} is read; {@code requires} of modules that
  *       are neither JDK nor project modules are reported,</li>
- *   <li>files: jar files outside the output directory and third-party build files are reported.</li>
+ *   <li>files: jar archives outside the output directory, third-party build files and
+ *       symbolic links are reported.</li>
  * </ol>
  */
 public final class Guardrails {
@@ -61,10 +64,16 @@ public final class Guardrails {
             throw new IllegalStateException("module-info.java outside every listed module (add the module to "
                     + "MODULES in Build.java): " + String.join(", ", unlisted));
         }
+        // Loose files are single-file (or same-directory) launcher programs, so each directory
+        // is analysed on its own: two scripts in different directories may share a class name.
+        var outcomes = new ArrayList<SourceCheck.Outcome>();
+        outcomes.add(analyzeModules(root, moduleSources, options, project));
+        looseSources.stream()
+                .collect(Collectors.groupingBy(Path::getParent, TreeMap::new, Collectors.toList()))
+                .values()
+                .forEach(group -> outcomes.add(SourceCheck.analyze(root, group, List.of(), project.modules().keySet())));
         var errors = new ArrayList<String>();
-        for (var outcome : List.of(
-                analyzeModules(root, moduleSources, options, project),
-                SourceCheck.analyze(root, looseSources, List.of(), project.modules().keySet()))) {
+        for (var outcome : outcomes) {
             violations.addAll(outcome.violations());
             errors.addAll(outcome.errors());
         }
@@ -85,8 +94,10 @@ public final class Guardrails {
         violations.addAll(DependencyCheck.run(root, moduleInfos, project.modules().keySet()));
         log.println("guardrails: dependencies " + moduleInfos.size() + " module-info.class files");
 
-        // 4. Files: nothing is excluded, a jar or pom.xml is never acceptable.
-        var allFiles = FileTree.files(root, List.of(), f -> true);
+        // 4. Files: nothing is excluded, a jar, a pom.xml or a symbolic link is never acceptable.
+        //    Links are reported because every walk above skips them: a linked .java or .jar
+        //    would otherwise escape the source, bytecode and file checks.
+        var allFiles = FileTree.filesAndLinks(root);
         violations.addAll(FileCheck.run(root, allFiles, project.output()));
         log.println("guardrails: files        " + allFiles.size() + " files");
 
