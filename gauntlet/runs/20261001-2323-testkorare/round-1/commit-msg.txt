@@ -1,0 +1,13 @@
+feat(test): add spola.test lambda-based test runner replacing JUnit
+
+Tests are plain values grouped in nestable suites, with assertions,
+per-test and per-suite fixtures with guaranteed cleanup, parameterized
+cases, per-test timeouts and a stdout report. Build.java runs each
+module's explicitly named test entry after guardrails, and the
+guardrails self-tests now run through the new runner.
+
+Gauntlet-Run: 20261001-2323-testkorare
+Gauntlet-Round: 1/4
+Gauntlet-Verdict: FAIL (0 blocker, 2 major, 6 minor upheld)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>

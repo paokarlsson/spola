@@ -11,19 +11,25 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.spi.ToolProvider;
 
 /**
  * Command-line front end of guardrails, exposed as the {@link ToolProvider} named
  * {@value #NAME} and as a {@code main} method.
  *
- * <p>Commands:
+ * <p>Command:
  * <pre>
- * check    --root DIR --output DIR [--fixtures DIR] [--module NAME=SRCDIR]...
- * selftest --fixtures DIR --rules REGLER.md
+ * check --root DIR --output DIR [--fixtures DIR] [--module NAME=SRCDIR]...
+ *       [--tests NAME=TESTDIR]... [--test-reads MODULE]...
  * </pre>
- * Relative paths are resolved against the current directory. Exit codes: {@code 0} clean,
- * {@code 1} violations or failed self-test, {@code 2} usage or analysis error.
+ * {@code --tests} adds the test sources of a module (see {@link Project#tests()}) and
+ * {@code --test-reads} the modules they read besides the module's own {@code requires}
+ * ({@link Project#testReads()}). Relative paths are resolved against the current directory.
+ * Exit codes: {@code 0} clean, {@code 1} violations, {@code 2} usage or analysis error.
+ *
+ * <p>The self-test of guardrails against its fixtures is part of the module's tests, run by
+ * {@code spola.test}.
  */
 public final class GuardrailsTool implements ToolProvider {
 
@@ -65,18 +71,17 @@ public final class GuardrailsTool implements ToolProvider {
     public int run(PrintStream out, PrintStream err, String... args) {
         try {
             if (args.length == 0) {
-                throw new IllegalArgumentException("missing command (check or selftest)");
+                throw new IllegalArgumentException("missing command (check)");
             }
             var options = Options.parse(List.of(args).subList(1, args.length));
             return switch (args[0]) {
                 case "check" -> check(options, out, err);
-                case "selftest" -> SelfTest.run(options.path("--fixtures"), options.path("--rules"), out, err) ? 0 : 1;
                 default -> throw new IllegalArgumentException("unknown command: " + args[0]);
             };
         } catch (IllegalArgumentException e) {
             err.println("guardrails: " + e.getMessage());
             err.println("usage: check --root DIR --output DIR [--fixtures DIR] [--module NAME=SRCDIR]...");
-            err.println("       selftest --fixtures DIR --rules REGLER.md");
+            err.println("             [--tests NAME=TESTDIR]... [--test-reads MODULE]...");
             return 2;
         } catch (IllegalStateException | UncheckedIOException e) {
             err.println("guardrails: " + e.getMessage());
@@ -85,19 +90,14 @@ public final class GuardrailsTool implements ToolProvider {
     }
 
     private static int check(Options options, PrintStream out, PrintStream err) {
-        var modules = new LinkedHashMap<String, Path>();
-        for (var module : options.all("--module")) {
-            int eq = module.indexOf('=');
-            if (eq <= 0 || eq == module.length() - 1) {
-                throw new IllegalArgumentException("--module must be NAME=SRCDIR: " + module);
-            }
-            modules.put(module.substring(0, eq), Path.of(module.substring(eq + 1)));
-        }
+        var modules = namedDirs(options, "--module");
+        var tests = namedDirs(options, "--tests");
         // Only the directories of the listed fixtures are left out, nothing else below --fixtures.
         var excluded = options.all("--fixtures").stream()
                 .flatMap(dir -> Fixtures.directories(Path.of(dir)).stream())
                 .toList();
-        var project = new Project(options.path("--root"), options.path("--output"), excluded, modules);
+        var project = new Project(options.path("--root"), options.path("--output"), excluded, modules, tests,
+                Set.copyOf(options.all("--test-reads")));
         var violations = Guardrails.check(project, out);
         if (violations.isEmpty()) {
             out.println("guardrails: no violations");
@@ -106,6 +106,21 @@ public final class GuardrailsTool implements ToolProvider {
         violations.forEach(v -> err.println(v.format()));
         err.println("guardrails: " + violations.size() + " violation(s) of framework/REGLER.md");
         return 1;
+    }
+
+    /** The {@code NAME=DIR} values of {@code option}; a name may appear once. */
+    private static Map<String, Path> namedDirs(Options options, String option) {
+        var dirs = new LinkedHashMap<String, Path>();
+        for (var value : options.all(option)) {
+            int eq = value.indexOf('=');
+            if (eq <= 0 || eq == value.length() - 1) {
+                throw new IllegalArgumentException(option + " must be NAME=DIR: " + value);
+            }
+            if (dirs.put(value.substring(0, eq), Path.of(value.substring(eq + 1))) != null) {
+                throw new IllegalArgumentException(option + " given twice for " + value.substring(0, eq));
+            }
+        }
+        return dirs;
     }
 
     /** Parsed {@code --name value} pairs; options may repeat. */

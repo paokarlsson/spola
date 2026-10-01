@@ -1,5 +1,6 @@
 package spola.guardrails;
 
+import java.io.File;
 import java.io.IOException;
 import java.io.PrintStream;
 import java.io.UncheckedIOException;
@@ -78,7 +79,8 @@ public final class Guardrails {
 
     /**
      * Source check of every {@code .java} file outside the excluded directories and the
-     * output directory. Modules are analysed together so cross-module references resolve;
+     * output directory. Modules (with their test sources) are analysed together so
+     * cross-module references resolve;
      * other {@code .java} files (Build.java) are analysed one directory at a time in the
      * unnamed module, since they are single-file launcher programs and two of them in
      * different directories may share a class name.
@@ -88,12 +90,26 @@ public final class Guardrails {
         var notChecked = Stream.concat(project.excluded().stream(), Stream.of(project.output())).toList();
         var moduleSources = new ArrayList<Path>();
         var options = new ArrayList<String>();
+        var moduleDirs = new ArrayList<>(project.modules().values());
+        moduleDirs.addAll(project.tests().values());
         project.modules().forEach((name, dir) -> {
             moduleSources.addAll(FileTree.files(dir, project.excluded(), f -> FileTree.hasExtension(f, ".java")));
-            options.addAll(List.of("--module-source-path", name + "=" + dir));
+            var path = dir.toString();
+            var testDir = project.tests().get(name);
+            if (testDir != null) {
+                // Test sources are part of the module (same packages), exactly as the build
+                // compiles them, and read the test runner like the build's --add-reads.
+                moduleSources.addAll(FileTree.files(testDir, project.excluded(),
+                        f -> FileTree.hasExtension(f, ".java")));
+                path += File.pathSeparator + testDir;
+                project.testReads().stream()
+                        .filter(read -> !read.equals(name))
+                        .forEach(read -> options.addAll(List.of("--add-reads", name + "=" + read)));
+            }
+            options.addAll(List.of("--module-source-path", name + "=" + path));
         });
         var looseSources = FileTree.files(root, notChecked, f -> FileTree.hasExtension(f, ".java")
-                && project.modules().values().stream().noneMatch(dir -> FileTree.isUnder(f, dir)));
+                && moduleDirs.stream().noneMatch(dir -> FileTree.isUnder(f, dir)));
         var unlisted = looseSources.stream()
                 .filter(f -> f.getFileName().toString().equals("module-info.java"))
                 .map(f -> FileTree.relative(root, f))

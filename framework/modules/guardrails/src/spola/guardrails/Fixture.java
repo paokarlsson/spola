@@ -16,9 +16,10 @@ record Fixture(String name, Kind kind, List<Violation> expected) {
 
     /**
      * The files of the fixture directory {@code dir} that the self-test reads when it runs
-     * this fixture. This is the only place that says so: {@code SelfTest} runs the checks on
-     * exactly these files, and its layout check reports every other file in the directory
-     * (the main check leaves fixture directories out, so such a file would go unchecked).
+     * this fixture. This is the only place that says so: the self-test ({@code GuardrailsTests}
+     * in the module's test sources) runs the checks on exactly these files, and its layout
+     * check reports every other file in the directory (the main check leaves fixture
+     * directories out, so such a file would go unchecked).
      */
     List<Path> inputs(Path dir) {
         return switch (kind) {
@@ -47,7 +48,7 @@ record Fixture(String name, Kind kind, List<Violation> expected) {
         DEPENDENCIES,
         /**
          * The fixture's {@code tree.txt} describes a file tree (empty files, directories,
-         * symbolic links and generated archives, see {@link TreeSpec}) that the self-test creates
+         * symbolic links and generated archives, see {@code TreeSpec} in the test sources) that the self-test creates
          * in a scratch directory; file check on it.
          */
         FILES,

@@ -1,0 +1,41 @@
+    ok      a test that overruns its timeout fails, and the remaining tests still run (208 ms)
+    ok      the failure's stack trace shows where the test was stuck (204 ms)
+    ok      a test that ignores interrupts is abandoned and the run goes on (303 ms)
+    ok      a suite's timeout applies to nested tests; a test's own timeout wins (607 ms)
+    ok      the runner's default timeout applies when nothing sets one (203 ms)
+    ok      a suite fixture that overruns fails the suite fixture and skips the tests (204 ms)
+    ok      timeouts must be positive (1 ms)
+  nested suites
+    ok      tests in nested suites run in order and carry their full path (2 ms)
+    ok      the report indents by depth (1 ms)
+    ok      a suite may hold the same test name as another suite (1 ms)
+    ok      sibling names must be unique (0 ms)
+    ok      names must not be blank or contain line breaks (0 ms)
+    ok      null parts are rejected when the tree is built (1 ms)
+    ok      suites are values: adding a fixture leaves the original unchanged (0 ms)
+  report
+    ok      one line per test with its status (1 ms)
+    ok      a failure shows the test's name, the expected and the actual value and a stack trace (1 ms)
+    ok      the summary counts tests by status and gives the time (3 ms)
+    ok      a green run says OK (1 ms)
+    ok      a run without a passing test is red (0 ms)
+    ok      a result carries a failure exactly when it failed (1 ms)
+  tool
+    ok      a green entry exits 0 and prints the report (1 ms)
+    ok      a red entry exits 1 and the report shows name, expected and actual (1 ms)
+    ok      the PrintWriter overload gives the same result (0 ms)
+    ok      the tool is named spola-test (0 ms)
+    a broken entry or command line exits 2 with a reason
+      ok      [1] wrong return type (0 ms)
+      ok      [2] instance method (0 ms)
+      ok      [3] missing method (0 ms)
+      ok      [4] throwing entry (0 ms)
+      ok      [5] null suite (0 ms)
+      ok      [6] missing class (0 ms)
+      ok      [7] missing module (2 ms)
+      ok      [8] missing option (0 ms)
+      ok      [9] unknown option (0 ms)
+      ok      [10] repeated option (0 ms)
+spola.test: OK - 70 tests, 70 ok, 0 failed, 0 skipped, 0 suite fixtures failed, in 1842 ms
+BUILD OK in 6810 ms
+exit=0

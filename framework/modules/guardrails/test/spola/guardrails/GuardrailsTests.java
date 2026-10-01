@@ -1,17 +1,28 @@
 package spola.guardrails;
 
+import static spola.test.Assertions.assertAnyOrder;
+import static spola.test.Assertions.assertEmpty;
+import static spola.test.Assertions.assertEquals;
+import static spola.test.Assertions.assertFalse;
+import static spola.test.Assertions.assertInOrder;
+import static spola.test.Assertions.assertThrows;
+import static spola.test.Assertions.assertTrue;
+import static spola.test.Tests.parameterized;
+import static spola.test.Tests.test;
+
 import java.io.IOException;
 import java.io.OutputStream;
 import java.io.PrintStream;
+import java.io.StringWriter;
 import java.io.UncheckedIOException;
 import java.nio.ByteBuffer;
 import java.nio.charset.CharacterCodingException;
-import java.io.StringWriter;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -22,79 +33,82 @@ import java.util.stream.Collectors;
 import javax.tools.DiagnosticCollector;
 import javax.tools.JavaFileObject;
 import javax.tools.ToolProvider;
+import spola.test.Suite;
+import spola.test.Tests;
 
 /**
- * Guardrails self-test: runs each check against its {@link Fixtures fixtures} and fails
- * unless every fixture yields exactly its expected violations. Also verifies that the
- * annotation allowlist in code matches the table in {@code REGLER.md}, that every file
+ * The tests of {@code spola.guardrails}, run by {@code spola.test} on every build (the entry
+ * named in {@code Build.java}). Paths are relative to {@code framework/}, the working
+ * directory of the build.
+ *
+ * <p>The self-test runs each check against its {@link Fixtures fixtures} and fails unless every
+ * fixture yields exactly its expected violations (one test per fixture). It also verifies that
+ * the annotation allowlist in code matches the table in {@code REGLER.md}, that every file
  * below the fixtures directory belongs to a fixture that uses it, and that the main check
- * leaves out nothing but the listed fixture directories.
+ * leaves out nothing but the listed fixture directories. Further tests cover the check of
+ * test sources and {@link Project}.
  */
-final class SelfTest {
+public final class GuardrailsTests {
+
+    /** The fixtures, relative to {@code framework/}. */
+    private static final Path FIXTURES = Path.of("modules/guardrails/fixtures");
+
+    /** The ground rules, relative to {@code framework/}. */
+    private static final Path RULES = Path.of("REGLER.md");
 
     /**
      * A row of the allowlist table in REGLER.md, e.g. {@code | `java.lang.Override` | SOURCE |}.
-     * Coupled to the table's format on purpose: if the format changes, the self-test fails
+     * Coupled to the table's format on purpose: if the format changes, the test fails
      * and says so, rather than silently reading fewer rows.
      */
     private static final Pattern ALLOWLIST_ROW =
             Pattern.compile("^\\|\\s*`([\\w.]+)`\\s*\\|\\s*(SOURCE|CLASS|RUNTIME)\\s*\\|", Pattern.MULTILINE);
 
-    private SelfTest() {
+    private GuardrailsTests() {
     }
 
     /**
-     * Runs the self-test.
+     * Every test of the module.
      *
-     * @return {@code true} if every fixture behaved as expected
+     * @return the root suite
      */
-    static boolean run(Path fixturesDir, Path rules, PrintStream out, PrintStream err) {
-        var failures = new ArrayList<String>();
-        checkAllowlistMatchesRules(rules, out, failures);
-        layoutProblems(fixturesDir).forEach(problem -> failures.add("fixture layout: " + problem));
-        checkLayoutCheck(out, failures);
-        checkOnlyListedFixturesAreExcluded(out, failures);
-        for (var fixture : Fixtures.ALL) {
-            var problems = runFixture(fixturesDir.resolve(fixture.name()), fixture);
-            if (problems.isEmpty()) {
-                out.println("guardrails: fixture ok   " + fixture.name() + " (" + fixture.expected().size()
-                        + " expected violations)");
-            } else {
-                failures.add("fixture " + fixture.name() + ":\n    " + String.join("\n    ", problems));
-            }
-        }
-        failures.forEach(failure -> err.println("guardrails self-test FAILED: " + failure));
-        return failures.isEmpty();
+    public static Suite suite() {
+        return Tests.suite("spola.guardrails",
+                Tests.suite("self-test",
+                        test("annotation allowlist matches the table in REGLER.md", GuardrailsTests::allowlistMatchesRules),
+                        test("every file below fixtures/ is used by its listed fixture",
+                                () -> assertEmpty(layoutProblems(FIXTURES))),
+                        test("layout check finds stray and binary files", GuardrailsTests::layoutCheckFindsStrayFiles),
+                        test("main check leaves out only the listed fixture directories",
+                                GuardrailsTests::onlyListedFixturesAreExcluded),
+                        parameterized("fixture yields exactly its expected violations", Fixtures.ALL, Fixture::name,
+                                GuardrailsTests::fixtureYieldsExactlyItsViolations)),
+                Tests.suite("test sources",
+                        test("are analysed as part of their module and may read the test runner",
+                                GuardrailsTests::testSourcesAreChecked),
+                        test("project rejects tests of an unknown module", () -> assertThrows(
+                                IllegalArgumentException.class,
+                                "tests given for x, which is not a project module",
+                                () -> new Project(Path.of("."), Path.of("out"), List.of(),
+                                        Map.of("m", Path.of("m/src")), Map.of("x", Path.of("x/test")), Set.of()))),
+                        test("project rejects test reads of an unknown module", () -> assertThrows(
+                                IllegalArgumentException.class,
+                                "test sources read r, which is not a project module",
+                                () -> new Project(Path.of("."), Path.of("out"), List.of(),
+                                        Map.of("m", Path.of("m/src")), Map.of(), Set.of("r"))))));
     }
 
-    /** Violations reported by the check, compared with the expected ones; empty means pass. */
-    static List<String> runFixture(Path dir, Fixture fixture) {
-        if (!Files.isDirectory(dir)) {
-            return List.of("missing fixture directory " + dir);
-        }
-        Path scratch = null;
-        try {
-            scratch = Files.createTempDirectory("spola-guardrails-fixture-");
-            var actual = new ArrayList<>(actualViolations(dir, scratch, fixture));
-            var expected = new ArrayList<>(fixture.expected());
-            var problems = new ArrayList<String>();
-            if (expected.isEmpty()) {
-                problems.add("declares no expected violations; a fixture must break a rule");
-            }
-            var missing = new ArrayList<>(expected);
-            actual.forEach(missing::remove);
-            var unexpected = new ArrayList<>(actual);
-            expected.forEach(unexpected::remove);
-            missing.stream().sorted(Violation.ORDER).forEach(v -> problems.add("expected but not reported: " + v.format()));
-            unexpected.stream().sorted(Violation.ORDER).forEach(v -> problems.add("reported but not expected: " + v.format()));
-            return problems;
-        } catch (IOException | RuntimeException e) {
-            return List.of("could not run: " + e);
-        } finally {
-            if (scratch != null) {
-                FileTree.deleteRecursively(scratch);
-            }
-        }
+    private static void fixtureYieldsExactlyItsViolations(Fixture fixture) throws Exception {
+        var dir = FIXTURES.resolve(fixture.name());
+        assertTrue(Files.isDirectory(dir), "fixture directory " + dir + " exists");
+        assertFalse(fixture.expected().isEmpty(), "fixture declares expected violations (a fixture must break a rule)");
+        withScratch("spola-guardrails-fixture-", scratch ->
+                assertAnyOrder(formatted(fixture.expected()), formatted(actualViolations(dir, scratch, fixture))));
+    }
+
+    /** Violations as report lines, in report order, so that a failure lists them readably. */
+    private static List<String> formatted(Collection<Violation> violations) {
+        return violations.stream().sorted(Violation.ORDER).map(Violation::format).toList();
     }
 
     /**
@@ -164,25 +178,14 @@ final class SelfTest {
         }
     }
 
-    private static void checkAllowlistMatchesRules(Path rules, PrintStream out, List<String> failures) {
-        String text;
-        try {
-            text = Files.readString(rules, StandardCharsets.UTF_8);
-        } catch (IOException e) {
-            failures.add("cannot read " + rules + ": " + e);
-            return;
-        }
+    private static void allowlistMatchesRules() throws IOException {
+        var text = Files.readString(RULES, StandardCharsets.UTF_8);
         var documented = ALLOWLIST_ROW.matcher(text).results().map(m -> m.group(1))
                 .collect(Collectors.toCollection(TreeSet::new));
-        if (!documented.equals(new TreeSet<>(Allowlist.ANNOTATIONS))) {
-            failures.add("annotation allowlist in code " + new TreeSet<>(Allowlist.ANNOTATIONS)
-                    + " does not match " + rules.getFileName() + " " + documented
-                    + " (table rows are read with the pattern | `name` | SOURCE|CLASS|RUNTIME |;"
-                    + " if the table format changed, update ALLOWLIST_ROW in SelfTest.java)");
-        } else {
-            out.println("guardrails: allowlist ok (" + documented.size() + " annotations match "
-                    + rules.getFileName() + ")");
-        }
+        assertEquals(new TreeSet<>(Allowlist.ANNOTATIONS), documented,
+                "annotation allowlist in Allowlist.ANNOTATIONS (expected) vs the table in " + RULES
+                + " (actual); rows are read with the pattern | `name` | SOURCE|CLASS|RUNTIME |, so if the"
+                + " table format changed, update ALLOWLIST_ROW in GuardrailsTests.java");
     }
 
     /**
@@ -241,7 +244,7 @@ final class SelfTest {
     }
 
     /** {@link #layoutProblems(Path)} on a scratch tree with every kind of stray file. */
-    private static void checkLayoutCheck(PrintStream out, List<String> failures) {
+    private static void layoutCheckFindsStrayFiles() throws Exception {
         var tree = List.of(
                 "Stray.java",
                 "notes.txt",
@@ -266,14 +269,9 @@ final class SelfTest {
                 "notes.txt: file outside every fixture directory",
                 "source-annotation/fx/A.class: not used by fixture source-annotation (SOURCE)",
                 "unlisted: fixture directory not listed in Fixtures.ALL");
-        withScratch(failures, "layout check", scratch -> {
+        withScratch("spola-guardrails-layout-", scratch -> {
             TreeSpec.materialize(tree, scratch);
-            var actual = layoutProblems(scratch);
-            if (!new TreeSet<>(actual).equals(new TreeSet<>(expected)) || actual.size() != expected.size()) {
-                failures.add("layout check: expected " + expected + " but got " + actual);
-            } else {
-                out.println("guardrails: layout check ok (" + expected.size() + " stray or binary files found)");
-            }
+            assertAnyOrder(expected, layoutProblems(scratch));
         });
     }
 
@@ -282,8 +280,8 @@ final class SelfTest {
      * declaration directly below the fixtures directory is reported, one inside a listed
      * fixture directory is not (the self-test covers it).
      */
-    private static void checkOnlyListedFixturesAreExcluded(PrintStream out, List<String> failures) {
-        withScratch(failures, "fixture exclusion", scratch -> {
+    private static void onlyListedFixturesAreExcluded() throws Exception {
+        withScratch("spola-guardrails-exclusion-", scratch -> {
             var fixtures = scratch.resolve("fixtures");
             Files.createDirectories(fixtures.resolve("source-annotation"));
             Files.createDirectories(fixtures.resolve("unlisted"));
@@ -292,34 +290,61 @@ final class SelfTest {
             Files.writeString(fixtures.resolve("source-annotation/Listed.java"), "@interface Listed {\n}\n");
             var project = new Project(scratch, scratch.resolve("out"), Fixtures.directories(fixtures), Map.of());
             var actual = Guardrails.check(project, new PrintStream(OutputStream.nullOutputStream()));
-            var expected = List.of(
+            assertInOrder(formatted(List.of(
                     new Violation("fixtures/Stray.java", 1, Rule.ANNOTATION_DECLARATION, "@interface Stray", ""),
                     new Violation("fixtures/unlisted/Other.java", 1, Rule.ANNOTATION_DECLARATION,
-                            "@interface Other", ""));
-            if (!actual.equals(expected)) {
-                failures.add("fixture exclusion: expected " + expected.stream().map(Violation::format).toList()
-                        + " but got " + actual.stream().map(Violation::format).toList());
-            } else {
-                out.println("guardrails: exclusion ok (only listed fixture directories are left out)");
-            }
+                            "@interface Other", ""))), formatted(actual));
         });
     }
 
-    private interface ScratchAction {
-        void run(Path scratch) throws IOException;
+    /**
+     * Test sources are checked like the module's own sources: they are analysed in the
+     * module (so package-private code and the test runner, read via {@code --add-reads},
+     * resolve without errors) and a rule broken there is reported.
+     */
+    private static void testSourcesAreChecked() throws Exception {
+        withScratch("spola-guardrails-tests-", scratch -> {
+            write(scratch.resolve("m/src/module-info.java"), "module m {\n}\n");
+            write(scratch.resolve("m/src/m/Hidden.java"), "package m;\n\nclass Hidden {\n}\n");
+            write(scratch.resolve("r/src/module-info.java"), "module r {\n    exports r;\n}\n");
+            write(scratch.resolve("r/src/r/Runner.java"), "package r;\n\npublic class Runner {\n}\n");
+            write(scratch.resolve("m/test/m/HiddenTest.java"), String.join("\n",
+                    "package m;",
+                    "",
+                    "import r.Runner;",
+                    "",
+                    "class HiddenTest {",
+                    "    Hidden hidden = new Hidden();",
+                    "    Runner runner = new Runner();",
+                    "    @interface Tag {",
+                    "    }",
+                    "}",
+                    ""));
+            var project = new Project(scratch, scratch.resolve("out"), List.of(),
+                    Map.of("m", scratch.resolve("m/src"), "r", scratch.resolve("r/src")),
+                    Map.of("m", scratch.resolve("m/test")), Set.of("r"));
+            var actual = Guardrails.check(project, new PrintStream(OutputStream.nullOutputStream()));
+            assertInOrder(formatted(List.of(new Violation("m/test/m/HiddenTest.java", 8, Rule.ANNOTATION_DECLARATION,
+                    "@interface m.HiddenTest.Tag", ""))), formatted(actual));
+        });
     }
 
-    private static void withScratch(List<String> failures, String what, ScratchAction action) {
-        Path scratch = null;
+    private static void write(Path file, String content) throws IOException {
+        Files.createDirectories(file.getParent());
+        Files.writeString(file, content, StandardCharsets.UTF_8);
+    }
+
+    private interface ScratchAction {
+        void run(Path scratch) throws Exception;
+    }
+
+    /** Runs {@code action} in a fresh scratch directory, which is deleted afterwards. */
+    private static void withScratch(String prefix, ScratchAction action) throws Exception {
+        var scratch = Files.createTempDirectory(prefix);
         try {
-            scratch = Files.createTempDirectory("spola-guardrails-selftest-");
             action.run(scratch);
-        } catch (IOException | RuntimeException e) {
-            failures.add(what + ": could not run: " + e);
         } finally {
-            if (scratch != null) {
-                FileTree.deleteRecursively(scratch);
-            }
+            FileTree.deleteRecursively(scratch);
         }
     }
 }

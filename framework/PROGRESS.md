@@ -23,18 +23,45 @@
   dokumentet som `UNCHECKABLE_SOURCE`; dokument analyseras aldrig som Java.
 - Filkontrollen är fail-closed för zip: en fil som börjar som en zip men som `ZipFile` inte
   kan öppna (skadad, okänd komprimering) räknas som jar.
-- Självtest mot 10 fixtures med exakt angivna förväntade överträdelser, plus kontroll att
+- Självtest (sedan uppdrag 02 tester i `modules/guardrails/test/`, körda av `spola.test`)
+  mot 10 fixtures med exakt angivna förväntade överträdelser, plus kontroll att
   tillåtelselistan i koden stämmer med tabellen i `REGLER.md`, att varje fil under
   `fixtures/` används av sin fixture, och att huvudkontrollen bara undantar de listade
   fixture-katalogerna (inte hela `fixtures/`).
 - Bygget tar ungefär 3–4 s (dokumentkontrollen står för ungefär 1 s).
 
+### Uppdrag 02: testkörare
+- Modulen `spola.test` (`modules/test/`): tester som värden (`test`, `suite`,
+  `parameterized`), nästlade sviter, fixtures före/efter per test och per svit med
+  garanterad städning, timeout per test (ärvs från sviter, standard 60 s), hoppa över
+  (`skip`), assertions för likhet, sanningsvärde, null, undantag och samlingar med förväntat
+  och faktiskt värde i felmeddelandet, rapport till stdout (rad per test, stackspår,
+  sammanfattning med antal och tid). Semantiken står i ARCHITECTURE.md ("Tester").
+- Varje modul har testkällor i `modules/<m>/test/` (modulens paket, ingen
+  `module-info.java`) och en explicit testingång i `Build.java` (`TestEntry(klass, metod)`).
+  Bygget kompilerar modulen med testerna till `out/test-classes/`, kör guardrails (som också
+  kontrollerar testkällor och testbytekod) och kör sedan alla modulers tester; ett
+  fallerande test ger rött bygge.
+- Guardrails självtest är flyttat till `GuardrailsTests` (ett test per kontroll, ett
+  parametriserat fall per fixture) och körs av `spola.test`; `GuardrailsTool selftest` är
+  borttaget. Guardrails `Project` har fått testkällor (`tests`, `testReads`) och
+  `GuardrailsTool check` flaggorna `--tests` och `--test-reads`.
+- Körarens egna tester: 70 tester (assertions, fixtures, parametrisering, timeout, nästlade
+  sviter, rapport, `TestTool`). Guardrails: 17 tester.
+- Bygget tar ungefär 6–7 s (testerna ungefär 2 s, varav timeout-testerna 1,7 s).
+
 ## Återstår (enligt `uppdrag/PLAN.md`)
-- 02 testkörare: guardrails självtest ska flyttas in i den nya köraren
-  (i dag `SelfTest` + `Fixtures` i `spola.guardrails`, körs via `GuardrailsTool selftest`).
 - 03–20 enligt planen.
 
 ## Kända problem och begränsningar
+- **Tester (spola.test):** ett test som inte stannar när det avbryts efter sin timeout
+  överges på en daemon-tråd; dess `afterEach` körs bara om tråden någon gång blir klar och
+  kan då gå samtidigt med senare tester. Ett test som anropar `System.exit` avslutar hela
+  bygget. Tester körs i samma JVM som bygget, i ordning, inte parallellt (parallell körning är
+  utanför uppdraget).
+- Testerna förutsätter `framework/` som arbetskatalog (bygget kräver det).
+- `TestTool` använder reflektion (`Class.forName` + `Method.invoke`) för att anropa
+  testingången; se ARCHITECTURE.md.
 - Filkontrollen och källkontrollen täcker `framework/`, inte hela repot (uppdraget anger
   `framework/`). Repot i övrigt innehåller i dag inga jar- eller byggfiler.
 - Reflektionskontrollen hittar direkta anrop och method references till JDK-metoder som

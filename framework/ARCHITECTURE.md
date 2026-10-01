@@ -9,18 +9,21 @@ framework/
   REGLER.md                 grundreglerna (lag)
   Build.java                bygget, körs med `java Build.java` (source launcher)
   modules/<modul>/src/      källkod för en modul, med module-info.java överst
+  modules/<modul>/test/     modulens tester, i modulens egna paket, utan module-info.java
   modules/guardrails/fixtures/   medvetet felaktiga exempel för guardrails självtest
   out/                      byggresultat (ignoreras av git)
     classes/<modulnamn>/    kompilerade klasser per modul
-    <modulnamn>.jar         en jar per modul
+    <modulnamn>.jar         en jar per modul (utan tester)
+    test-classes/<modulnamn>/   modulen kompilerad igen tillsammans med sina tester
 ```
 
 ## Bygget (`Build.java`)
 
 - **Compact source file** (Java 25) med `import module java.compiler` och
   `import module jdk.compiler`. Körs utan förkompilering och utan verktyg från tredje part.
-- **Modullistan är explicit** i konstanten `MODULES` (`ModuleDir(namn, katalog)`). Ingen
-  katalogscanning hittar moduler. En ny modul läggs till där.
+- **Modullistan är explicit** i konstanten `MODULES` (`ModuleDir(namn, katalog, testingång)`).
+  Ingen katalogscanning hittar moduler. En ny modul läggs till där, med sin testingång
+  (`TestEntry(klass, metod)`, se "Tester" nedan). Varje modul har tester.
 - **Beroendeordning:** bygget parsar varje `module-info.java` med `JavacTask.parse()` och läser
   `requires`. Namnet i filen måste stämma med listan. Modulerna sorteras topologiskt
   (djupet först, cykler ger fel). JDK-moduler påverkar inte ordningen.
@@ -46,6 +49,10 @@ framework/
   via `ServiceLoader`. Modulen deklarerar det explicit med
   `provides java.util.spi.ToolProvider with spola.guardrails.GuardrailsTool`. Inget
   reflektionsanrop och ingen ny JVM behövs, och artefakten som testas är den som levereras.
+- **Ordning:** kompilera alla moduler, packa jar-filerna, kompilera alla moduler igen med
+  sina tester (`out/test-classes/`), kör guardrails (som därmed också ser testkällorna och
+  testklassernas bytekod), kör till sist testerna för alla moduler. Testerna för alla moduler
+  körs även om en tidigare modul fick rött; bygget blir sedan rött och listar modulerna.
 - Inga inkrementella byggen: `out/` raderas och byggs om varje gång.
 - Exitkod 0 = grönt, 1 = rött.
 
@@ -56,10 +63,10 @@ Publikt API (paket `spola.guardrails`):
 | Typ | Roll |
 |---|---|
 | `Guardrails.check(Project, PrintStream)` | kör alla kontroller, returnerar sorterade `Violation` |
-| `Project` | rot, output-katalog, undantagna kataloger, projektmoduler (namn → källkatalog) |
+| `Project` | rot, output-katalog, undantagna kataloger, projektmoduler (namn → källkatalog), testkällor (namn → testkatalog) och vilka moduler testkällorna läser (`testReads`, i praktiken `spola.test`) |
 | `Violation` | fil, rad (0 om ej tillämpligt), `Rule`, subjekt, plats i bytekoden |
 | `Rule` | regel med avsnitt i `REGLER.md` och beskrivning |
-| `GuardrailsTool` | `ToolProvider` + `main`: `check …` och `selftest …` |
+| `GuardrailsTool` | `ToolProvider` + `main`: `check …` (självtestet är en del av modulens tester, se "Tester") |
 
 Kontroller (paketprivata klasser):
 
@@ -150,7 +157,7 @@ Beslut:
 - **Oläsbara `.class`-filer** är ett analysfel med filnamn (exitkod 2), inte en tyst lucka.
 - **Tillåtelselistan mot REGLER.md:** självtestet läser tabellen med ett reguljärt uttryck
   (`| `namn` | SOURCE/CLASS/RUNTIME |`). Ändras tabellens format blir självtestet rött och
-  felmeddelandet pekar på `ALLOWLIST_ROW` i `SelfTest.java`.
+  felmeddelandet pekar på `ALLOWLIST_ROW` i `GuardrailsTests.java`.
 - **Utskrift i ASCII:** regelavsnitt skrivs som `REGLER.md 2. Annoteringar` (inte `§`) så att
   felen går att läsa i terminaler utan UTF-8.
 
@@ -161,6 +168,13 @@ modules/x/src/spola/x/Marker.java:3: ANNOTATION_DECLARATION (REGLER.md 2. Annote
 ```
 
 ## Självtest och fixtures
+
+Självtestet ligger sedan uppdrag 02 i modulens testkällor
+(`modules/guardrails/test/spola/guardrails/GuardrailsTests.java`, tillsammans med `TreeSpec`)
+och körs av `spola.test` som vilka tester som helst: ett test per kontroll och ett
+parametriserat test med ett fall per fixture. `GuardrailsTool` har inget `selftest`-kommando
+längre. Testerna läser `modules/guardrails/fixtures` och `REGLER.md` relativt arbetskatalogen,
+som är `framework/` när bygget kör dem.
 
 - `Fixtures.ALL` listar explicit varje fixture: namn (katalog under
   `modules/guardrails/fixtures/`), typ och **exakt** vilka överträdelser den ska ge (fil, rad,
@@ -200,3 +214,92 @@ Fixtures i dag: `source-annotation`, `annotation-declaration`, `bytecode-annotat
 
 Lägga till en fixture: skapa katalogen, lägg till en `Fixture` i `Fixtures.ALL` med de exakta
 förväntade överträdelserna och kör `java Build.java`.
+
+## Tester (`spola.test`)
+
+Uppdrag 02. Ersätter JUnit utan annoteringar: tester är värden som byggs med vanliga
+metodanrop, och varje moduls testingång står explicit i `Build.java`.
+
+### API (paket `spola.test`)
+
+| Typ | Roll |
+|---|---|
+| `Tests` | fabriker: `test(namn, () -> ...)`, `suite(namn, barn...)`, `parameterized(namn, indata, [etikett,] fall -> ...)` |
+| `Test` | sealed: `TestCase` eller `Suite` |
+| `TestCase` | record: namn, `Body`, egen timeout, skip-orsak; `.timeout(d)`, `.skip(orsak)` |
+| `Suite` | record: namn, barn, `beforeAll`/`beforeEach`/`afterEach`/`afterAll`, timeout, skip-orsak; varje metod ger en ny svit |
+| `Body`, `CaseBody<T>` | funktionella gränssnitt som får kasta `Exception` |
+| `Assertions` | likhet (`assertEquals`, med tolerans för `double`, `assertNotEquals`, `assertSame`), sanningsvärde, null, undantag (`assertThrows` med typ och ev. exakt meddelande), samlingar (`assertSize`, `assertEmpty`, `assertContains`, `assertInOrder`, `assertAnyOrder`), `fail` |
+| `AssertionFailure` | `AssertionError` med `expected()`/`actual()`; meddelandet visar båda på egna rader |
+| `Runner` | `Runner.run(suite, PrintStream)` → `Report`; skriver rapporten |
+| `Report`, `Result`, `Status` | resultat per test och per misslyckad svitfixture, räknare, `success()` |
+| `TestTool` | `ToolProvider` `spola-test`: `--module M --class C --method m` |
+
+Beslut:
+
+- **Tester är värden, inga annoteringar.** En svit är ett träd av records. Namn är unika
+  bland syskon, inte tomma och utan kontrolltecken (kontrolleras när trädet byggs), så att
+  varje rapportrad pekar ut exakt ett test.
+- **Parametrisering är en svit:** `parameterized` ger en `Suite` med ett `TestCase` per
+  indata, namngivna `[i] etikett` (från 1, kontrolltecken visas escapade). Varje fall
+  rapporteras för sig och sviten tar fixtures och timeout som vilken svit som helst.
+- **Fixtures och städgaranti** (semantiken står i Javadoc för `Suite`):
+  `beforeEach` körs yttersta sviten först, `afterEach` innersta först; inom en svit i den
+  ordning de lades till. Varje `afterEach` körs efter varje startat test, även när en
+  `beforeEach`, testet eller en annan `afterEach` fallerade (som JUnit 5; städkod får alltså
+  tåla en setup som inte blev klar). Det första felet blir testets fel, senare läggs till som
+  `suppressed`. Varje `afterAll` körs även när en `beforeAll` eller ett test fallerade.
+- **Hoppat över (`SKIPPED`):** ett test eller en svit med `.skip(orsak)` körs inte (inga
+  fixtures heller); fallerar en `beforeAll` körs inte resten av sviten, alla dess tester
+  rapporteras som hoppade över med orsaken, och svitens `afterAll` körs. Den misslyckade
+  svitfixturen rapporteras som ett eget fel (`Result.Kind.SUITE_FIXTURE`).
+- **Grönt** betyder: minst ett test passerade och inget test eller svitfixture fallerade.
+  En tom svit, eller en där alla tester hoppades över, är röd: en testingång som inte
+  testar något ska inte se grön ut.
+- **Timeout per test:** testets egen, annars närmaste omgivande svits, annars
+  `Runner.DEFAULT_TIMEOUT` (60 s). Timeouten gäller hela testet (`beforeEach`, kropp,
+  `afterEach`) och varje `beforeAll`/`afterAll` för sig. Varje test och svitfixture körs på en
+  ny plattformstråd (daemon); köraren väntar högst timeouten, avbryter sedan tråden
+  (`interrupt`) och väntar högst `GRACE` (1 s) till. Stannar tråden har testets städning körts
+  innan nästa test börjar; annars överges tråden och körningen fortsätter (testets
+  `afterEach` körs då bara om tråden någon gång blir klar). Felet (`TimedOut`) får trådens
+  stackspår från när tiden gick ut, så att rapporten visar var testet hängde.
+  Plattformstrådar, inte virtuella: en virtuell tråd som snurrar utan att blockera behåller sin
+  bärartråd, och tillräckligt många sådana skulle svälta alla senare tester.
+- **Rapport till stdout:** sviter som rubriker indenterade efter djup, en rad per test
+  (`ok`, `FAILED`, `skipped ... - orsak`) med tid, sedan `FAILURES (n):` med fullständigt
+  namn (`svit > svit > test`) och stackspår för varje fel, sist en sammanfattning:
+  `namn: OK|FAILED - N tests, a ok, b failed, c skipped, d suite fixtures failed, in t ms`.
+- **Felmeddelanden** visar förväntat och faktiskt värde på egna rader. Strängar visas i
+  citattecken med escapes, arrayer och samlingar element för element; läses två olika
+  värden likadant (`1` och `1L`) visas deras klasser. Likhet är `Objects.deepEquals`.
+- **Testkällor hör till modulen.** `modules/<m>/test/` har samma paket som modulen och ingen
+  `module-info.java`, så testerna når paketprivat kod. Bygget kompilerar `src` + `test`
+  tillsammans till `out/test-classes/<m>` med `--add-modules spola.test --add-reads
+  <m>=spola.test`; modulens `module-info.java` nämner aldrig `spola.test`, och den jar som
+  levereras (från `out/classes`) innehåller inga tester. `-Xlint:-exports` gäller bara
+  testkompileringen: testingången är publik i ett exporterat paket och returnerar
+  `spola.test.Suite` utan `requires transitive`, vilket är meningen för testkod.
+- **Guardrails ser testkällorna** som en del av modulen (`--tests m=dir`, `--test-reads
+  spola.test` → `--module-source-path m=src:test` och `--add-reads` i analysen), och
+  bytekoden i `out/test-classes` kontrolleras som all annan bytekod.
+- **Testingången är explicit** i `Build.java` (`TestEntry("spola.x.XTests", "suite")`).
+  Bygget laddar per modul ett nytt `ModuleLayer` med `out/test-classes/<m>`, `spola.test`
+  och de andra modulernas jar-filer, ger samma läsbarhet som vid kompileringen
+  (`Controller.addReads`) och exporterar ingångens paket till `spola.test`
+  (`Controller.addExports`). Därefter hämtas `spola-test` via `ServiceLoader` (som
+  guardrails) och körs med `--module m --class C --method suite`.
+- **Det enda reflektionsanropet:** `TestTool` slår upp klassen med `Class.forName(Module,
+  String)` och anropar metoden med `Method.invoke`. Det går inte att undvika: bygget
+  kompilerar ingången i samma körning och kan inte anropa den direkt. Metoden måste vara
+  `public static Suite m()`; annat ger exitkod 2 med orsak. Inga annoteringar läses.
+- **Arbetskatalog:** testerna körs med `framework/` som arbetskatalog (bygget kräver det),
+  så tester får läsa filer relativt den (guardrails läser `REGLER.md` och fixtures).
+- **Namnkrock:** en testklass med ingången `suite()` skuggar den statiskt importerade
+  `Tests.suite(...)`; skriv då `Tests.suite(...)` i klassen (som `GuardrailsTests` och
+  `RunnerTests` gör). Hjälpklasser för delsviter använder `tests()`.
+- **Körarens egna tester** (`modules/test/test/`) kör små sviter med en inre `Runner` och
+  kontrollerar `Report` och utskriften: assertions, fixtures (ordning, städning när testet
+  kastar efter att en fixture öppnat en fil, `beforeAll`-fel), parametrisering (tre fall
+  varav ett fel ger två ok och ett fel), timeout (sovande och avbrottsokänsliga tester,
+  ärvd timeout), nästlade sviter, rapporten och `TestTool`.
