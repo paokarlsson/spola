@@ -11,6 +11,7 @@ framework/
   modules/<modul>/src/      källkod för en modul, med module-info.java överst
   modules/<modul>/test/     modulens tester, i modulens egna paket, utan module-info.java
   modules/guardrails/fixtures/   medvetet felaktiga exempel för guardrails självtest
+  modules/di/README.md      exempel för spola.di bredvid motsvarande Spring-kod
   out/                      byggresultat (ignoreras av git)
     classes/<modulnamn>/    kompilerade klasser per modul
     <modulnamn>.jar         en jar per modul (utan tester)
@@ -332,3 +333,98 @@ Beslut:
   kastar efter att en fixture öppnat en fil, `beforeAll`-fel), parametrisering (tre fall
   varav ett fel ger två ok och ett fel), timeout (sovande och avbrottsokänsliga tester,
   ärvd timeout), nästlade sviter, rapporten och `TestTool`.
+
+## DI-containern (`spola.di`)
+
+Uppdrag 03. Ersätter Spring Core. Modulen har inga `requires` (bara `java.base`); testerna
+läser `spola.test` som alla andra moduler. Exempel bredvid Spring: `modules/di/README.md`.
+
+### API (paket `spola.di`)
+
+| Typ | Roll |
+|---|---|
+| `Key<T>` | record: typ + valfri kvalificerare (vilket värde som helst med värdebaserad `equals`: enum, record, sträng; inte array, inte primitiv typ) |
+| `ContainerModule` | funktionellt gränssnitt `configure(Binder)`: en återanvändbar grupp bindningar |
+| `Binder` | `bind(Class)`/`bind(Key)` → `BindingBuilder`, `install(module)`; bara `Container.create` skapar den, oanvändbar efteråt |
+| `BindingBuilder<T>` | `to(...)`: typad form (0–5 beroenden som `Class` eller `Key`), resolverform `to(Dependencies, Factory)`, `toInstance(T)` |
+| `Binding` | `in(Scope)`, högst en gång |
+| `Scope` | `SINGLETON` (lat, standard), `EAGER_SINGLETON`, `PROTOTYPE`, `CALL` |
+| `Factory<T>` | `create(Resolver) throws Exception`; `Factory.Of0`–`Of5` för den typade formen |
+| `Resolver` | `get(Key)`/`get(Class)`: bara deklarerade beroenden, bara medan fabriken körs |
+| `Dependencies` | deklarationen för resolverformen: `of(Class...)`, `of(Key...)`, `and(...)`, `none()` |
+| `Container` | `create(modules...)`, `get`, `runInCallScope`, `callInCallScope`, `close` |
+| `WiringException` | grafen är ogiltig; `problems()` listar alla fel; inget har skapats |
+| `ResolutionException` | något kunde inte hämtas eller skapas; meddelandet börjar med kedjan `cannot resolve A -> B: ...` |
+| `CloseException` | en eller flera `close` misslyckades; felen är `suppressed`, i stängningsordning |
+
+### Beslut
+
+- **Hur beroenden deklareras (kravet "svårt att deklarera fel").** Valideringen utan
+  reflektion kräver att varje bindning säger vad den behöver. Två former:
+  - *Typad form, den föredragna:* `to(OrderRepo.class, Clock.class, OrderService::new)`.
+    Nycklarna är fabrikens argument: containern hämtar dem och anropar fabriken med dem.
+    Fabriken får ingen resolver och når alltså inget annat, och kompilatorn kontrollerar att
+    varje nyckels typ passar parametern. Deklarationen och användningen är samma uttryck och
+    kan inte glida isär. Glömmer man ett beroende kompilerar det inte (konstruktorn får för få
+    argument). Gränsen är fem beroenden; fler är i regel ett tecken på en klass som bör delas.
+  - *Resolverform,* som uppdragets exempel: `to(Dependencies.of(OrderRepo.class), r -> new
+    OrderService(r.get(OrderRepo.class)))`. Här kan deklarationen och användningen skilja
+    sig, så resolvern är begränsad: den lämnar bara ut deklarerade nycklar (annars
+    `ResolutionException` med det deklarerade i meddelandet) och bara medan fabriken körs
+    (en sparad resolver ger fel). Att be om något odeklarerat upptäcks därför första gången
+    komponenten skapas, inte vid `create`; det är priset för formen, och skälet till att den
+    typade formen föredras. Att deklarera för mycket är ofarligt (strängare kontroll).
+  - Dessutom vägrar `Container.get` att köras inifrån en fabrik i samma container (en
+    `ScopedValue` är bunden medan fabriken körs), så att en fabrik som fångat containern inte
+    går förbi deklarationen.
+  - Alternativ som valdes bort: att köra fabrikerna med en inspelande resolver vid `create`
+    (skapar objekt och kör sidoeffekter innan grafen är godkänd), kodgenerering (utanför
+    scope) och reflektion över konstruktorer (förbjudet).
+- **Validering vid `create`,** innan någon fabrik körs, på de deklarerade beroendena. Alla
+  fel samlas i en `WiringException`, i ordningen: dubbla bindningar, bindningar utan mål,
+  saknade beroenden (vem saknar vad, och andra bindningar av samma typ som ledtråd), cykler
+  (hela kedjan, `A -> B -> C -> A`), singletons som fångar `CALL`-komponenter. Varje
+  bindning minns var `bind` anropades (`StackWalker`, bara klass-, metod- och filnamn och
+  rad; ingen `Class`-referens, ingen reflektion), och felen visar det.
+- **Cykelsökning:** djupet först från varje bindning i bindningsordning; ett beroende som
+  redan ligger på stigen sluter en cykel, som rapporteras från där den gick in i stigen. Varje
+  nod avslutas en gång, så varje cykel rapporteras en gång och varje cyklisk del av grafen
+  ger minst en rapport (alla elementära cykler räknas inte upp).
+- **Fångade anropsscopade objekt (captive dependency):** en singleton (lat eller ivrig) som
+  beror på en `CALL`-komponent, direkt eller via prototyper, skulle behålla instansen från
+  det första anropsscopet. Det är ett fel vid `create`. En singleton → singleton → `CALL`
+  rapporteras på den inre singletonen.
+- **Trådsäkra singletons:** en `Slot` per singleton med dubbelkontrollerad låsning (volatile
+  fält + `ReentrantLock`). Virtuella trådar som väntar på låset lämnar sin bärartråd. Tråden
+  håller låset medan fabriken körs och kan då ta beroendenas lås; det kan inte låsa sig
+  eftersom grafen är acyklisk och fabriker bara når deklarerade beroenden. Kastar fabriken
+  sparas inget och nästa `get` försöker igen. Samma `Slot` används för `CALL`-instanser
+  inom ett scope (trådar som forkas med `StructuredTaskScope` delar scopet).
+- **Anropsscope:** varje container har en egen `ScopedValue<CallScope>`;
+  `runInCallScope`/`callInCallScope` binder ett nytt scope (instanser + egen livscykel) och
+  stänger dess `AutoCloseable`-instanser i omvänd ordning när kroppen är klar. Kastade
+  kroppen läggs stängningsfelen till som `suppressed`. Nästlade scope är oberoende. Utanför
+  ett scope ger en `CALL`-komponent `ResolutionException`.
+- **Livscykel:** en instans räknas som skapad när dess fabrik returnerar, så dess beroenden
+  är skapade före den och stängs efter den. `close()` stänger i omvänd skapandeordning, fångar
+  varje fel (alla `Throwable`) och fortsätter, och kastar sedan en `CloseException` med felen
+  som `suppressed`. Upprepad `close()` gör inget; `get` efter `close` ger
+  `IllegalStateException`. Blir en lat singleton klar efter att containern stängts stängs den
+  direkt och anroparen får ett fel i stället för ett stängt objekt. Misslyckas en ivrig
+  singleton i `create` stängs det som redan skapats.
+- **Vad containern inte stänger:** prototyper (containern vet inte när anroparen är klar, och
+  att hålla dem skulle läcka minne; som i Spring och Guice) och instanser från `toInstance`
+  (den som skapade dem äger dem).
+- **Moduler:** en `ContainerModule` installeras högst en gång per container (likhet med
+  `equals`, så en record-modul som installeras från två ställen körs en gång, och rekursiv
+  installation tar slut). Bindningar av samma nyckel från två moduler är ett fel, inte en
+  överskrivning: överskrivning är magi som döljer misstag.
+- **Ingen fallback mellan nycklar:** `Key.of(T.class)` och `Key.of(T.class, q)` är olika
+  nycklar, och en bindning av en subtyp gäller inte för supertypen. Det som binds är det som
+  hämtas.
+- **Fabriker får kasta checked exceptions** (`throws Exception`), så att konstruktorer som
+  kastar `IOException` kan användas som method references. Containern lindar in felet i
+  `ResolutionException` med kedjan och felet som `cause`; ett `ResolutionException` från ett
+  djupare beroende släpps igenom oförändrat (det har redan den längre kedjan).
+- **Nyckelnamn i meddelanden** är typens kanoniska namn (binärt namn för lokala och anonyma
+  klasser), så två typer med samma enkla namn inte kan förväxlas.

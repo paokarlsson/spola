@@ -1,0 +1,14 @@
+feat(di): add spola.di explicit dependency injection container
+
+Add a reflection-free DI container replacing Spring Core. Bindings declare
+their dependencies via typed factory arities or a declared resolver list,
+and Container.create validates the whole graph up front: missing
+dependencies, duplicate keys and cycles with the full chain. Supports
+qualifiers, lazy/eager singletons, prototype, ScopedValue call scope and
+reverse-order closing of AutoCloseable components.
+
+Gauntlet-Run: 20261002-0000-di-karna
+Gauntlet-Round: 1/5
+Gauntlet-Verdict: PASS (0 blocker, 0 major, 7 minor upheld)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>

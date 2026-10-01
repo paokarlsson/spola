@@ -1,0 +1,40 @@
+    ok      a cycle A -> B -> C -> A fails create with the whole chain (2 ms)
+    ok      a cycle through the resolver form and through eager singletons is found too (0 ms)
+    ok      a component depending on itself is a cycle (0 ms)
+    ok      a missing dependency fails create, naming who misses what and where it was bound (1 ms)
+    ok      a missing qualified dependency lists the bindings of that type (1 ms)
+    ok      a key bound twice fails create with both places (2 ms)
+    ok      a binding without a target fails create (0 ms)
+    ok      a singleton may not capture a call-scoped component, also through a prototype (1 ms)
+    ok      call- and prototype-scoped components may depend on call-scoped ones (0 ms)
+    ok      all problems are reported together (1 ms)
+  scopes
+    ok      a lazy singleton is created on first use, once (0 ms)
+    ok      an eager singleton is created by create (0 ms)
+    ok      a failing eager singleton fails create (1 ms)
+    ok      a prototype is new on every fetch and every injection (0 ms)
+    ok      the call scope gives one instance per scope and different ones across scopes (1 ms)
+    ok      a nested call scope has its own instances (0 ms)
+    ok      a call-scoped component outside a call scope fails (0 ms)
+    ok      callInCallScope passes the body's checked exception through (0 ms)
+    ok      call scopes of two containers are independent (0 ms)
+  concurrency
+    ok      a lazy singleton is created once when 1 000 virtual threads fetch it at the same time (89 ms)
+    ok      concurrent fetches of overlapping singleton graphs neither deadlock nor duplicate (13 ms)
+    ok      each of 1 000 concurrent call scopes gets its own instance (9 ms)
+  lifecycle
+    ok      closing goes in reverse creation order (4 ms)
+    ok      a failing close does not stop the others, and is reported (1 ms)
+    ok      several failing closes are all collected, in closing order (17 ms)
+    ok      close is idempotent and the container refuses use afterwards (1 ms)
+    ok      instances bound with toInstance and prototypes are not closed (0 ms)
+    ok      call-scoped components are closed in reverse order when their scope ends (1 ms)
+    ok      when the call scope's body throws, close failures are added to its exception (0 ms)
+    ok      a lazy singleton finishing after close is closed at once and not handed out (1 ms)
+    ok      a failing eager singleton closes what create already made (0 ms)
+spola.di: OK - 48 tests, 48 ok, 0 failed, 0 skipped, 0 suite fixtures failed, in 195 ms
+
+exit guard:
+  ok - after the decision: exit 0, other hooks and deleteOnExit ran
+  ok - before the decision: System.exit(0) ends red (exit 1)
+BUILD OK in 11026 ms

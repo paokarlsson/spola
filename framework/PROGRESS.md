@@ -55,10 +55,35 @@
 - Bygget tar ungefär 9 s (testerna ungefär 2 s, varav timeout-testerna 1,7 s; exit-vaktens
   två barn-JVM:ar ungefär 2–3 s).
 
+### Uppdrag 03: DI-kärna
+- Modulen `spola.di` (`modules/di/`, inga `requires`): typsäkra nycklar (`Key<T>`) med
+  kvalificerare som vanliga värden, moduler (`ContainerModule`, `Binder.install`), bindningar
+  med typad form (`to(A.class, B.class, Service::new)`, 0–5 beroenden) och resolverform
+  (`to(Dependencies.of(...), r -> ...)`), `toInstance`.
+- Scopes: lat och ivrig singleton, prototype, anropsscope på `ScopedValue`
+  (`runInCallScope`/`callInCallScope`).
+- `Container.create` validerar hela grafen innan något skapas: dubbla bindningar, bindningar
+  utan mål, saknade beroenden (vem saknar vad, var bindningen gjordes), cykler med hela
+  kedjan, singletons som fångar anropsscopade komponenter. Alla fel i en `WiringException`.
+- Livscykel: `AutoCloseable`-singletons stängs i omvänd skapandeordning, anropsscopade när
+  scopet slutar; fel samlas i `CloseException` och stoppar inte övriga.
+- Ingen `java.lang.reflect`/`java.lang.invoke` i huvudkoden. `README.md` i modulen visar
+  exempel bredvid Spring (`@Component`, `@Autowired`, `@Qualifier`).
+- 48 tester (nycklar, bindningsformer, kvalificerare, moduler, validering, scopes, 1 000
+  virtuella trådar mot en lat singleton, livscykel). Bygget tar ungefär 10 s.
+
 ## Återstår (enligt `uppdrag/PLAN.md`)
-- 03–20 enligt planen.
+- 04–20 enligt planen.
 
 ## Kända problem och begränsningar
+- **DI (spola.di):** i resolverformen upptäcks ett odeklarerat beroende först när
+  komponenten skapas (inte vid `Container.create`); den typade formen har inte problemet.
+  Nycklar bär en `Class<T>`, så generiska typer (`List<String>`) kan inte vara nycklar
+  direkt; slå in dem i en egen typ eller record. Ingen `Provider`/lat injektion: en
+  singleton som behöver en anropsscopad komponent per anrop måste själv bli `CALL` eller
+  `PROTOTYPE`, eller hämtas via containern i anropet. Prototyper och `toInstance`-instanser
+  stängs inte av containern. Cykelsökningen rapporterar minst en cykel per cyklisk del av
+  grafen, inte alla elementära cykler.
 - **Tester (spola.test):** ett test som inte stannar när det avbryts efter sin timeout
   överges på en daemon-tråd; dess `afterEach` körs bara om tråden någon gång blir klar och
   kan då gå samtidigt med senare tester. Ett test som anropar `System.exit` ger rött bygge
