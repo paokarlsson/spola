@@ -72,10 +72,37 @@
 - 48 tester (nycklar, bindningsformer, kvalificerare, moduler, validering, scopes, 1 000
   virtuella trådar mot en lat singleton, livscykel). Bygget tar ungefär 10 s.
 
+### Uppdrag 04: konfiguration
+- Modulen `spola.config` (`modules/config/`, inga `requires`): källor som värden
+  (`Source.map`, `file`, `optionalFile`, `environment(prefix)`, `environmentTable(tabell)`,
+  `systemProperties`, `arguments`), sammanslagna i den ordning de läggs till (senare vinner).
+  Miljön kan injiceras som `Map`.
+- Profiler: `activeProfiles(...)` i koden eller `activeProfilesFrom(nyckel)`;
+  `addForEachProfile(profil -> Source)` lägger profilkällorna där anropet står.
+- Platshållare `${a}`, `${a:standard}`, bokstavligt `$${`, cykler med hela kedjan.
+- Bindning till records med `config.bind(prefix, c -> new Rec(...))` utan reflektion:
+  `String`, `int`, `long`, `boolean`, `double`, `Duration`, `URI`, `Path`, enum, listor,
+  `Optional`, egna `Converter`/`Function<String,T>`, nästlade records med `section`. Alla fel
+  i ett `ConfigException`.
+- Känsliga nycklar (lista eller predikat) maskeras i fel och i `describe()`, som visar varje
+  nyckel, värde och vinnande källa. Värden byggda av känsliga värden maskeras också.
+- `README.md` i modulen med Spring Boot-jämförelse och koppling till `spola.di` via
+  `toInstance`. Beslut i ARCHITECTURE.md ("Konfiguration").
+- 63 tester (prioritet med fyra källor och alla tolv ordnade par, miljöregler, filer,
+  argument, profiler, platshållare, bindning av alla typer, felinsamling, hemligheter,
+  1 000 virtuella trådar). Konfigurationsfiler i testerna skrivs till temporära kataloger.
+  Bygget tar ungefär 12 s.
+
 ## Återstår (enligt `uppdrag/PLAN.md`)
-- 04–20 enligt planen.
+- 05–20 enligt planen.
 
 ## Kända problem och begränsningar
+- **Konfiguration (spola.config):** ett `bind`-anrop ger en felrapport; fel i två separata
+  `bind`-anrop rapporteras var för sig (bind ett rotrecord med `section` för en rapport).
+  Okända nycklar (stavfel i en fil) upptäcks inte. Listelement kan inte innehålla komma.
+  Platshållare i profilnyckelns värde ersätts inte. Kastar bindningsfunktionen efter att
+  problem registrerats släpps dess undantag (det kan innehålla värden). Enum-namn matchas
+  exakt (skiftlägeskänsligt). Bara properties-format (JSON i uppdrag 06).
 - **DI (spola.di):** i resolverformen upptäcks ett odeklarerat beroende först när
   komponenten skapas (inte vid `Container.create`); den typade formen har inte problemet.
   Nycklar bär en `Class<T>`, så generiska typer (`List<String>`) kan inte vara nycklar

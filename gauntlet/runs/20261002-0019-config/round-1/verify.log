@@ -1,0 +1,40 @@
+    ok      active profiles from a key given as an argument (3 ms)
+    ok      no profile key, no profiles: profile function is not called (1 ms)
+    ok      a profile source that sets the profile key is an error (1 ms)
+    ok      invalid or repeated profile names are refused (1 ms)
+    ok      the dump lists the active profiles (0 ms)
+  placeholders
+    ok      with and without default (0 ms)
+    ok      a value from a later source is used by a placeholder in an earlier one (0 ms)
+    ok      chains and placeholders in defaults (0 ms)
+    ok      $${ is a literal ${ (0 ms)
+    ok      a cycle a -> b -> a is an error with the whole chain (1 ms)
+    ok      a longer cycle and a self-reference show their chains (1 ms)
+    ok      a placeholder without value or default is an error, all reported (0 ms)
+    ok      an empty placeholder name is an error (0 ms)
+  binding
+    ok      a record with a nested record, built-in types and a custom converter (8 ms)
+    ok      defaults are used for missing keys only (1 ms)
+    ok      durations: units and ISO-8601 (1 ms)
+    ok      conversions are strict (1 ms)
+    ok      two missing keys and one invalid value give one exception with all three (3 ms)
+    ok      problems in a nested section are collected in the same report (1 ms)
+    ok      a present but invalid optional is still a problem (0 ms)
+    ok      the binding function's exception propagates when nothing was wrong with the values (0 ms)
+    ok      a section cannot be used after its binding has finished (0 ms)
+    ok      has and fullKey follow the prefix (1 ms)
+    ok      the configuration is immutable and safe to read from many threads (8 ms)
+  secrets
+    ok      an invalid sensitive value is not in the error message or stack trace (2 ms)
+    ok      a non-sensitive invalid value is shown, so the masking is what hides the secret (1 ms)
+    ok      the dump masks sensitive values and shows the winning source of every key (0 ms)
+    ok      a value built from a sensitive value through a placeholder is masked too (1 ms)
+    ok      placeholder errors in a sensitive value do not show fragments of it (0 ms)
+    ok      a binding function that throws after problems: its exception (with values) is not kept (1 ms)
+    ok      an invalid sensitive list element is masked, including the converter's message (0 ms)
+spola.config: OK - 63 tests, 63 ok, 0 failed, 0 skipped, 0 suite fixtures failed, in 118 ms
+
+exit guard:
+  ok - after the decision: exit 0, other hooks and deleteOnExit ran
+  ok - before the decision: System.exit(0) ends red (exit 1)
+BUILD OK in 13124 ms

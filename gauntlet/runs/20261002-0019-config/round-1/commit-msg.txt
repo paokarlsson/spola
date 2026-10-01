@@ -1,0 +1,13 @@
+feat(config): add spola.config type-safe configuration module
+
+Values from properties files, environment, system properties, arguments
+and maps merge with later sources winning. Profiles pick their files via a
+user function, ${key:default} placeholders detect cycles, records bind
+through user-written functions without reflection, and all binding errors
+are reported together with sensitive values masked.
+
+Gauntlet-Run: 20261002-0019-config
+Gauntlet-Round: 1/5
+Gauntlet-Verdict: PASS (0 blocker, 0 major, 7 minor upheld)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>

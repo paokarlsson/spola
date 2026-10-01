@@ -12,6 +12,7 @@ framework/
   modules/<modul>/test/     modulens tester, i modulens egna paket, utan module-info.java
   modules/guardrails/fixtures/   medvetet felaktiga exempel för guardrails självtest
   modules/di/README.md      exempel för spola.di bredvid motsvarande Spring-kod
+  modules/config/README.md  exempel för spola.config bredvid motsvarande Spring Boot-kod
   out/                      byggresultat (ignoreras av git)
     classes/<modulnamn>/    kompilerade klasser per modul
     <modulnamn>.jar         en jar per modul (utan tester)
@@ -428,3 +429,97 @@ läser `spola.test` som alla andra moduler. Exempel bredvid Spring: `modules/di/
   djupare beroende släpps igenom oförändrat (det har redan den längre kedjan).
 - **Nyckelnamn i meddelanden** är typens kanoniska namn (binärt namn för lokala och anonyma
   klasser), så två typer med samma enkla namn inte kan förväxlas.
+
+## Konfiguration (`spola.config`)
+
+Uppdrag 04. Ersätter Spring Boots `application.properties`, `@Value`,
+`@ConfigurationProperties` och profiler. Modulen har inga `requires` (bara `java.base`), och
+testerna läser `spola.test`. Exempel bredvid Spring Boot: `modules/config/README.md`.
+
+### API (paket `spola.config`)
+
+| Typ | Roll |
+|---|---|
+| `Source` | en källa, skapad explicit: `map`, `file`, `optionalFile`, `environment(prefix[, env])`, `environmentTable(tabell[, env])`, `systemProperties`, `arguments`; `description()` visas i fel och dump |
+| `Config.Builder` | `add(Source)`, `activeProfiles(...)`/`activeProfilesFrom(nyckel)`, `addForEachProfile(profil -> Source)`, `sensitive(nycklar)`/`sensitive(predikat)`, `build()` |
+| `Config` | oföränderlig: `get`, `sourceOf`, `keys`, `profiles`, `isSensitive`, `describe()`, `bind(prefix, funktion)` |
+| `Section` | det bindningsfunktionen läser från: `string`, `intValue`, `longValue`, `booleanValue`, `doubleValue`, `duration`, `uri`, `path`, `enumValue`, `list`, `optional`, `value(nyckel, Converter)`, `section(delprefix, funktion)`, `has` |
+| `Converter<T>` | record: typnamn + `Function<String,T>`; inbyggda konstanter (`INT`, `DURATION`, …) och `forEnum(Class)` |
+| `ConfigException` | alla problem på en gång; `problems()` |
+| `ConfigProblem` | sealed: `SourceError`, `PlaceholderError`, `MissingKey`, `InvalidValue` |
+
+### Beslut
+
+- **Prioritetsordning = ordningen i koden.** Källorna läggs till med `add` och en senare källa
+  vinner för samma nyckel. Ingen ordning är inbyggd; README rekommenderar standardvärden, fil,
+  profilfiler, miljö, argument (samma som Spring Boot i stora drag). Källor läses vid
+  `build()`, inte när de skapas (så en `Source` kan skapas tidigt och testas med injicerade
+  `Map`:ar), och `build()` läser om dem varje gång.
+- **Miljövariabler: ingen "relaxed binding".** Två explicita former. (a) Tabell:
+  `Source.environmentTable(Map.of("DATABASE_URL", "db.url"))`, bara listade variabler läses.
+  (b) Prefix: `Source.environment("APP_")`, där regeln är exakt: variabelnamnet måste börja
+  med prefixet (skiftlägeskänsligt), prefixet tas bort, resten görs till gemener
+  (`Locale.ROOT`) och `_` blir `.`. Variabler utan prefixet läses inte; en variabel som är
+  exakt prefixet ignoreras; ett tomt prefix vägras (det vore att läsa hela miljön). Två
+  variabler som ger samma nyckel är ett fel i stället för att en av dem tyst vinner. Båda
+  formerna tar valfritt en `Map` som ersätter processens miljö, så tester aldrig beror på den
+  riktiga miljön. Skäl: Spring Boots relaxed binding gör att flera stavningar träffar samma
+  fält, och vilken som vinner går inte att se i koden.
+- **Profilernas plats i prioritetsordningen:** där `addForEachProfile` anropas. Profilkällorna
+  vinner över allt som lagts till före anropet och förlorar mot allt efter. Inom anropet läggs
+  en källa per aktiv profil i profilernas ordning, så en senare profil vinner. Funktionen från
+  profilnamn till källa skrivs av användaren; inga filnamn är inbyggda. Valt framför en fast
+  plats (t.ex. "direkt efter basfilen") eftersom en fast plats vore en dold regel; placeringen
+  syns nu i koden. `addForEachProfile` får anropas flera gånger (t.ex. en fil och en map per
+  profil).
+- **Aktiva profiler** anges en gång: i koden (`activeProfiles`) eller från en nyckel
+  (`activeProfilesFrom`). Nyckeln slås upp i de vanliga källorna (`add`) sammanslagna med
+  vanlig prioritet, oavsett var i kedjan de står, så `--app.profiles=dev` (argumenten läggs
+  sist) fungerar. Profilkällor kan inte aktivera profiler: en profilkälla som sätter nyckeln
+  är ett fel (annars vore resultatet beroende av ordningen på en dold andra omgång).
+  Platshållare i profilnyckelns värde ersätts inte. Profilnamn är `[A-Za-z0-9][A-Za-z0-9_.-]*`,
+  så ett namn från ett argument inte kan bli `../` i användarens sökvägsfunktion.
+- **Filer:** `java.util.Properties`-format, läst som UTF-8 via `Reader` (felaktig UTF-8 ger
+  fel i stället för ersättningstecken). En valfri fil som inte finns (`NoSuchFileException`)
+  ignoreras; en valfri fil som finns men inte går att läsa är fortfarande ett fel. Sökvägen
+  görs absolut och står i källans beskrivning och i felet.
+- **Argument:** `--nyckel=värde`; argument utan `--` lämnas åt applikationen, `--` avslutar.
+  `--nyckel` utan `=` är ett fel (en flagga utan värde är tvetydig: tom sträng eller `true`?).
+- **Platshållare** ersätts efter sammanslagningen, en gång per nyckel, i nyckelordning (så
+  resultatet är deterministiskt). `${nyckel:standard}` använder standardvärdet bara om ingen
+  källa har nyckeln; finns nyckeln men går den inte att ersätta är det ett fel, ingen
+  fallback. Ett bokstavligt `${` skrivs `$${` (samma idé som `$$` i Make och Compose).
+  Cykler upptäcks med en stack av nycklar under rekursionen och rapporteras en gång med hela
+  kedjan (`a -> b -> c -> a`); nycklar som beror på en nyckel som redan fallerat fallerar utan
+  eget fel, så varje grundorsak rapporteras en gång. Alla problem från källor, profiler och
+  platshållare samlas och `build()` kastar ett `ConfigException` med alla.
+- **Bindning utan reflektion:** `config.bind(prefix, c -> new Rec(c.string("a"), ...))`.
+  Nästlade records med `c.section("delprefix", ...)`, samma mekanism och samma felrapport.
+  Omvandlingar är `Converter<T>`-värden (typnamn + funktion); enum via `Class<E>` och
+  `Enum.valueOf`. Typnamnet för en enum tas från `Class.getSimpleName()`, som bara läser
+  klassens namn (inget i `java.lang.reflect`, inga medlemmar, inga annoteringar).
+- **Hur alla fel samlas i en funktion som returnerar ett record:** läsmetoderna kastar inte.
+  Ett saknat eller ogiltigt värde registreras i en lista som hör till bindningen
+  (`MissingKey`/`InvalidValue` med nyckel, förväntad typ och, för ogiltiga värden, källa) och
+  metoden returnerar en ersättare (`null`, `0`, `false`, tom lista/`Optional`, eller angivet
+  standardvärde). När funktionen returnerat kastar `bind` ett `ConfigException` med hela
+  listan. Kastar funktionen själv (t.ex. en record-konstruktor som vägrar en ersättar-`null`)
+  efter att problem registrerats, kastas `ConfigException` och funktionens undantag släpps:
+  det är troligen en följd av ersättaren, och dess meddelande kan innehålla värden (även
+  känsliga). Har inga problem registrerats släpps funktionens undantag igenom oförändrat.
+  En `Section` går inte att använda efter att bindningen är klar (`IllegalStateException`),
+  så en sparad referens inte kan läsa förbi felinsamlingen. Ett `bind`-anrop är en rapport;
+  för en rapport för hela applikationen binds ett rotrecord med `section` för delarna.
+  Valt framför alternativen: ett resultatobjekt per värde (`Result<T>`) gör varje
+  record-konstruktion till kombinatorkod, och att köra funktionen två gånger (först för att
+  samla nycklar) kör användarkod med påhittade värden två gånger.
+- **Hemligheter:** nycklar markeras med en lista eller ett predikat. Ett känsligt värde visas
+  som `******` i `describe()`, `toString()` och alla felmeddelanden; för ett ogiltigt känsligt
+  värde utelämnas också omvandlarens meddelande (t.ex. `For input string: "..."`), och inget
+  undantag med värdet hängs på som `cause`. Platshållarfel i ett känsligt värde visar inte
+  platshållarnamnet (det kan vara en del av hemligheten). Ett värde som byggs av ett känsligt
+  värde via en platshållare blir självt känsligt ("taint"), så `url=jdbc:...?pw=${db.password}`
+  inte läcker i dumpen. Nycklar är aldrig hemliga.
+- **Oföränderlig och trådsäker:** `Config` har bara `final`-fält med en oföränderlig kopia
+  (`TreeMap` i `unmodifiableMap`) av records; säker publicering via `final`. En `Section` hör
+  till en bindning; dess fellista är synkroniserad om funktionen själv använder flera trådar.
