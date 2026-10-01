@@ -53,6 +53,9 @@ else
   perm=(--permission-mode acceptEdits)
 fi
 
+# The critics run as background agents; without this, `claude -p` kills them after 600s.
+export CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0
+
 mkdir -p gauntlet/logs
 rm -f gauntlet/STOP
 trap 'echo; echo "Interrupted. Run scripts/gauntlet.sh again to continue where it left off."; exit 130' INT TERM
