@@ -93,7 +93,7 @@ public final class Runner {
         }
         String abort = null;
         for (var fixture : suite.beforeAll()) {
-            var failure = bounded(fixture, scope.timeout(), String.join(" > ", scope.path()) + " (beforeAll)");
+            var failure = bounded(fixture, scope.timeout(), label(scope.path(), "(beforeAll)"));
             if (failure.isPresent()) {
                 fixtureFailed(scope, "(beforeAll)", failure.get());
                 abort = "a beforeAll fixture of " + suite.name() + " failed";
@@ -111,7 +111,7 @@ public final class Runner {
             skipAll(suite.tests(), scope, abort);
         }
         for (var fixture : suite.afterAll()) {
-            bounded(fixture, scope.timeout(), String.join(" > ", scope.path()) + " (afterAll)")
+            bounded(fixture, scope.timeout(), label(scope.path(), "(afterAll)"))
                     .ifPresent(failure -> fixtureFailed(scope, "(afterAll)", failure));
         }
     }
@@ -146,7 +146,7 @@ public final class Runner {
             rethrow(failure);
         };
         long start = System.nanoTime();
-        var failure = bounded(whole, test.timeout().orElse(scope.timeout()), String.join(" > ", path));
+        var failure = bounded(whole, test.timeout().orElse(scope.timeout()), label(path, null));
         var time = Duration.ofNanos(System.nanoTime() - start);
         var status = failure.isPresent() ? Status.FAILED : Status.PASSED;
         results.add(new Result(path, Result.Kind.TEST, status, time, failure, Optional.empty()));
@@ -246,6 +246,12 @@ public final class Runner {
         out.println(suite + ": " + verdict + " - " + report.tests() + " tests, " + report.count(Status.PASSED)
                 + " ok, " + report.count(Status.FAILED) + " failed, " + report.count(Status.SKIPPED) + " skipped, "
                 + report.fixtureFailures() + " suite fixtures failed, in " + report.time().toMillis() + " ms");
+    }
+
+    /** The thread label of a test or suite fixture: its path, then {@code suffix} if not null. */
+    private static String label(List<String> path, String suffix) {
+        var joined = String.join(" > ", path);
+        return suffix == null ? joined : joined + " " + suffix;
     }
 
     private static List<String> append(List<String> path, String name) {

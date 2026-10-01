@@ -1,0 +1,13 @@
+fix(test): fail the build when a test exits the JVM, compare numbers by value
+
+Exit guards in TestTool and Build.java now turn a System.exit from a test
+into a red build instead of a silent green one. assertEquals and
+assertNotEquals treat boxed numbers of different types as equal when
+their values match, cyclic collections print as (cycle), and collection
+messages show element classes when values would read the same.
+
+Gauntlet-Run: 20261001-2323-testkorare
+Gauntlet-Round: 2/4
+Gauntlet-Verdict: FAIL (0 blocker, 1 major, 5 minor upheld)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>

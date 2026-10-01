@@ -272,7 +272,25 @@ Beslut:
   `namn: OK|FAILED - N tests, a ok, b failed, c skipped, d suite fixtures failed, in t ms`.
 - **Felmeddelanden** visar förväntat och faktiskt värde på egna rader. Strängar visas i
   citattecken med escapes, arrayer och samlingar element för element; läses två olika
-  värden likadant (`1` och `1L`) visas deras klasser. Likhet är `Objects.deepEquals`.
+  värden likadant (`1` och `1L`) visas deras klasser, även element för element i samlingar
+  (`[1 (java.lang.Integer)]`). Samlingar som innehåller varandra visas med `(cycle)` där de
+  upprepas. Likhet är `Objects.deepEquals`.
+- **`assertNotEquals` jämför boxade tal efter värde.** `Integer` är aldrig lika med `Long`,
+  så `assertNotEquals(0, someLong)` skulle alltid passera (falskt grönt). Två boxade
+  primitiva tal av olika typ (`Byte`…`Double`) räknas därför som lika när de har samma
+  exakta värde (`float` vidgas förlustfritt till `double`, jämförs via `BigDecimal`).
+  Primitiva överlagringar (`assertNotEquals(long, long)` som i JUnit) valdes bort: de gör
+  anrop som `assertEquals(1, integerVariabel)` tvetydiga och kastar `NullPointerException`
+  vid `null`. `assertEquals(0, 0L)` fallerar redan (säkert håll) och visar klasserna.
+- **Fail closed vid `System.exit`.** Testerna körs i byggets JVM. Ett test som anropar
+  `System.exit(0)` skulle annars avsluta bygget med 0 utan rapport. Två shutdown hooks:
+  `TestTool` registrerar en under körningen som skriver vilken testingång som kördes och
+  stoppar JVM:en med `Runtime.halt(3)` (`TestTool.EXIT_DURING_RUN`); `Build.java` har en
+  under hela bygget som stoppar med 1 om `main` inte har bestämt exitkoden, och annars med
+  den bestämda koden (så att en sen `System.exit` från en övergiven testtråd inte kan ändra
+  den). `halt` i en hook hoppar över övriga hooks, vilket är avsikten. Testat i en barn-JVM
+  (`ExitProbe`, `ToolTests`). Barn-JVM per modul valdes bort: långsammare, och skyddet mot
+  `Runtime.halt(0)`, det enda hooks inte fångar, är ingen rimlig risk i god tro.
 - **Testkällor hör till modulen.** `modules/<m>/test/` har samma paket som modulen och ingen
   `module-info.java`, så testerna når paketprivat kod. Bygget kompilerar `src` + `test`
   tillsammans till `out/test-classes/<m>` med `--add-modules spola.test --add-reads

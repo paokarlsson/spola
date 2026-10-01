@@ -1,9 +1,12 @@
 package spola.test;
 
+import java.math.BigDecimal;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.List;
 import java.util.Objects;
+import java.util.function.Function;
 
 /**
  * Assertions for tests, meant to be imported statically. A failed assertion throws an
@@ -76,6 +79,11 @@ public final class Assertions {
     /**
      * Asserts that two values are not equal.
      *
+     * <p>Two boxed numbers of different types ({@code Byte}, {@code Short}, {@code Integer},
+     * {@code Long}, {@code Float}, {@code Double}) count as equal when they have the same
+     * numeric value, so {@code assertNotEquals(0, 0L)} fails instead of passing because an
+     * {@code Integer} never equals a {@code Long}.
+     *
      * @param unexpected the value {@code actual} must differ from
      * @param actual     the actual value
      * @throws AssertionFailure if they are equal
@@ -85,6 +93,35 @@ public final class Assertions {
             throw new AssertionFailure("values are equal",
                     "anything but " + Values.describe(unexpected), Values.describe(actual), null);
         }
+        if (sameNumber(unexpected, actual)) {
+            throw new AssertionFailure("values are numerically equal (only their types differ)",
+                    "anything but " + Values.describeTyped(unexpected), Values.describeTyped(actual), null);
+        }
+    }
+
+    /** Whether two boxed primitive numbers of different types hold the same value. */
+    private static boolean sameNumber(Object left, Object right) {
+        if (!(isBoxedNumber(left) && isBoxedNumber(right)) || left.getClass() == right.getClass()) {
+            return false;
+        }
+        var a = (Number) left;
+        var b = (Number) right;
+        if (!Double.isFinite(a.doubleValue()) || !Double.isFinite(b.doubleValue())) {
+            return Double.compare(a.doubleValue(), b.doubleValue()) == 0;
+        }
+        return exact(a).compareTo(exact(b)) == 0;
+    }
+
+    private static boolean isBoxedNumber(Object value) {
+        return value instanceof Byte || value instanceof Short || value instanceof Integer
+                || value instanceof Long || value instanceof Float || value instanceof Double;
+    }
+
+    /** The exact value of a finite boxed number (a float widens to double without loss). */
+    private static BigDecimal exact(Number number) {
+        return number instanceof Float || number instanceof Double
+                ? new BigDecimal(number.doubleValue())
+                : BigDecimal.valueOf(number.longValue());
     }
 
     /**
@@ -275,8 +312,12 @@ public final class Assertions {
             }
         }
         if (!missing.isEmpty()) {
-            throw new AssertionFailure("collection lacks " + Values.describe(missing),
-                    "contains " + Values.describe(List.of(elements)), Values.describe(actual), null);
+            // Elements that read like one that is there (1 and 1L) are shown with their classes.
+            boolean confusing = missing.stream().anyMatch(m -> actual.stream()
+                    .anyMatch(a -> Values.describe(a).equals(Values.describe(m))));
+            Function<Object, String> show = confusing ? Values::describeTyped : Values::describe;
+            throw new AssertionFailure("collection lacks " + show.apply(missing),
+                    "contains " + show.apply(Arrays.asList(elements)), show.apply(actual), null);
         }
     }
 
@@ -294,8 +335,9 @@ public final class Assertions {
         for (int i = 0; i < common; i++) {
             if (!Objects.deepEquals(expected.get(i), actual.get(i))) {
                 var shown = Values.describeBoth(expected.get(i), actual.get(i));
+                var lists = Values.describeBoth(expected, actual);
                 throw new AssertionFailure("lists differ at index " + i + ": expected " + shown[0]
-                        + " but was " + shown[1], Values.describe(expected), Values.describe(actual), null);
+                        + " but was " + shown[1], lists[0], lists[1], null);
             }
         }
         if (expected.size() != actual.size()) {
@@ -325,8 +367,11 @@ public final class Assertions {
             }
         }
         if (!missing.isEmpty() || !unexpected.isEmpty()) {
-            throw new AssertionFailure("collections differ: missing " + Values.describe(missing) + ", unexpected "
-                    + Values.describe(unexpected), Values.describe(expected), Values.describe(actual), null);
+            // Elements that read the same although they differ (1 and 1L) are shown with their classes.
+            boolean confusing = Values.describe(missing).equals(Values.describe(unexpected));
+            Function<Object, String> show = confusing ? Values::describeTyped : Values::describe;
+            throw new AssertionFailure("collections differ: missing " + show.apply(missing) + ", unexpected "
+                    + show.apply(unexpected), show.apply(expected), show.apply(actual), null);
         }
     }
 

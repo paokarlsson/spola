@@ -65,4 +65,16 @@ public final class SampleEntries {
     public static Suite nothing() {
         return null;
     }
+
+    /**
+     * A suite whose first test exits the JVM with status 0 and whose second test fails. Only
+     * run in a child JVM (see {@link ExitProbe}).
+     *
+     * @return the suite
+     */
+    public static Suite exiting() {
+        return suite("sample",
+                test("exits", () -> System.exit(0)),
+                test("fails after", () -> Assertions.assertEquals("left", "right")));
+    }
 }

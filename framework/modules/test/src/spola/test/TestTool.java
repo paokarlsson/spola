@@ -25,11 +25,20 @@ import java.util.spi.ToolProvider;
  *
  * <p>Exit codes: {@code 0} every test passed, {@code 1} a test or suite fixture failed (or no
  * test passed), {@code 2} usage error or the entry could not be called.
+ *
+ * <p>Fail closed: while the tests run, a shutdown hook is registered. If anything asks the
+ * JVM to exit before the run is over (a test calling {@code System.exit(0)}, say), the hook
+ * prints that and halts the JVM with {@value #EXIT_DURING_RUN}, so the run can never end
+ * green without its report. A test that calls {@code Runtime.halt} itself bypasses all
+ * shutdown hooks and cannot be caught in process.
  */
 public final class TestTool implements ToolProvider {
 
     /** The tool name used to look the provider up. */
     public static final String NAME = "spola-test";
+
+    /** The status the JVM halts with when it is asked to exit while tests run. */
+    public static final int EXIT_DURING_RUN = 3;
 
     /** Creates the tool; called by {@link java.util.ServiceLoader}. */
     public TestTool() {
@@ -82,13 +91,34 @@ public final class TestTool implements ToolProvider {
             return 2;
         }
         out.println("spola-test: running " + entry);
-        return Runner.run(suite, out).success() ? 0 : 1;
+        var guard = new Thread(() -> {
+            out.flush();
+            err.println();
+            err.println("spola-test: the JVM was asked to exit (System.exit?) while the tests of " + entry
+                    + " were running; the run is red (halting with status " + EXIT_DURING_RUN + ")");
+            err.flush();
+            Runtime.getRuntime().halt(EXIT_DURING_RUN);
+        }, "spola-test exit guard");
+        Runtime.getRuntime().addShutdownHook(guard);
+        try {
+            return Runner.run(suite, out).success() ? 0 : 1;
+        } finally {
+            try {
+                Runtime.getRuntime().removeShutdownHook(guard);
+            } catch (IllegalStateException shuttingDown) {
+                // The JVM is already exiting; the guard is running and halts it.
+            }
+        }
     }
 
     /** A test entry that cannot be called. */
     private static final class EntryException extends Exception {
         @java.io.Serial
         private static final long serialVersionUID = 1L;
+
+        EntryException(String message) {
+            super(message);
+        }
 
         EntryException(String message, Throwable cause) {
             super(message, cause);
@@ -130,31 +160,30 @@ public final class TestTool implements ToolProvider {
         Suite suite() throws EntryException {
             var layer = TestTool.class.getModule().getLayer();
             if (layer == null) {
-                throw new EntryException("spola.test is not loaded as a named module", null);
+                throw new EntryException("spola.test is not loaded as a named module");
             }
             var named = layer.findModule(module)
-                    .orElseThrow(() -> new EntryException("module " + module + " is not in the layer of spola.test",
-                            null));
+                    .orElseThrow(() -> new EntryException("module " + module + " is not in the layer of spola.test"));
             var type = Class.forName(named, className);
             if (type == null) {
-                throw new EntryException("class " + className + " not found in module " + module, null);
+                throw new EntryException("class " + className + " not found in module " + module);
             }
             try {
                 var entry = type.getMethod(method);
                 if (!Modifier.isStatic(entry.getModifiers()) || entry.getReturnType() != Suite.class) {
                     throw new EntryException("the entry must be public static " + Suite.class.getName() + " "
-                            + method + "()", null);
+                            + method + "()");
                 }
                 var suite = entry.invoke(null);
                 if (suite == null) {
-                    throw new EntryException("the entry returned null", null);
+                    throw new EntryException("the entry returned null");
                 }
                 return (Suite) suite;
             } catch (NoSuchMethodException e) {
-                throw new EntryException("no public method " + method + "() in " + className, null);
+                throw new EntryException("no public method " + method + "() in " + className);
             } catch (IllegalAccessException e) {
                 throw new EntryException("cannot call the entry (class not public, or package not exported to"
-                        + " spola.test): " + e.getMessage(), null);
+                        + " spola.test): " + e.getMessage());
             } catch (InvocationTargetException e) {
                 throw new EntryException("the entry threw while building the suite", e.getCause());
             } catch (LinkageError e) { // includes ExceptionInInitializerError from a static initializer

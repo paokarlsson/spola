@@ -75,7 +75,31 @@ static final class BuildFailure extends RuntimeException {
     }
 }
 
+/// The exit code the build decided on; -1 until `main` has decided. Read by the exit guard.
+static volatile int decidedExitCode = -1;
+
+/// Fail closed: the build runs code it does not control (tests, guardrails) in this JVM. If
+/// anything asks the JVM to exit before `main` has decided the exit code (a test calling
+/// `System.exit(0)`, say), this hook makes the build red instead of letting it end with that
+/// status and without a verdict. After the decision it halts with the decided code, so a late
+/// `System.exit` from an abandoned test thread cannot change it either.
+void installExitGuard() {
+    Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+        int code = decidedExitCode;
+        if (code < 0) {
+            System.out.flush();
+            System.err.println();
+            System.err.println("BUILD RED: the JVM was asked to exit before the build finished"
+                    + " (System.exit in a test or tool?)");
+            System.err.flush();
+            code = 1;
+        }
+        Runtime.getRuntime().halt(code);
+    }, "build exit guard"));
+}
+
 void main() {
+    installExitGuard();
     var start = System.nanoTime();
     int exitCode;
     try {
@@ -91,6 +115,7 @@ void main() {
     }
     var millis = (System.nanoTime() - start) / 1_000_000;
     System.out.println((exitCode == 0 ? "BUILD OK" : "BUILD RED") + " in " + millis + " ms");
+    decidedExitCode = exitCode;
     System.exit(exitCode);
 }
 
@@ -293,12 +318,7 @@ void runGuardrails() {
     var configuration = boot.configuration()
             .resolve(ModuleFinder.of(jarFile), ModuleFinder.of(), Set.of("spola.guardrails"));
     var layer = boot.defineModulesWithOneLoader(configuration, ClassLoader.getSystemClassLoader());
-    var guardrails = ServiceLoader.load(layer, ToolProvider.class).stream()
-            .filter(provider -> provider.type().getModule().getLayer() == layer)
-            .map(ServiceLoader.Provider::get)
-            .filter(tool -> tool.name().equals("spola-guardrails"))
-            .findFirst()
-            .orElseThrow(() -> new BuildFailure("spola.guardrails provides no ToolProvider named spola-guardrails"));
+    var guardrails = findTool(layer, layer.findModule("spola.guardrails").orElseThrow(), "spola-guardrails");
 
     var check = new ArrayList<>(List.of("check", "--root", ".", "--output", OUT.toString(),
             "--fixtures", FIXTURES.toString()));
@@ -347,12 +367,7 @@ void runTests(List<ModuleDir> order) {
             controller.addReads(tested, runnerModule);
             controller.addExports(tested, entry.packageName(), runnerModule);
         }
-        var runner = ServiceLoader.load(layer, ToolProvider.class).stream()
-                .filter(provider -> provider.type().getModule() == runnerModule)
-                .map(ServiceLoader.Provider::get)
-                .filter(tool -> tool.name().equals("spola-test"))
-                .findFirst()
-                .orElseThrow(() -> new BuildFailure(TEST_RUNNER + " provides no ToolProvider named spola-test"));
+        var runner = findTool(layer, runnerModule, "spola-test");
         int exit = runner.run(System.out, System.err,
                 "--module", module.name(), "--class", entry.className(), "--method", entry.method());
         if (exit != 0) {
@@ -362,6 +377,16 @@ void runTests(List<ModuleDir> order) {
     if (!failed.isEmpty()) {
         throw new BuildFailure("tests failed in " + String.join(", ", failed) + " (see the reports above)");
     }
+}
+
+/// The ToolProvider named `name` that `module` (in `layer`) provides.
+ToolProvider findTool(ModuleLayer layer, Module module, String name) {
+    return ServiceLoader.load(layer, ToolProvider.class).stream()
+            .filter(provider -> provider.type().getModule() == module)
+            .map(ServiceLoader.Provider::get)
+            .filter(tool -> tool.name().equals(name))
+            .findFirst()
+            .orElseThrow(() -> new BuildFailure(module.getName() + " provides no ToolProvider named " + name));
 }
 
 void deleteRecursively(Path root) throws IOException {

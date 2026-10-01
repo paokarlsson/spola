@@ -89,6 +89,20 @@ final class AssertionsTests {
                             assertNotEquals(1, 2);
                             shows(failure(() -> assertNotEquals("a", "a")), "anything but \"a\"", "\"a\"");
                         }),
+                        test("assertNotEquals compares boxed numbers of different types by value", () -> {
+                            var f = failure(() -> assertNotEquals(0, 0L));
+                            assertTrue(f.getMessage().startsWith("values are numerically equal"), f.getMessage());
+                            shows(f, "anything but 0 (java.lang.Integer)", "0 (java.lang.Long)");
+                            failure(() -> assertNotEquals((byte) 7, (short) 7));
+                            failure(() -> assertNotEquals(0.5f, 0.5));
+                            failure(() -> assertNotEquals(2, 2.0));
+                            failure(() -> assertNotEquals(Float.NaN, Double.NaN));
+                            assertNotEquals(1, 2L);
+                            assertNotEquals(0.1f, 0.1); // 0.1f widened is not the double 0.1
+                            assertNotEquals(Long.MAX_VALUE, (double) Long.MAX_VALUE); // 2^63 - 1 vs 2^63
+                            assertNotEquals(Float.POSITIVE_INFINITY, Double.NEGATIVE_INFINITY);
+                            assertNotEquals(0, "0");
+                        }),
                         test("assertSame", () -> {
                             var value = new Object();
                             assertSame(value, value);
@@ -163,6 +177,10 @@ final class AssertionsTests {
                             assertTrue(f.getMessage().startsWith("collection lacks [5]\n"), f.getMessage());
                             shows(f, "contains [2, 5]", "[1, 2]");
                         }),
+                        test("assertContains shows classes when a missing element reads like a present one", () -> {
+                            var f = failure(() -> assertContains(List.of(1L), 1));
+                            shows(f, "contains [1 (java.lang.Integer)]", "[1 (java.lang.Long)]");
+                        }),
                         test("assertInOrder checks order and names the first difference", () -> {
                             assertInOrder(List.of("a", "b"), List.of("a", "b"));
                             var f = failure(() -> assertInOrder(List.of("a", "b"), List.of("b", "a")));
@@ -182,6 +200,24 @@ final class AssertionsTests {
                             assertTrue(f.getMessage().startsWith("collections differ: missing [2], unexpected [3]\n"),
                                     f.getMessage());
                             shows(f, "[1, 2, 2]", "[2, 1, 3]");
+                        }),
+                        test("assertAnyOrder and assertInOrder show classes when elements read the same", () -> {
+                            var f = failure(() -> assertAnyOrder(List.of(1), List.of(1L)));
+                            assertTrue(f.getMessage().startsWith(
+                                    "collections differ: missing [1 (java.lang.Integer)], unexpected [1 (java.lang.Long)]\n"),
+                                    f.getMessage());
+                            shows(f, "[1 (java.lang.Integer)]", "[1 (java.lang.Long)]");
+                            shows(failure(() -> assertInOrder(List.of(1), List.of(1L))),
+                                    "[1 (java.lang.Integer)]", "[1 (java.lang.Long)]");
+                        }),
+                        test("collections that contain each other are shown without overflowing", () -> {
+                            var a = new ArrayList<Object>();
+                            var b = new ArrayList<Object>();
+                            a.add(b);
+                            b.add(a);
+                            a.add(1);
+                            var f = failure(() -> assertEmpty(a));
+                            shows(f, "[]", "[[(cycle)], 1]");
                         })));
     }
 }

@@ -11,6 +11,7 @@ import java.io.PrintStream;
 import java.io.PrintWriter;
 import java.io.StringWriter;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Path;
 import java.util.List;
 
 /** The {@code spola-test} tool that the build runs: entry lookup and exit codes. */
@@ -70,6 +71,21 @@ final class ToolTests {
                             "--module", "spola.test", "--class", SAMPLE, "--method", "failing");
                     assertEquals(1, exit);
                     assertTrue(out.toString().contains("sample: FAILED"), out.toString());
+                }),
+                test("a test that calls System.exit(0) makes the run red instead of ending it green", () -> {
+                    var classes = Path.of(ExitProbe.class.getProtectionDomain().getCodeSource().getLocation().toURI());
+                    var java = Path.of(System.getProperty("java.home"), "bin", "java").toString();
+                    var process = new ProcessBuilder(java, "--module-path", classes.toString(),
+                            "--module", "spola.test/" + ExitProbe.class.getName())
+                            .redirectErrorStream(true)
+                            .start();
+                    process.getOutputStream().close();
+                    var output = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+                    int exit = process.waitFor();
+                    assertEquals(TestTool.EXIT_DURING_RUN, exit, output);
+                    assertTrue(output.contains("spola-test: the JVM was asked to exit (System.exit?) while the tests of"
+                            + " spola.test/" + SAMPLE + "::exiting were running; the run is red"), output);
+                    assertTrue(!output.contains("sample: OK"), output);
                 }),
                 test("the tool is named spola-test", () -> assertEquals("spola-test", new TestTool().name())),
                 parameterized("a broken entry or command line exits 2 with a reason", List.of(

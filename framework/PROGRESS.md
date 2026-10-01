@@ -46,8 +46,9 @@
   parametriserat fall per fixture) och körs av `spola.test`; `GuardrailsTool selftest` är
   borttaget. Guardrails `Project` har fått testkällor (`tests`, `testReads`) och
   `GuardrailsTool check` flaggorna `--tests` och `--test-reads`.
-- Körarens egna tester: 70 tester (assertions, fixtures, parametrisering, timeout, nästlade
-  sviter, rapport, `TestTool`). Guardrails: 17 tester.
+- Körarens egna tester: 75 tester (assertions, fixtures, parametrisering, timeout, nästlade
+  sviter, rapport, `TestTool`, inklusive `System.exit` i ett test i en barn-JVM).
+  Guardrails: 17 tester.
 - Bygget tar ungefär 6–7 s (testerna ungefär 2 s, varav timeout-testerna 1,7 s).
 
 ## Återstår (enligt `uppdrag/PLAN.md`)
@@ -56,8 +57,10 @@
 ## Kända problem och begränsningar
 - **Tester (spola.test):** ett test som inte stannar när det avbryts efter sin timeout
   överges på en daemon-tråd; dess `afterEach` körs bara om tråden någon gång blir klar och
-  kan då gå samtidigt med senare tester. Ett test som anropar `System.exit` avslutar hela
-  bygget. Tester körs i samma JVM som bygget, i ordning, inte parallellt (parallell körning är
+  kan då gå samtidigt med senare tester. Ett test som anropar `System.exit` ger rött bygge
+  (utan resterande tester och sammanfattning), se ARCHITECTURE.md ("Fail closed vid
+  `System.exit`"); `Runtime.halt` i ett test går förbi alla shutdown hooks och kan inte
+  fångas i samma JVM. Tester körs i samma JVM som bygget, i ordning, inte parallellt (parallell körning är
   utanför uppdraget).
 - Testerna förutsätter `framework/` som arbetskatalog (bygget kräver det).
 - `TestTool` använder reflektion (`Class.forName` + `Method.invoke`) för att anropa
