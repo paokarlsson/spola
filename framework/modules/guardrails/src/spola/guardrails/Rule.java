@@ -36,13 +36,14 @@ public enum Rule {
     /**
      * §1 and §2: no Java code the source check cannot analyse. The source launcher and jshell
      * run files of any name, so besides {@code .java} sources only documents ({@code .md}) may
-     * exist outside the build output; and a document that javac parses (in some charset, at
-     * some release) must be Java source the check can read and attribute. Such code could
-     * otherwise hide annotations, {@code @interface} declarations or third-party imports.
+     * exist outside the build output, and no document may be Java that javac parses (in any
+     * charset, at any release), since its meaning depends on how the launcher is run. Such
+     * code could otherwise hide annotations, {@code @interface} declarations or third-party
+     * imports.
      */
     UNCHECKABLE_SOURCE("1. Inga tredjepartsberoenden, 2. Annoteringar",
             "no code the source check cannot analyse: besides .java sources only .md documents may exist"
-                    + " outside framework/out/, and a document javac parses must compile as read in UTF-8");
+                    + " outside framework/out/, and no document may parse as Java");
 
     private final String section;
     private final String description;

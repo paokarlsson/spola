@@ -20,8 +20,8 @@ import java.util.stream.Stream;
  *       annotation declarations, foreign imports and reflective annotation reads are reported.
  *       Besides {@code .java} sources only documents ({@code .md}) may exist; any other file
  *       is reported, since the source launcher or jshell could run it as Java. A document
- *       that javac parses in some charset at some release is analysed, or reported if the
- *       check cannot analyse that reading (see {@link LauncherCheck}),</li>
+ *       that javac parses in some charset at some release is reported, never analysed
+ *       (see {@link LauncherCheck}),</li>
  *   <li>bytecode: every class file (by name or content) is read; annotations outside the allowlist
  *       (including parameter and type annotations) and annotation types are reported,</li>
  *   <li>dependencies: every {@code module-info.class} is read; {@code requires} of modules that
@@ -119,16 +119,16 @@ public final class Guardrails {
                     + String.join("\n  ", errors));
         }
         log.println("guardrails: source       " + (moduleSources.size() + looseSources.size()) + " .java files");
-        violations.addAll(analyzeLauncherSources(root, notChecked, log));
+        violations.addAll(checkOtherFiles(root, notChecked, log));
         return violations;
     }
 
     /**
-     * Source check of every file without the {@code .java} extension outside {@code notChecked}
+     * Check of every file without the {@code .java} extension outside {@code notChecked}
      * ({@link FileTree#isLauncherCandidate}), by {@link LauncherCheck}: only documents may
-     * exist, and a document that may be Java source is analysed or reported.
+     * exist, and a document that javac parses as Java is reported.
      */
-    static List<Violation> analyzeLauncherSources(Path root, List<Path> notChecked, PrintStream log) {
+    static List<Violation> checkOtherFiles(Path root, List<Path> notChecked, PrintStream log) {
         var candidates = FileTree.files(root, notChecked, FileTree::isLauncherCandidate);
         var result = LauncherCheck.run(root, candidates);
         log.println("guardrails: source       " + candidates.size() + " other files: " + result.notAllowed()

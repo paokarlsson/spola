@@ -18,9 +18,9 @@
   fail-closed av `LauncherCheck`, eftersom source launchern och jshell kör filer med vilket
   namn som helst: bara dokument (`.md`) är tillåtna, varje annan fil ger
   `UNCHECKABLE_SOURCE`. Ett dokument läses på alla sätt launchern kan läsa det (varje
-  teckenkodning i JDK:n, `#!`-rad avslutad av `\r`, `\n` eller `\r\n`, `--source 8` till 25).
-  Parsar UTF-8-läsningen analyseras dokumentet som en `.java`-fil; parsar en annan läsning
-  rapporteras det.
+  teckenkodning i JDK:n, `#!`-rad avslutad av `\r`, `\n` eller `\r\n`, varje release javac
+  tar för `--source`, i JDK 25 alltså 25 ned till 8). Parsar någon läsning rapporteras
+  dokumentet som `UNCHECKABLE_SOURCE`; dokument analyseras aldrig som Java.
 - Filkontrollen är fail-closed för zip: en fil som börjar som en zip men som `ZipFile` inte
   kan öppna (skadad, okänd komprimering) räknas som jar.
 - Självtest mot 10 fixtures med exakt angivna förväntade överträdelser, plus kontroll att
@@ -60,10 +60,16 @@
   över det som inte kompilerar. Ett `.md`-dokument kan därför innehålla kodrader som
   `jshell DOKUMENT.md` kör. Det går inte att avgöra maskinellt utan att förbjuda all prosa,
   så dokument granskas som text. Alla andra filnamn (även `.jsh`) är redan förbjudna.
-- Ett dokument som är Java analyseras ensamt och utan class path. Behöver det andra
-  källfiler eller en class path rapporteras det som `UNCHECKABLE_SOURCE` (fail-closed).
-  Detsamma gäller ett dokument som är Java och innehåller tecken utanför ASCII, eftersom
-  ISO-8859-1-läsningen då är en annan text som javac också parsar.
+- Ett `.md`-dokument som javac kan parsa som Java (även ett kodexempel som utgör hela
+  filen) ger rött bygge. Kodexempel i dokument måste därför stå tillsammans med prosa
+  (Markdown-rubriker och text gör att filen inte parsar).
+- **Fixture-innehåll är bara låst genom sina förväntade överträdelser** (domarens gräns,
+  runda 5): `tools/*` och `docs/*.md` i `launcher-source` är medvetet körbar Java, och mer
+  sådant innehåll i dem skulle inte märkas av självtestet. `tree.txt` i `FILES`-fixtures
+  kontrolleras dock: parsar den som Java i någon läsning blir självtestet rött. I övrigt
+  upprätthålls fixture-innehåll av granskning.
+- Förväntade radnummer i `Fixtures.ALL` är hårdkodade och måste uppdateras när en
+  fixture-fil ändras (självtestet skriver ut de faktiska raderna).
 - Nya filtyper i `framework/` (resurser, testdata) kräver att `Allowlist.DOCUMENT_EXTENSIONS`
   utökas medvetet; de kontrolleras då som dokument. Editorfiler (`.swp`, `.idea/`) i
   `framework/` ger rött bygge.

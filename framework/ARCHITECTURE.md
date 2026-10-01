@@ -65,7 +65,7 @@ Kontroller (paketprivata klasser):
 
 | Kontroll | Hur | Regler |
 |---|---|---|
-| `LauncherCheck` | filer utan `.java`-ändelse: tillåtelselista (`Allowlist.DOCUMENT_EXTENSIONS`), dokument avkodade med varje `Charset` och parsade med en javac-task per release (`--source 8`..25), sedan `SourceCheck.runAnalysis` på UTF-8-läsningen | varje fil som varken är `.java` eller `.md`; dokument som javac parsar i en annan läsning än UTF-8 eller inte kan attribuera (`UNCHECKABLE_SOURCE`) |
+| `LauncherCheck` | filer utan `.java`-ändelse: tillåtelselista (`Allowlist.DOCUMENT_EXTENSIONS`), dokument avkodade med varje `Charset` och parsade med en javac-task per release (från den körande JDK:ns ned till den äldsta javac tar); analyseras aldrig | varje fil som varken är `.java` eller `.md`; varje dokument som javac parsar i någon läsning vid någon release (`UNCHECKABLE_SOURCE`) |
 | `SourceCheck` | `JavacTask.parse()` + `analyze()` (attribuering), `TreePathScanner`, `Trees.getElement` | annotering utanför tillåtelselistan (fullt kvalificerat namn efter attribuering, så en egen `Override` skiljs från `java.lang.Override`), annoteringar som inte går att lösa upp, `@interface`, import från annat än JDK/projekt, läsning av annoteringar via reflektion: anrop och method references till `java.base`-metoder vars returtyp (efter erasure, även arrayer) är `Annotation` eller `AnnotatedType`, samt `isAnnotationPresent` och `Method.getDefaultValue` |
 | `BytecodeCheck` | `java.lang.classfile` | `Runtime(In)Visible{,Parameter,Type}Annotations` på klass, fält, metod, record-komponent och i `Code` (typannoteringar i metodkroppar), `AnnotationDefault`, nästlade annoteringar, klasser med `ACC_ANNOTATION` |
 | `DependencyCheck` | `module-info.class` → `ModuleAttribute` | `requires` (även `static`/`transitive`) som varken är JDK-modul eller projektmodul |
@@ -118,21 +118,23 @@ Beslut:
   - Ett dokument läses som launchern kan läsa det: avkodat med **varje** teckenkodning i
     JDK:n (felaktiga byte ersätts, som launcherns `InputStreamReader`), en `#!`-rad tömd
     fram till första `\r`, `\n` eller `\r\n` (som `BufferedReader.readLine`, efter de två
-    byten `#!`), och parsat vid varje release från 8 (den äldsta javac 25 tar) till den
-    körande JDK:ns (`--source N`, `--enable-preview` bara för den senaste, som launchern).
-    Alla läsningar parsas i en javac-task per release (`-Xmaxerrs` högt så att varje enhet
-    rapporterar sina egna fel), vilket tar ungefär 1 s för dagens dokument.
+    byten `#!`), och parsat vid varje release från den körande JDK:ns (`--source N`,
+    `--enable-preview` bara för den senaste, som launchern) nedåt tills javac avvisar
+    releasen med `compiler.err.option.removed.source` (i JDK 25: 7). Den äldsta releasen
+    är alltså javacs egen och inte ett tal i koden; vilket annat fel som helst som inte hör
+    till en enskild läsning stoppar kontrollen (fail-closed). Alla öppna läsningar parsas i
+    en javac-task per release (`-Xmaxerrs` högt så att varje enhet rapporterar sina egna
+    fel); när en läsning av ett dokument parsar tas dokumentets övriga läsningar bort.
   - Läsningar utan `;`, `{` och `\` hoppas över utan parsning: en kompileringsenhet med
     någon deklaration eller import har ett semikolon eller en klammer (eventuellt som
     unicode-escape).
-  - Parsar ingen läsning är dokumentet inte Java och hoppas över. Parsar UTF-8-läsningen
-    analyseras den som en `.java`-fil vid den nyaste release som parsar den; fel vid
-    attribuering ger `UNCHECKABLE_SOURCE`. Parsar en annan läsning (som skiljer sig från
-    UTF-8-läsningen) rapporteras dokumentet som `UNCHECKABLE_SOURCE`, eftersom det
-    programmet inte är det som analyserades.
-  - Utan moduler (`--source 8`) avgör `SourceCheck` JDK-tillhörighet så här: allt som går
-    att lösa upp kommer från JDK:n eller filen (ingen class path), och `java.*`-paket är
-    `java.base`.
+  - **Dokument analyseras aldrig som Java** (domarens bindande beslut, gauntlet-runda 5 i
+    körningen 20261001-2101). Parsar någon läsning, vid någon release, rapporteras
+    dokumentet som `UNCHECKABLE_SOURCE` med den första läsning som hittades
+    ("read as UTF-8, --source 25"). Parsar ingen läsning är dokumentet inte Java och
+    godkänns. Skälet: vad ett program betyder beror på teckenkodning, release och API-nivå
+    (`java --source 8` binder överlagringar mot release 8:s API), så en analys av en
+    läsning säger inget säkert om den som körs. Java hör inte hemma i dokument.
   - Kvar: jshell-indata i ett `.md`-dokument (se PROGRESS.md).
   - Gränsen: det JDK:n kör eller laddar direkt kontrolleras maskinellt. Innehåll som först
     måste packas upp eller avkodas (gzip, tar, base64, …) gör det inte (se PROGRESS.md).
@@ -169,8 +171,9 @@ modules/x/src/spola/x/Marker.java:3: ANNOTATION_DECLARATION (REGLER.md 2. Annote
 - Typer: `SOURCE` (källkontroll direkt på filerna), `BYTECODE` (källkontroll, sedan
   kompilering till en temporär katalog och bytekodkontroll), `DEPENDENCIES` (källkontroll av
   `src/`, sedan kompilering som moduler och beroende- och bytekodkontroll), `FILES` (varje
-  rad i `tree.txt` skapas i en temporär katalog, filkontroll), `LAUNCHER` (samma urval och
-  analys av filer utan `.java`-ändelse som huvudkontrollen, `Guardrails.analyzeLauncherSources`).
+  rad i `tree.txt` skapas i en temporär katalog, filkontroll; en `tree.txt` som javac parsar
+  som Java i någon läsning ger en oväntad överträdelse), `LAUNCHER` (samma urval och
+  kontroll av filer utan `.java`-ändelse som huvudkontrollen, `Guardrails.checkOtherFiles`).
   `tree.txt` (formatet i `TreeSpec`) kan beskriva tomma filer, kataloger (`dir/`),
   symboliska länkar (`sökväg -> mål`) och genererat innehåll (`sökväg = zip(post, post =
   class, ...)`, `jmod(...)`, `script+zip(...)`, `truncated-zip(...)`, `class`), så att inga

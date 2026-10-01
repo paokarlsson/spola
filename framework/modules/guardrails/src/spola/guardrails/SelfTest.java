@@ -131,11 +131,15 @@ final class SelfTest {
                 for (var tree : inputs) {
                     TreeSpec.materialize(Files.readAllLines(tree, StandardCharsets.UTF_8), scratch);
                 }
+                // A tree.txt is test data that is never checked for Java (fixture directories
+                // are left out of the main check), so it must not be Java in any reading.
+                LauncherCheck.javaReadings(inputs).forEach((tree, reading) -> result.add(new Violation(
+                        FileTree.relative(dir, tree), 0, Rule.UNCHECKABLE_SOURCE, reading.subject(), "")));
                 result.addAll(FileCheck.run(scratch, FileTree.filesAndLinks(scratch), scratch.resolve("out")));
             }
             case LAUNCHER -> {
                 // The same selection and analysis as the main check, with nothing left out.
-                result.addAll(Guardrails.analyzeLauncherSources(dir, List.of(),
+                result.addAll(Guardrails.checkOtherFiles(dir, List.of(),
                         new PrintStream(OutputStream.nullOutputStream())));
             }
         }

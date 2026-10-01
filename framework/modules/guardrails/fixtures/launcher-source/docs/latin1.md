@@ -1,6 +1,6 @@
 // Fixture: "café" ends in a Latin-1 byte, which is not UTF-8. The launcher replaces it and
-// runs the file; the check analyses the UTF-8 reading and reports the Latin-1 reading,
-// which is a different text that javac also parses.
+// runs the file. The check reads it the same way (malformed input replaced), finds that
+// javac parses it, and reports it.
 class Latin1 {
     @interface Tag {
     }

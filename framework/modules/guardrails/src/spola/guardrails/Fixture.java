@@ -53,9 +53,9 @@ record Fixture(String name, Kind kind, List<Violation> expected) {
         FILES,
         /**
          * Source check of the fixture's files that do not end in {@code .java}, exactly as the
-         * main check treats such files ({@link Guardrails#analyzeLauncherSources}): files that
-         * are not documents are reported, documents javac parses are analysed or reported, the
-         * rest skipped. The files may be any bytes (the check reads them in every charset).
+         * main check treats such files ({@link Guardrails#checkOtherFiles}): files that
+         * are not documents are reported, documents javac parses are reported, the rest pass.
+         * The files may be any bytes (the check reads them in every charset).
          */
         LAUNCHER
     }

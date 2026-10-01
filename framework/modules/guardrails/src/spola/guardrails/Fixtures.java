@@ -1,5 +1,6 @@
 package spola.guardrails;
 
+import java.nio.charset.Charset;
 import java.nio.file.Path;
 import java.util.List;
 
@@ -17,6 +18,9 @@ final class Fixtures {
 
     private Fixtures() {
     }
+
+    /** The release of the running JDK, the newest one the document check parses at. */
+    private static final int LATEST = Runtime.version().feature();
 
     static final List<Fixture> ALL = List.of(
             new Fixture("source-annotation", Fixture.Kind.SOURCE, List.of(
@@ -124,28 +128,19 @@ final class Fixtures {
                     notDocument("tools/run.sh"),
                     notDocument("tools/setup.jsh"),
                     notDocument("tools/setup.txt"),
-                    // A #! document with CR line ends: analysed, with exact line numbers.
-                    source("docs/wire.md", 9, Rule.ANNOTATION_NOT_ALLOWED, "@java.lang.annotation.Retention"),
-                    source("docs/wire.md", 10, Rule.ANNOTATION_DECLARATION, "@interface Wire.Inject"),
-                    source("docs/wire.md", 13, Rule.ANNOTATION_NOT_ALLOWED, "@Wire.Inject"),
-                    source("docs/wire.md", 16, Rule.ANNOTATION_REFLECTION,
-                            "java.lang.reflect.AccessibleObject.isAnnotationPresent"),
-                    // A byte that is not UTF-8: the UTF-8 reading is analysed, the different
-                    // ISO-8859-1 reading that javac also parses is reported.
-                    source("docs/latin1.md", 5, Rule.ANNOTATION_DECLARATION, "@interface Latin1.Tag"),
-                    source("docs/latin1.md", 8, Rule.ANNOTATION_NOT_ALLOWED, "@Latin1.Tag"),
-                    otherReading("docs/latin1.md", "ISO-8859-1"),
-                    // Parses only at --source 8: analysed at that release.
-                    source("docs/old.md", 4, Rule.ANNOTATION_DECLARATION, "@interface Old.Mark"),
-                    source("docs/old.md", 7, Rule.ANNOTATION_NOT_ALLOWED, "@Old.Mark"),
-                    source("docs/old.md", 10, Rule.ANNOTATION_REFLECTION,
-                            "java.lang.reflect.AccessibleObject.isAnnotationPresent"),
-                    // Java only when read as ISO-8859-1: reported.
-                    otherReading("docs/em.md", "ISO-8859-1"),
-                    // Fail-closed: Java source javac cannot attribute.
-                    source("docs/unresolved.md", 3, Rule.FOREIGN_IMPORT, "import org.example.Injector"),
-                    source("docs/unresolved.md", 3, Rule.UNCHECKABLE_SOURCE, "Java source javac cannot attribute"))),
-                    // docs/notes.md is prose that javac parses in no reading: skipped.
+                    // A document that javac parses as Java, in any reading at any release, is
+                    // reported and never analysed. The subject names the first reading found.
+                    // Binds differently at --source 8 than at 25 (gauntlet round 5).
+                    javaDocument("docs/release.md", "UTF-8", LATEST),
+                    // A #! script with CR line ends: the launcher ends the #! line at the CR.
+                    javaDocument("docs/wire.md", "UTF-8", LATEST),
+                    // A byte that is not UTF-8: the launcher replaces it and runs the file.
+                    javaDocument("docs/latin1.md", "UTF-8", LATEST),
+                    // Java only when read as ISO-8859-1.
+                    javaDocument("docs/em.md", "ISO-8859-1", LATEST),
+                    // Parses only at --source 8 (javac's oldest release).
+                    javaDocument("docs/old.md", "UTF-8", 8))),
+                    // docs/notes.md is prose that javac parses in no reading: it passes.
 
             new Fixture("foreign-jar", Fixture.Kind.FILES, List.of(
                     // out/allowed.jar and out/nested/also-allowed.jar are in the output directory: allowed.
@@ -218,9 +213,9 @@ final class Fixtures {
         return new Violation(file, 0, Rule.UNCHECKABLE_SOURCE, "neither a .java source nor a document (.md)", "");
     }
 
-    private static Violation otherReading(String file, String charset) {
-        return new Violation(file, 0, Rule.UNCHECKABLE_SOURCE, "document that javac parses when read as " + charset,
-                "");
+    private static Violation javaDocument(String file, String charset, int release) {
+        return new Violation(file, 0, Rule.UNCHECKABLE_SOURCE,
+                new LauncherCheck.JavaReading(Charset.forName(charset), release).subject(), "");
     }
 
     private static Violation bytecode(String file, Rule rule, String subject, String location) {

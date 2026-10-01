@@ -21,7 +21,6 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
-import java.util.function.Function;
 import javax.lang.model.element.Element;
 import javax.lang.model.element.ElementKind;
 import javax.lang.model.element.ExecutableElement;
@@ -36,15 +35,14 @@ import javax.lang.model.util.Types;
 import javax.tools.Diagnostic;
 import javax.tools.DiagnosticCollector;
 import javax.tools.JavaFileObject;
-import javax.tools.StandardJavaFileManager;
 import javax.tools.StandardLocation;
 import javax.tools.ToolProvider;
 
 /**
  * Source check: parses and attributes Java source with the Compiler Tree API and reports
  * disallowed annotations, annotation declarations, foreign imports and reflective reads of
- * annotations. {@code .java} files come through {@link #analyze}; files with other names
- * that may be Java source come through {@link LauncherCheck}.
+ * annotations in {@code .java} files. Files with other names are never analysed; see
+ * {@link LauncherCheck}.
  */
 final class SourceCheck {
 
@@ -72,26 +70,6 @@ final class SourceCheck {
         if (files.isEmpty()) {
             return new Outcome(List.of(), List.of());
         }
-        var analysis = runAnalysis(root, fileManager -> fileManager.getJavaFileObjectsFromPaths(files), options,
-                projectModules);
-        return new Outcome(analysis.violations(), analysis.errors().stream().map(d -> describe(root, d)).toList());
-    }
-
-    /** Violations found and the javac errors (when non-empty, attribution may be incomplete). */
-    record Analysis(List<Violation> violations, List<Diagnostic<? extends JavaFileObject>> errors) {
-    }
-
-    /**
-     * Parses and attributes {@code units} in one javac task and scans them for violations.
-     *
-     * @param root           paths in the report are relative to this directory
-     * @param units          the compilation units, made by the task's file manager
-     * @param options        extra javac options
-     * @param projectModules modules (besides the JDK's) whose packages may be imported
-     */
-    static Analysis runAnalysis(Path root,
-                                Function<StandardJavaFileManager, Iterable<? extends JavaFileObject>> units,
-                                List<String> options, Set<String> projectModules) {
         var compiler = ToolProvider.getSystemJavaCompiler();
         var diagnostics = new DiagnosticCollector<JavaFileObject>();
         var allOptions = new ArrayList<String>(List.of(
@@ -104,7 +82,7 @@ final class SourceCheck {
             // No class path: anything not in the JDK, the project or these files stays unresolved.
             fileManager.setLocation(StandardLocation.CLASS_PATH, List.of());
             var task = (JavacTask) compiler.getTask(new StringWriter(), fileManager, diagnostics, allOptions, null,
-                    units.apply(fileManager));
+                    fileManager.getJavaFileObjectsFromPaths(files));
             var compilationUnits = task.parse();
             task.analyze();
             var violations = new ArrayList<Violation>();
@@ -113,12 +91,13 @@ final class SourceCheck {
             for (var unit : compilationUnits) {
                 scanner.scanUnit(unit);
             }
-            List<Diagnostic<? extends JavaFileObject>> errors = diagnostics.getDiagnostics().stream()
+            var errors = diagnostics.getDiagnostics().stream()
                     .filter(d -> d.getKind() == Diagnostic.Kind.ERROR)
+                    .map(d -> describe(root, d))
                     .toList();
             // javac's generated record members (canonical constructor, accessors) share the
             // component's annotation trees, so one annotation can be visited more than once.
-            return new Analysis(violations.stream().distinct().toList(), errors);
+            return new Outcome(violations.stream().distinct().toList(), errors);
         } catch (IOException e) {
             throw new UncheckedIOException(e);
         }
@@ -151,12 +130,6 @@ final class SourceCheck {
         private final TypeElement annotatedElement;
         private final TypeElement annotation;
         private final TypeElement annotatedType;
-        /**
-         * Whether the task has modules. At {@code --source 8} (a launcher program may be
-         * analysed at that release, see {@link LauncherCheck}) it has none: there is no class
-         * path, so every resolved type is from the JDK or from the analysed files.
-         */
-        private final boolean modules;
         private CompilationUnitTree unit;
         private String file;
 
@@ -169,14 +142,9 @@ final class SourceCheck {
             this.projectModules = projectModules;
             this.out = out;
             var javaBase = elements.getModuleElement("java.base");
-            this.modules = javaBase != null;
-            this.annotatedElement = jdkType(javaBase, "java.lang.reflect.AnnotatedElement");
-            this.annotation = jdkType(javaBase, "java.lang.annotation.Annotation");
-            this.annotatedType = jdkType(javaBase, "java.lang.reflect.AnnotatedType");
-        }
-
-        private TypeElement jdkType(ModuleElement javaBase, String name) {
-            return javaBase == null ? elements.getTypeElement(name) : elements.getTypeElement(javaBase, name);
+            this.annotatedElement = elements.getTypeElement(javaBase, "java.lang.reflect.AnnotatedElement");
+            this.annotation = elements.getTypeElement(javaBase, "java.lang.annotation.Annotation");
+            this.annotatedType = elements.getTypeElement(javaBase, "java.lang.reflect.AnnotatedType");
         }
 
         void scanUnit(CompilationUnitTree compilationUnit) {
@@ -241,10 +209,6 @@ final class SourceCheck {
             if (element == null || element.asType().getKind() == TypeKind.ERROR) {
                 return false;
             }
-            if (!modules) {
-                // No modules and no class path: whatever resolves is in the JDK or in these files.
-                return true;
-            }
             ModuleElement module = elements.getModuleOf(element);
             if (module == null) {
                 return false;
@@ -308,15 +272,7 @@ final class SourceCheck {
                     && (isSubtype(type, annotation) || isSubtype(type, annotatedType));
         }
 
-        /**
-         * Whether {@code owner} is a {@code java.base} type. Without modules ({@code --source 8})
-         * the package decides: only the JDK may define {@code java.*} packages (the runtime
-         * refuses to load such a class from anywhere else).
-         */
         private boolean isJavaBase(TypeElement owner) {
-            if (!modules) {
-                return elements.getPackageOf(owner).getQualifiedName().toString().startsWith("java.");
-            }
             var module = elements.getModuleOf(owner);
             return module != null && module.getQualifiedName().contentEquals("java.base");
         }

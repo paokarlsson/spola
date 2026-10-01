@@ -1,0 +1,11 @@
+fix(guardrails): report Java-readable .md files as UNCHECKABLE_SOURCE
+
+Documents are no longer analysed as Java. Any .md file that javac can
+read as Java in some encoding at some release now gets one
+UNCHECKABLE_SOURCE violation, closing the remaining MAJOR from the
+previous run. The oldest release is probed from javac instead of
+hard-coded, and fixture tree.txt files are checked as well.
+
+Gauntlet-Run: 20261001-2308-bygge-och-guardrails
+Gauntlet-Round: 1/5
+Gauntlet-Verdict: PASS (0 blocker, 0 major, 7 minor upheld)
