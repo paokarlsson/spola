@@ -1,0 +1,17 @@
+# Utgående trafik som brandväggen släpper igenom. En domän per rad.
+# GitHub hanteras separat (deras publicerade IP-intervall).
+# Ändra här och bygg om containern (eller kör: sudo /usr/local/bin/init-firewall.sh).
+
+# Claude Code
+api.anthropic.com
+claude.ai
+console.anthropic.com
+platform.claude.com
+statsig.com
+sentry.io
+registry.npmjs.org
+
+# VS Code
+marketplace.visualstudio.com
+vscode.blob.core.windows.net
+update.code.visualstudio.com

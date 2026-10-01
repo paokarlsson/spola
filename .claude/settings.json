@@ -1,0 +1,29 @@
+{
+  "permissions": {
+    "allow": [
+      "Read",
+      "Grep",
+      "Glob",
+      "Edit(gauntlet/**)",
+      "Write(gauntlet/**)",
+      "Edit(framework/**)",
+      "Write(framework/**)",
+      "Bash(ls:*)",
+      "Bash(cat:*)",
+      "Bash(mkdir:*)",
+      "Bash(date:*)",
+      "Bash(java:*)",
+      "Bash(javac:*)",
+      "Bash(jshell:*)",
+      "Bash(git status:*)",
+      "Bash(git diff:*)",
+      "Bash(git log:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Edit(uppdrag/**)",
+      "Write(uppdrag/**)",
+      "Bash(git stash:*)",
+      "Bash(git mv:*)"
+    ]
+  }
+}

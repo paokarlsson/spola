@@ -1,0 +1,7 @@
+gauntlet/runs/*/round-*/scratch-*/
+gauntlet/logs/
+.claude/settings.local.json
+framework/out/
+*.class
+.idea/
+gauntlet/STOP
