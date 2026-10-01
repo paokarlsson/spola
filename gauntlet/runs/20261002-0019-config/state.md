@@ -3,9 +3,10 @@ title: Config: type-safe configuration from files, env, args and profiles (spola
 mission_source: uppdrag/04-config.md
 max_rounds: 5
 round: 1
-next_step: 3d
-status: verifying
-green: –
-counts: –
+next_step: done
+status: PASS
+green: yes
+counts: 0 blocker, 0 major, 7 minor
 commits:
+  - round 1: 886a8f6
 stash: –
