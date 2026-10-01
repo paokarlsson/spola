@@ -1,0 +1,1 @@
+- 2026-10-01 23:05 · 20261001-2101-bygge-och-guardrails · EXHAUSTED · 5 rounds · Bygge och guardrails · commits: 57091c7, c8d7836, 4452cd7, 58db3ab, ad09875 · reason: one MAJOR left in round 5 (.md file parsed as Java is analysed at only one release); the judge ruled it must be reported as UNCHECKABLE_SOURCE
