@@ -1,0 +1,13 @@
+fix(build): let shutdown hooks run once the build has decided its exit
+
+The build's exit guard now halts only if the JVM is asked to exit before
+main has decided the result, so deleteOnExit and other shutdown hooks run
+normally. A build-time probe checks both paths in child JVMs. TestTool
+installs its guard before loading the entry and flushes buffered output
+before halting, and the duplicated describer logic is consolidated.
+
+Gauntlet-Run: 20261001-2323-testkorare
+Gauntlet-Round: 3/4
+Gauntlet-Verdict: PASS (0 blocker, 0 major, 4 minor upheld)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>

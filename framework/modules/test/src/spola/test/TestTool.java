@@ -26,8 +26,8 @@ import java.util.spi.ToolProvider;
  * <p>Exit codes: {@code 0} every test passed, {@code 1} a test or suite fixture failed (or no
  * test passed), {@code 2} usage error or the entry could not be called.
  *
- * <p>Fail closed: while the tests run, a shutdown hook is registered. If anything asks the
- * JVM to exit before the run is over (a test calling {@code System.exit(0)}, say), the hook
+ * <p>Fail closed: from the moment the entry method is called until the run is over, a
+ * shutdown hook is registered. If anything asks the JVM to exit before the run is over (a test calling {@code System.exit(0)}, say), the hook
  * prints that and halts the JVM with {@value #EXIT_DURING_RUN}, so the run can never end
  * green without its report. A test that calls {@code Runtime.halt} itself bypasses all
  * shutdown hooks and cannot be caught in process.
@@ -52,26 +52,35 @@ public final class TestTool implements ToolProvider {
     /**
      * {@inheritDoc}
      *
-     * <p>This overload collects the output and writes it to the writers when the run ends; the
-     * {@link PrintStream} overload, which the build uses, prints the report as it goes.
+     * <p>This overload collects the output and writes it to the writers when the run ends (or,
+     * if a test exits the JVM, just before the exit guard halts it); the {@link PrintStream}
+     * overload, which the build uses, prints the report as it goes.
      */
     @Override
     public int run(PrintWriter out, PrintWriter err, String... args) {
         var outBytes = new ByteArrayOutputStream();
         var errBytes = new ByteArrayOutputStream();
-        try (var outStream = new PrintStream(outBytes, true, StandardCharsets.UTF_8);
-             var errStream = new PrintStream(errBytes, true, StandardCharsets.UTF_8)) {
-            return run(outStream, errStream, args);
-        } finally {
+        Runnable copy = () -> {
             out.write(outBytes.toString(StandardCharsets.UTF_8));
             out.flush();
             err.write(errBytes.toString(StandardCharsets.UTF_8));
             err.flush();
+        };
+        try (var outStream = new PrintStream(outBytes, true, StandardCharsets.UTF_8);
+             var errStream = new PrintStream(errBytes, true, StandardCharsets.UTF_8)) {
+            return run(outStream, errStream, copy, args);
+        } finally {
+            copy.run();
         }
     }
 
     @Override
     public int run(PrintStream out, PrintStream err, String... args) {
+        return run(out, err, () -> { }, args);
+    }
+
+    /** Runs the entry; {@code beforeHalt} runs in the exit guard just before it halts. */
+    private int run(PrintStream out, PrintStream err, Runnable beforeHalt, String... args) {
         Entry entry;
         try {
             entry = Entry.parse(args);
@@ -80,27 +89,21 @@ public final class TestTool implements ToolProvider {
             err.println("usage: --module NAME --class CLASS --method METHOD");
             return 2;
         }
-        Suite suite;
+        // Installed before the entry is called, so an exit in the entry method or in a static
+        // initializer is caught too.
+        var guard = installExitGuard(out, err, entry, beforeHalt);
         try {
-            suite = entry.suite();
-        } catch (EntryException e) {
-            err.println("spola-test: test entry " + entry + ": " + e.getMessage());
-            if (e.getCause() != null) {
-                e.getCause().printStackTrace(err);
+            Suite suite;
+            try {
+                suite = entry.suite();
+            } catch (EntryException e) {
+                err.println("spola-test: test entry " + entry + ": " + e.getMessage());
+                if (e.getCause() != null) {
+                    e.getCause().printStackTrace(err);
+                }
+                return 2;
             }
-            return 2;
-        }
-        out.println("spola-test: running " + entry);
-        var guard = new Thread(() -> {
-            out.flush();
-            err.println();
-            err.println("spola-test: the JVM was asked to exit (System.exit?) while the tests of " + entry
-                    + " were running; the run is red (halting with status " + EXIT_DURING_RUN + ")");
-            err.flush();
-            Runtime.getRuntime().halt(EXIT_DURING_RUN);
-        }, "spola-test exit guard");
-        Runtime.getRuntime().addShutdownHook(guard);
-        try {
+            out.println("spola-test: running " + entry);
             return Runner.run(suite, out).success() ? 0 : 1;
         } finally {
             try {
@@ -109,6 +112,27 @@ public final class TestTool implements ToolProvider {
                 // The JVM is already exiting; the guard is running and halts it.
             }
         }
+    }
+
+    /**
+     * Registers the shutdown hook that makes an exit during the run red (status
+     * {@value #EXIT_DURING_RUN}). It exists so that the tool fails closed on its own, without
+     * the build. The build ({@code Build.java}) has a guard of its own for the whole build;
+     * when a test exits the JVM during the build, both run and whichever halts first sets the
+     * status (1 or 3). Both are red.
+     */
+    private static Thread installExitGuard(PrintStream out, PrintStream err, Entry entry, Runnable beforeHalt) {
+        var guard = new Thread(() -> {
+            out.flush();
+            err.println();
+            err.println("spola-test: the JVM was asked to exit (System.exit?) while the tests of " + entry
+                    + " were running; the run is red (halting with status " + EXIT_DURING_RUN + ")");
+            err.flush();
+            beforeHalt.run();
+            Runtime.getRuntime().halt(EXIT_DURING_RUN);
+        }, "spola-test exit guard");
+        Runtime.getRuntime().addShutdownHook(guard);
+        return guard;
     }
 
     /** A test entry that cannot be called. */

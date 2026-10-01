@@ -77,4 +77,15 @@ public final class SampleEntries {
                 test("exits", () -> System.exit(0)),
                 test("fails after", () -> Assertions.assertEquals("left", "right")));
     }
+
+    /**
+     * Not a usable entry: exits the JVM with status 0 while the suite is built. Only run in a
+     * child JVM (see {@link ExitProbe}).
+     *
+     * @return never returns
+     */
+    public static Suite exitingEntry() {
+        System.exit(0);
+        return suite("never");
+    }
 }

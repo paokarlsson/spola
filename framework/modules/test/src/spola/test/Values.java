@@ -6,6 +6,7 @@ import java.util.Collections;
 import java.util.IdentityHashMap;
 import java.util.Objects;
 import java.util.Set;
+import java.util.function.Function;
 import java.util.stream.Collectors;
 
 /** How values are shown in failure messages and test names. */
@@ -62,13 +63,16 @@ final class Values {
      * element is followed by its class.
      */
     static String[] describeBoth(Object expected, Object actual) {
-        var e = describe(expected);
-        var a = describe(actual);
-        if (e.equals(a) && !Objects.deepEquals(expected, actual)) {
-            e = describeTyped(expected);
-            a = describeTyped(actual);
-        }
-        return new String[] {e, a};
+        var show = describer(describe(expected).equals(describe(actual)) && !Objects.deepEquals(expected, actual));
+        return new String[] {show.apply(expected), show.apply(actual)};
+    }
+
+    /**
+     * The one rule for values that read the same although they differ: when {@code confusing}
+     * is true, {@link #describeTyped} (classes shown), otherwise {@link #describe}.
+     */
+    static Function<Object, String> describer(boolean confusing) {
+        return confusing ? Values::describeTyped : Values::describe;
     }
 
     private static String withClass(String description, Object value) {

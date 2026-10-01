@@ -1,0 +1,41 @@
+    ok      tests in nested suites run in order and carry their full path (3 ms)
+    ok      the report indents by depth (0 ms)
+    ok      a suite may hold the same test name as another suite (1 ms)
+    ok      sibling names must be unique (0 ms)
+    ok      names must not be blank or contain line breaks (0 ms)
+    ok      null parts are rejected when the tree is built (0 ms)
+    ok      suites are values: adding a fixture leaves the original unchanged (0 ms)
+  report
+    ok      one line per test with its status (2 ms)
+    ok      a failure shows the test's name, the expected and the actual value and a stack trace (1 ms)
+    ok      the summary counts tests by status and gives the time (3 ms)
+    ok      a green run says OK (1 ms)
+    ok      a run without a passing test is red (0 ms)
+    ok      a result carries a failure exactly when it failed (1 ms)
+  tool
+    ok      a green entry exits 0 and prints the report (1 ms)
+    ok      a red entry exits 1 and the report shows name, expected and actual (1 ms)
+    ok      the PrintWriter overload gives the same result (3 ms)
+    a System.exit(0) during the run makes it red instead of ending it green
+      ok      [1] in a test (105 ms)
+      ok      [2] in a test, PrintWriter overload (94 ms)
+      ok      [3] in the entry method (80 ms)
+    ok      the tool is named spola-test (0 ms)
+    a broken entry or command line exits 2 with a reason
+      ok      [1] wrong return type (0 ms)
+      ok      [2] instance method (0 ms)
+      ok      [3] missing method (0 ms)
+      ok      [4] throwing entry (0 ms)
+      ok      [5] null suite (0 ms)
+      ok      [6] missing class (0 ms)
+      ok      [7] missing module (2 ms)
+      ok      [8] missing option (0 ms)
+      ok      [9] unknown option (0 ms)
+      ok      [10] repeated option (0 ms)
+spola.test: OK - 77 tests, 77 ok, 0 failed, 0 skipped, 0 suite fixtures failed, in 2144 ms
+
+exit guard:
+  ok - after the decision: exit 0, other hooks and deleteOnExit ran
+  ok - before the decision: System.exit(0) ends red (exit 1)
+BUILD OK in 9277 ms
+exit=0

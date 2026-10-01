@@ -80,25 +80,35 @@ static volatile int decidedExitCode = -1;
 
 /// Fail closed: the build runs code it does not control (tests, guardrails) in this JVM. If
 /// anything asks the JVM to exit before `main` has decided the exit code (a test calling
-/// `System.exit(0)`, say), this hook makes the build red instead of letting it end with that
-/// status and without a verdict. After the decision it halts with the decided code, so a late
-/// `System.exit` from an abandoned test thread cannot change it either.
+/// `System.exit(0)`, say), this hook makes the build red: it halts with 1 instead of letting
+/// the JVM end with that status and without a verdict. Once `main` has decided, the hook does
+/// nothing, so the other shutdown hooks and the JDK's `deleteOnExit` cleanup run as usual. A
+/// late `System.exit` from an abandoned test thread cannot change the decided code: once
+/// shutdown has begun, further `System.exit` calls block.
+///
+/// `spola.test`'s `TestTool` has a guard of its own (halting with 3) while a module's tests
+/// run, so that the tool fails closed when used without this build too. When a test exits
+/// the JVM during the build, both guards run and whichever halts first sets the code (1 or
+/// 3); both are red, which is all that matters.
 void installExitGuard() {
     Runtime.getRuntime().addShutdownHook(new Thread(() -> {
-        int code = decidedExitCode;
-        if (code < 0) {
-            System.out.flush();
-            System.err.println();
-            System.err.println("BUILD RED: the JVM was asked to exit before the build finished"
-                    + " (System.exit in a test or tool?)");
-            System.err.flush();
-            code = 1;
+        if (decidedExitCode >= 0) {
+            return;
         }
-        Runtime.getRuntime().halt(code);
+        System.out.flush();
+        System.err.println();
+        System.err.println("BUILD RED: the JVM was asked to exit before the build finished"
+                + " (System.exit in a test or tool?)");
+        System.err.flush();
+        Runtime.getRuntime().halt(1);
     }, "build exit guard"));
 }
 
-void main() {
+void main(String[] args) {
+    if (args.length > 0 && args[0].equals(EXIT_GUARD_PROBE)) {
+        exitGuardProbe(args);
+        return;
+    }
     installExitGuard();
     var start = System.nanoTime();
     int exitCode;
@@ -139,6 +149,7 @@ void build() throws IOException {
     }
     runGuardrails();
     runTests(order);
+    checkExitGuard();
 }
 
 /// Reads `module-info.java` of every listed module and returns name -> required modules.
@@ -377,6 +388,86 @@ void runTests(List<ModuleDir> order) {
     if (!failed.isEmpty()) {
         throw new BuildFailure("tests failed in " + String.join(", ", failed) + " (see the reports above)");
     }
+}
+
+/// First argument that makes `java Build.java` run the exit-guard probe instead of building.
+static final String EXIT_GUARD_PROBE = "--exit-guard-probe";
+
+/// Checks the exit guard in two child JVMs (`java Build.java --exit-guard-probe ...`), since a
+/// shutdown hook can only be observed from outside: after `main` has decided, `System.exit`
+/// must end with the decided code and still run the other shutdown hooks and `deleteOnExit`;
+/// before it has decided, `System.exit(0)` must end red (1).
+void checkExitGuard() throws IOException {
+    System.out.println();
+    System.out.println("exit guard:");
+    var dir = Files.createTempDirectory("spola-exit-guard");
+    try {
+        var decided = probe("decided", dir);
+        var doomed = dir.resolve("decided", "delete-on-exit");
+        var marker = dir.resolve("decided", "hook-ran");
+        if (decided.exit() != 0 || Files.exists(doomed) || !Files.exists(marker)) {
+            throw new BuildFailure("exit guard: after the decision a System.exit(0) must exit 0 and let"
+                    + " the other shutdown hooks and deleteOnExit run; got exit " + decided.exit()
+                    + ", delete-on-exit " + (Files.exists(doomed) ? "left behind" : "deleted")
+                    + ", hook " + (Files.exists(marker) ? "ran" : "did not run")
+                    + "\n" + decided.output());
+        }
+        System.out.println("  ok - after the decision: exit 0, other hooks and deleteOnExit ran");
+        var undecided = probe("undecided", dir);
+        if (undecided.exit() != 1 || !undecided.output().contains("BUILD RED: the JVM was asked to exit")) {
+            throw new BuildFailure("exit guard: a System.exit(0) before the decision must exit 1; got exit "
+                    + undecided.exit() + "\n" + undecided.output());
+        }
+        System.out.println("  ok - before the decision: System.exit(0) ends red (exit 1)");
+    } finally {
+        deleteRecursively(dir);
+    }
+}
+
+record ProbeRun(int exit, String output) {
+}
+
+ProbeRun probe(String mode, Path dir) throws IOException {
+    var java = Path.of(System.getProperty("java.home"), "bin", "java").toString();
+    var process = new ProcessBuilder(java, "Build.java", EXIT_GUARD_PROBE, mode, dir.toString())
+            .redirectErrorStream(true)
+            .start();
+    process.getOutputStream().close();
+    var output = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+    try {
+        return new ProbeRun(process.waitFor(), output);
+    } catch (InterruptedException e) {
+        Thread.currentThread().interrupt();
+        throw new BuildFailure("interrupted while waiting for the exit-guard probe");
+    }
+}
+
+/// The child side of `checkExitGuard`: `--exit-guard-probe decided|undecided DIR`. Installs
+/// the guard, a `deleteOnExit` file and an application hook that leaves a marker, then calls
+/// `System.exit(0)`, with or without a decided exit code.
+void exitGuardProbe(String[] args) {
+    var dir = Path.of(args[2]).resolve(args[1]);
+    try {
+        installExitGuard();
+        Files.createDirectories(dir);
+        var doomed = Files.createFile(dir.resolve("delete-on-exit"));
+        doomed.toFile().deleteOnExit();
+        var marker = dir.resolve("hook-ran");
+        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+            try {
+                Thread.sleep(200); // give a halting guard every chance to cut this hook off
+                Files.createFile(marker);
+            } catch (IOException | InterruptedException e) {
+                throw new IllegalStateException(e);
+            }
+        }, "probe hook"));
+    } catch (IOException e) {
+        throw new UncheckedIOException(e);
+    }
+    if (args[1].equals("decided")) {
+        decidedExitCode = 0;
+    }
+    System.exit(0);
 }
 
 /// The ToolProvider named `name` that `module` (in `layer`) provides.

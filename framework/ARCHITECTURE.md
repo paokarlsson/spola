@@ -284,13 +284,24 @@ Beslut:
   vid `null`. `assertEquals(0, 0L)` fallerar redan (säkert håll) och visar klasserna.
 - **Fail closed vid `System.exit`.** Testerna körs i byggets JVM. Ett test som anropar
   `System.exit(0)` skulle annars avsluta bygget med 0 utan rapport. Två shutdown hooks:
-  `TestTool` registrerar en under körningen som skriver vilken testingång som kördes och
-  stoppar JVM:en med `Runtime.halt(3)` (`TestTool.EXIT_DURING_RUN`); `Build.java` har en
-  under hela bygget som stoppar med 1 om `main` inte har bestämt exitkoden, och annars med
-  den bestämda koden (så att en sen `System.exit` från en övergiven testtråd inte kan ändra
-  den). `halt` i en hook hoppar över övriga hooks, vilket är avsikten. Testat i en barn-JVM
-  (`ExitProbe`, `ToolTests`). Barn-JVM per modul valdes bort: långsammare, och skyddet mot
-  `Runtime.halt(0)`, det enda hooks inte fångar, är ingen rimlig risk i god tro.
+  `TestTool` registrerar en från det att testingången anropas tills körningen är slut (så
+  att även `System.exit` i ingångsmetoden eller en statisk initierare fångas). Den skriver
+  vilken testingång som kördes (i `PrintWriter`-överlagringen kopieras den buffrade
+  utskriften till anroparens writers först) och stoppar JVM:en med `Runtime.halt(3)`
+  (`TestTool.EXIT_DURING_RUN`). Den finns så att verktyget är fail closed även utan bygget.
+  `Build.java` har en under hela bygget som stoppar med 1 om `main` inte har bestämt
+  exitkoden. Har `main` bestämt koden gör den ingenting: övriga shutdown hooks och JDK:ns
+  `deleteOnExit`-städning ska få gå klart (en `halt` där skulle tyst skippa dem vid varje
+  bygge). En sen `System.exit` från en övergiven testtråd kan ändå inte ändra koden, eftersom
+  ytterligare `System.exit`-anrop blockerar när nedstängningen väl har börjat. Om ett test
+  avslutar JVM:en under bygget går båda hookarna, och den som hinner först bestämmer koden (1
+  eller 3); båda är röda. Testat i barn-JVM:ar: `ExitProbe`/`ToolTests` för `TestTool` (i
+  ett test, i ingångsmetoden, via `PrintWriter`-överlagringen) och `checkExitGuard` i
+  `Build.java` (`java Build.java --exit-guard-probe ...`), som efter testerna kontrollerar
+  att `System.exit(0)` efter beslutet ger 0 och låter en annan hook och `deleteOnExit` gå,
+  och att `System.exit(0)` före beslutet ger 1. Barn-JVM per modul valdes bort:
+  långsammare, och skyddet mot `Runtime.halt(0)`, det enda hooks inte fångar, är ingen
+  rimlig risk i god tro.
 - **Testkällor hör till modulen.** `modules/<m>/test/` har samma paket som modulen och ingen
   `module-info.java`, så testerna når paketprivat kod. Bygget kompilerar `src` + `test`
   tillsammans till `out/test-classes/<m>` med `--add-modules spola.test --add-reads

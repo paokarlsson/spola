@@ -41,15 +41,19 @@
   `module-info.java`) och en explicit testingång i `Build.java` (`TestEntry(klass, metod)`).
   Bygget kompilerar modulen med testerna till `out/test-classes/`, kör guardrails (som också
   kontrollerar testkällor och testbytekod) och kör sedan alla modulers tester; ett
-  fallerande test ger rött bygge.
+  fallerande test ger rött bygge. Sist kontrollerar bygget sin egen exit-vakt i två
+  barn-JVM:ar (`java Build.java --exit-guard-probe ...`): efter beslutet får andra shutdown
+  hooks och `deleteOnExit` gå klart, före beslutet ger `System.exit(0)` rött.
 - Guardrails självtest är flyttat till `GuardrailsTests` (ett test per kontroll, ett
   parametriserat fall per fixture) och körs av `spola.test`; `GuardrailsTool selftest` är
   borttaget. Guardrails `Project` har fått testkällor (`tests`, `testReads`) och
   `GuardrailsTool check` flaggorna `--tests` och `--test-reads`.
-- Körarens egna tester: 75 tester (assertions, fixtures, parametrisering, timeout, nästlade
-  sviter, rapport, `TestTool`, inklusive `System.exit` i ett test i en barn-JVM).
+- Körarens egna tester: 77 tester (assertions, fixtures, parametrisering, timeout, nästlade
+  sviter, rapport, `TestTool`, inklusive `System.exit` i ett test, i ingångsmetoden och via
+  `PrintWriter`-överlagringen, i barn-JVM:ar).
   Guardrails: 17 tester.
-- Bygget tar ungefär 6–7 s (testerna ungefär 2 s, varav timeout-testerna 1,7 s).
+- Bygget tar ungefär 9 s (testerna ungefär 2 s, varav timeout-testerna 1,7 s; exit-vaktens
+  två barn-JVM:ar ungefär 2–3 s).
 
 ## Återstår (enligt `uppdrag/PLAN.md`)
 - 03–20 enligt planen.

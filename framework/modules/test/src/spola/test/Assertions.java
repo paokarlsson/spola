@@ -6,7 +6,6 @@ import java.util.Arrays;
 import java.util.Collection;
 import java.util.List;
 import java.util.Objects;
-import java.util.function.Function;
 
 /**
  * Assertions for tests, meant to be imported statically. A failed assertion throws an
@@ -315,7 +314,7 @@ public final class Assertions {
             // Elements that read like one that is there (1 and 1L) are shown with their classes.
             boolean confusing = missing.stream().anyMatch(m -> actual.stream()
                     .anyMatch(a -> Values.describe(a).equals(Values.describe(m))));
-            Function<Object, String> show = confusing ? Values::describeTyped : Values::describe;
+            var show = Values.describer(confusing);
             throw new AssertionFailure("collection lacks " + show.apply(missing),
                     "contains " + show.apply(Arrays.asList(elements)), show.apply(actual), null);
         }
@@ -369,7 +368,7 @@ public final class Assertions {
         if (!missing.isEmpty() || !unexpected.isEmpty()) {
             // Elements that read the same although they differ (1 and 1L) are shown with their classes.
             boolean confusing = Values.describe(missing).equals(Values.describe(unexpected));
-            Function<Object, String> show = confusing ? Values::describeTyped : Values::describe;
+            var show = Values.describer(confusing);
             throw new AssertionFailure("collections differ: missing " + show.apply(missing) + ", unexpected "
                     + show.apply(unexpected), show.apply(expected), show.apply(actual), null);
         }
