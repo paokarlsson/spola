@@ -13,7 +13,8 @@ import java.util.TreeMap;
  * @param root     the directory to check, normally {@code framework/}
  * @param output   the build output directory, the only place jar files may live
  * @param excluded directories left out of the source, bytecode and dependency checks
- *                 (the guardrails fixtures); the file check still covers them
+ *                 (the directories of the listed guardrails fixtures, see
+ *                 {@code Fixtures.directories}); the file check still covers them
  * @param modules  project module name to its source directory (the directory holding
  *                 {@code module-info.java}); these modules may be required and imported
  */

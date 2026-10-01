@@ -94,7 +94,9 @@ final class SourceCheck {
                     .filter(d -> d.getKind() == Diagnostic.Kind.ERROR)
                     .map(d -> describe(root, d))
                     .toList();
-            return new Outcome(List.copyOf(violations), errors);
+            // javac's generated record members (canonical constructor, accessors) share the
+            // component's annotation trees, so one annotation can be visited more than once.
+            return new Outcome(violations.stream().distinct().toList(), errors);
         } catch (IOException e) {
             throw new UncheckedIOException(e);
         }
@@ -104,6 +106,18 @@ final class SourceCheck {
         var source = d.getSource() == null ? "<javac>" : FileTree.relative(root, Path.of(d.getSource().toUri()));
         return source + ":" + d.getLineNumber() + ": " + d.getMessage(Locale.ROOT);
     }
+
+    /**
+     * {@code AnnotatedElement.isAnnotationPresent}: reads an annotation but returns a
+     * {@code boolean}, so the return-type criterion below does not catch it.
+     */
+    private static final String IS_ANNOTATION_PRESENT = "isAnnotationPresent";
+
+    /**
+     * {@code Method.getDefaultValue}: reads the default of an annotation element but returns
+     * {@code Object}, so the return-type criterion below does not catch it.
+     */
+    private static final String GET_DEFAULT_VALUE = "getDefaultValue";
 
     private static final class Scanner extends TreePathScanner<Void, Void> {
         private final Path root;
@@ -244,10 +258,10 @@ final class SourceCheck {
                 return false;
             }
             var name = method.getSimpleName().toString();
-            if (name.equals("isAnnotationPresent")) {
+            if (name.equals(IS_ANNOTATION_PRESENT)) {
                 return isSubtype(owner.asType(), annotatedElement);
             }
-            if (name.equals("getDefaultValue")) {
+            if (name.equals(GET_DEFAULT_VALUE)) {
                 return owner.getQualifiedName().contentEquals("java.lang.reflect.Method");
             }
             TypeMirror type = types.erasure(method.getReturnType());

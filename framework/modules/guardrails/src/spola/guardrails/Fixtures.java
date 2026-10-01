@@ -1,5 +1,6 @@
 package spola.guardrails;
 
+import java.nio.file.Path;
 import java.util.List;
 
 /**
@@ -32,6 +33,24 @@ final class Fixtures {
                     source("fx/User.java", 13, Rule.ANNOTATION_NOT_ALLOWED, "@fx.Tag"))),
 
             new Fixture("bytecode-annotation", Fixture.Kind.BYTECODE, List.of(
+                    // Source check of the fixture's files (every fixture .java file is source-checked).
+                    source("fx/Marker.java", 11, Rule.ANNOTATION_NOT_ALLOWED, "@java.lang.annotation.Retention"),
+                    source("fx/Marker.java", 12, Rule.ANNOTATION_DECLARATION, "@interface fx.Marker.Visible"),
+                    source("fx/Marker.java", 15, Rule.ANNOTATION_NOT_ALLOWED, "@java.lang.annotation.Retention"),
+                    source("fx/Marker.java", 16, Rule.ANNOTATION_DECLARATION, "@interface fx.Marker.Invisible"),
+                    source("fx/Marker.java", 19, Rule.ANNOTATION_NOT_ALLOWED, "@java.lang.annotation.Retention"),
+                    source("fx/Marker.java", 20, Rule.ANNOTATION_NOT_ALLOWED, "@java.lang.annotation.Target"),
+                    source("fx/Marker.java", 21, Rule.ANNOTATION_DECLARATION, "@interface fx.Marker.Param"),
+                    source("fx/Marker.java", 24, Rule.ANNOTATION_NOT_ALLOWED, "@java.lang.annotation.Retention"),
+                    source("fx/Marker.java", 25, Rule.ANNOTATION_NOT_ALLOWED, "@java.lang.annotation.Target"),
+                    source("fx/Marker.java", 26, Rule.ANNOTATION_DECLARATION, "@interface fx.Marker.TypeUse"),
+                    source("fx/Marked.java", 5, Rule.ANNOTATION_NOT_ALLOWED, "@fx.Marker.Visible"),
+                    source("fx/Marked.java", 9, Rule.ANNOTATION_NOT_ALLOWED, "@fx.Marker.Invisible"),
+                    source("fx/Marked.java", 12, Rule.ANNOTATION_NOT_ALLOWED, "@fx.Marker.TypeUse"),
+                    source("fx/Marked.java", 14, Rule.ANNOTATION_NOT_ALLOWED, "@fx.Marker.Visible"),
+                    source("fx/Marked.java", 15, Rule.ANNOTATION_NOT_ALLOWED, "@fx.Marker.Param"),
+                    source("fx/Marked.java", 17, Rule.ANNOTATION_NOT_ALLOWED, "@fx.Marker.TypeUse"),
+                    source("fx/Marked.java", 21, Rule.ANNOTATION_NOT_ALLOWED, "@fx.Marker.Invisible"),
                     // The annotation types themselves and their meta-annotations.
                     bytecode("fx/Marker$Visible.class", Rule.ANNOTATION_DECLARATION, "@interface fx.Marker$Visible", "class"),
                     bytecode("fx/Marker$Visible.class", Rule.ANNOTATION_NOT_ALLOWED, "@java.lang.annotation.Retention", "class"),
@@ -105,7 +124,16 @@ final class Fixtures {
                     // Archives that package Java code like a jar; out/allowed.jmod is allowed.
                     file("vendor/jdk.foo.jmod", Rule.FOREIGN_JAR),
                     file("deploy/app.war", Rule.FOREIGN_JAR),
-                    file("deploy/app.ear", Rule.FOREIGN_JAR))),
+                    file("deploy/app.ear", Rule.FOREIGN_JAR),
+                    // Recognised by content, whatever the name; zips without Java code are allowed.
+                    file("lib/thing.zip", Rule.FOREIGN_JAR),
+                    file("lib/thing", Rule.FOREIGN_JAR),
+                    file("lib/manifest-only.zip", Rule.FOREIGN_JAR),
+                    file("lib/hidden.dat", Rule.FOREIGN_JAR),
+                    file("lib/nested.zip", Rule.FOREIGN_JAR),
+                    file("lib/bundle.zip", Rule.FOREIGN_JAR),
+                    file("bin/run.sh", Rule.FOREIGN_JAR),
+                    file("vendor/sdk", Rule.FOREIGN_JAR))),
 
             new Fixture("foreign-build-file", Fixture.Kind.FILES, List.of(
                     // docs/pom.xml.md is not a build file: allowed.
@@ -117,7 +145,14 @@ final class Fixtures {
                     // Bazel and Make; docs/building.md is not a build file: allowed.
                     file("third_party/BUILD", Rule.FOREIGN_BUILD_FILE),
                     file("MODULE.bazel", Rule.FOREIGN_BUILD_FILE),
-                    file("Makefile", Rule.FOREIGN_BUILD_FILE))),
+                    file("Makefile", Rule.FOREIGN_BUILD_FILE),
+                    // Mill, Buck, Pants, version catalogs and the tool directories; docs/mvn/ is allowed.
+                    file("build.mill", Rule.FOREIGN_BUILD_FILE),
+                    file("tools/BUCK", Rule.FOREIGN_BUILD_FILE),
+                    file("pants.toml", Rule.FOREIGN_BUILD_FILE),
+                    file("gradle/libs.versions.toml", Rule.FOREIGN_BUILD_FILE),
+                    file(".mvn/jvm.config", Rule.FOREIGN_BUILD_FILE),
+                    file(".gradle/8.0/checksums.lock", Rule.FOREIGN_BUILD_FILE))),
 
             new Fixture("symbolic-link", Fixture.Kind.FILES, List.of(
                     // vendor/** are regular files and a directory: allowed.
@@ -126,6 +161,15 @@ final class Fixtures {
                     file("lib/x.jar", Rule.FOREIGN_JAR),
                     file("modules/b/lib", Rule.SYMBOLIC_LINK),
                     file("dangling.txt", Rule.SYMBOLIC_LINK))));
+
+    /**
+     * The directories of all listed fixtures below {@code fixturesDir}. Only these are left
+     * out of the main check; anything else below {@code fixturesDir} is checked like any
+     * other file (and fails the self-test).
+     */
+    static List<Path> directories(Path fixturesDir) {
+        return ALL.stream().map(fixture -> fixturesDir.resolve(fixture.name())).toList();
+    }
 
     private static Violation source(String file, int line, Rule rule, String subject) {
         return new Violation(file, line, rule, subject, "");

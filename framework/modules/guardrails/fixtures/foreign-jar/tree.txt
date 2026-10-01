@@ -10,3 +10,19 @@ vendor/jdk.foo.jmod
 deploy/app.war
 deploy/app.ear
 out/allowed.jmod
+# Archives recognised by content: "path = CONTENT" makes the self-test generate the file
+# (see SelfTest.content). A zip that holds compiled code, a manifest or another archive is a
+# jar whatever its name.
+lib/thing.zip = zip(META-INF/MANIFEST.MF, fx/A.class)
+lib/thing = zip(fx/A.class)
+lib/manifest-only.zip = zip(META-INF/MANIFEST.MF)
+lib/hidden.dat = zip(data/blob.bin = class)
+lib/nested.zip = zip(readme.txt, inner.bin = zip(fx/A.class))
+lib/bundle.zip = zip(libs/dep.jar)
+bin/run.sh = script+zip(fx/A.class)
+vendor/sdk = jmod(classes/fx/A.class)
+# Zip files without Java code, and anything in out/: allowed.
+testdata/data.zip = zip(a.txt, b/c.json)
+testdata/empty.zip = zip()
+testdata/nested.zip = zip(inner.zip = zip(x.txt))
+out/lib.zip = zip(fx/A.class)

@@ -10,3 +10,12 @@ third_party/BUILD
 MODULE.bazel
 Makefile
 docs/building.md
+# Mill, Buck, Pants, Gradle version catalogs and the tool directories .mvn/ and .gradle/.
+build.mill
+tools/BUCK
+pants.toml
+gradle/libs.versions.toml
+.mvn/jvm.config
+.gradle/8.0/checksums.lock
+# A directory merely named like a tool is fine when it is not one of the tool directories.
+docs/mvn/notes.md

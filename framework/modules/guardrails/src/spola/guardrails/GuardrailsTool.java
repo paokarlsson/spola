@@ -19,7 +19,7 @@ import java.util.spi.ToolProvider;
  *
  * <p>Commands:
  * <pre>
- * check    --root DIR --output DIR [--exclude DIR]... [--module NAME=SRCDIR]...
+ * check    --root DIR --output DIR [--fixtures DIR] [--module NAME=SRCDIR]...
  * selftest --fixtures DIR --rules REGLER.md
  * </pre>
  * Relative paths are resolved against the current directory. Exit codes: {@code 0} clean,
@@ -75,7 +75,7 @@ public final class GuardrailsTool implements ToolProvider {
             };
         } catch (IllegalArgumentException e) {
             err.println("guardrails: " + e.getMessage());
-            err.println("usage: check --root DIR --output DIR [--exclude DIR]... [--module NAME=SRCDIR]...");
+            err.println("usage: check --root DIR --output DIR [--fixtures DIR] [--module NAME=SRCDIR]...");
             err.println("       selftest --fixtures DIR --rules REGLER.md");
             return 2;
         } catch (IllegalStateException | UncheckedIOException e) {
@@ -93,8 +93,11 @@ public final class GuardrailsTool implements ToolProvider {
             }
             modules.put(module.substring(0, eq), Path.of(module.substring(eq + 1)));
         }
-        var project = new Project(options.path("--root"), options.path("--output"),
-                options.all("--exclude").stream().map(Path::of).toList(), modules);
+        // Only the directories of the listed fixtures are left out, nothing else below --fixtures.
+        var excluded = options.all("--fixtures").stream()
+                .flatMap(dir -> Fixtures.directories(Path.of(dir)).stream())
+                .toList();
+        var project = new Project(options.path("--root"), options.path("--output"), excluded, modules);
         var violations = Guardrails.check(project, out);
         if (violations.isEmpty()) {
             out.println("guardrails: no violations");

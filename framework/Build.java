@@ -227,7 +227,7 @@ void runGuardrails() {
             .orElseThrow(() -> new BuildFailure("spola.guardrails provides no ToolProvider named spola-guardrails"));
 
     var check = new ArrayList<>(List.of("check", "--root", ".", "--output", OUT.toString(),
-            "--exclude", FIXTURES.toString()));
+            "--fixtures", FIXTURES.toString()));
     for (var module : MODULES) {
         check.addAll(List.of("--module", module.name() + "=" + module.sources()));
     }

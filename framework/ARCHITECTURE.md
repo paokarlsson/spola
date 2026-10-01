@@ -68,7 +68,7 @@ Kontroller (paketprivata klasser):
 | `SourceCheck` | `JavacTask.parse()` + `analyze()` (attribuering), `TreePathScanner`, `Trees.getElement` | annotering utanför tillåtelselistan (fullt kvalificerat namn efter attribuering, så en egen `Override` skiljs från `java.lang.Override`), annoteringar som inte går att lösa upp, `@interface`, import från annat än JDK/projekt, läsning av annoteringar via reflektion: anrop och method references till `java.base`-metoder vars returtyp (efter erasure, även arrayer) är `Annotation` eller `AnnotatedType`, samt `isAnnotationPresent` och `Method.getDefaultValue` |
 | `BytecodeCheck` | `java.lang.classfile` | `Runtime(In)Visible{,Parameter,Type}Annotations` på klass, fält, metod, record-komponent och i `Code` (typannoteringar i metodkroppar), `AnnotationDefault`, nästlade annoteringar, klasser med `ACC_ANNOTATION` |
 | `DependencyCheck` | `module-info.class` → `ModuleAttribute` | `requires` (även `static`/`transitive`) som varken är JDK-modul eller projektmodul |
-| `FileCheck` | filträd inklusive länkar | `.jar`, `.jmod`, `.war`, `.ear` (skiftlägesokänsligt) utanför `out/`; byggfiler från Maven, Gradle, Ant, Ivy, Bazel, sbt och Make (`pom.xml`, `build.gradle(.kts)`, `settings.gradle(.kts)`, `gradlew`, `mvnw`, `build.xml`, `BUILD`, `MODULE.bazel`, `Makefile`, …); varje symbolisk länk |
+| `FileCheck` | filträd inklusive länkar; innehållet i zip-filer (`java.util.zip`) | jar-arkiv utanför `out/`: efter namn (`.jar`, `.jmod`, `.war`, `.ear`, skiftlägesokänsligt) **och** efter innehåll (en zip-fil med vilket namn som helst, även med skript eller jmod-huvud framför, som innehåller en `.class`-post, en post som börjar med class-filens magiska tal, `META-INF/MANIFEST.MF`, ett arkiv efter namn eller en nästlad zip med något av detta); byggfiler från Maven, Gradle, Ant, Ivy, Bazel, Buck, Pants, Mill, sbt och Make (`pom.xml`, `build.gradle(.kts)`, `gradlew`, `mvnw`, `libs.versions.toml`, `build.xml`, `BUILD`, `BUCK`, `pants.toml`, `build.mill`, `Makefile`, …) samt alla filer under `.mvn/`, `.gradle/`, `.mill/`, `.bsp/`; varje symbolisk länk |
 
 Beslut:
 
@@ -87,9 +87,22 @@ Beslut:
   modulen, så att två skript i olika kataloger får ha samma klassnamn. En `module-info.java`
   utanför de listade modulerna är ett fel med tydligt meddelande ("lägg till modulen i
   `MODULES`").
-- **Vad som undantas:** fixtures-katalogen undantas från käll-, bytekod- och
-  beroendekontrollen men *inte* från filkontrollen. `out/` undantas från källkontrollen och
-  är den enda plats där `.jar` får finnas.
+- **Vad som undantas:** bara katalogerna för de fixtures som står i `Fixtures.ALL`
+  (`Fixtures.directories`, via `check --fixtures DIR`) undantas från käll-, bytekod- och
+  beroendekontrollen, aldrig från filkontrollen. Allt annat under `fixtures/` (en lös
+  `.java` direkt i katalogen, en olistad katalog) kontrolleras som vanligt. Självtestet
+  ansvarar för allt i de undantagna katalogerna: varje fil där måste användas av sin fixture
+  (`Fixture.uses`: `.java` för `SOURCE`/`BYTECODE`, `src/**.java` för `DEPENDENCIES`,
+  `tree.txt` för `FILES`), och varje `.java` i en fixture källkontrolleras med exakt angivna
+  förväntningar. `out/` undantas från källkontrollen och är den enda plats där jar-arkiv får
+  finnas.
+- **Jar-arkiv känns igen på innehåll, inte bara namn.** En omdöpt jar (`.zip`, utan
+  filändelse, med ett skript framför) är lika mycket vendorad kod. Zip-filer utan Java-kod
+  (testdata) är tillåtna. `ZipFile` hittar centralkatalogen från filens slut, så data framför
+  arkivet döljer det inte; nästlade arkiv läses med `ZipInputStream` upp till 8 nivåer, och
+  djupare nästling räknas som Java-kod.
+- **Class-filer känns igen på innehåll:** bytekodkontrollen läser varje fil som slutar på
+  `.class` *eller* börjar med `CAFEBABE`, så en omdöpt class-fil kontrolleras också.
 - **Symboliska länkar är förbjudna** (regel `SYMBOLIC_LINK`, REGLER §1). Ingen kontroll
   följer länkar, så det som en länk pekar på (en jar utanför repot, en `.java` med otillåtna
   annoteringar) skulle annars passera okontrollerat. Filkontrollen listar därför alla
@@ -116,12 +129,19 @@ modules/x/src/spola/x/Marker.java:3: ANNOTATION_DECLARATION (REGLER.md 2. Annote
   `modules/guardrails/fixtures/`), typ och **exakt** vilka överträdelser den ska ge (fil, rad,
   regel, subjekt, plats). Självtestet jämför som multimängder: både saknade och oväntade
   överträdelser ger rött bygge. En fixture utan förväntade överträdelser är också ett fel,
-  liksom en fixture-katalog som inte finns i listan.
-- Typer: `SOURCE` (källkontroll direkt på filerna), `BYTECODE` (kompileras till en
-  temporär katalog, bytekodkontroll), `DEPENDENCIES` (`src/` kompileras som moduler till en
-  temporär katalog, beroendekontroll), `FILES` (varje rad i `tree.txt` skapas som tom fil i
-  en temporär katalog, filkontroll). `tree.txt` kan också beskriva kataloger (`dir/`) och
-  symboliska länkar (`sökväg -> mål`).
+  liksom en fixture-katalog som inte finns i listan, en fil direkt i `fixtures/` och en fil
+  i en fixture-katalog som fixturen inte använder.
+- Typer: `SOURCE` (källkontroll direkt på filerna), `BYTECODE` (källkontroll, sedan
+  kompilering till en temporär katalog och bytekodkontroll), `DEPENDENCIES` (källkontroll av
+  `src/`, sedan kompilering som moduler och beroende- och bytekodkontroll), `FILES` (varje
+  rad i `tree.txt` skapas i en temporär katalog, filkontroll). `tree.txt` kan beskriva tomma
+  filer, kataloger (`dir/`), symboliska länkar (`sökväg -> mål`) och genererat innehåll
+  (`sökväg = zip(post, post = class, ...)`, `jmod(...)`, `script+zip(...)`, `class`), så att
+  inga riktiga arkiv eller class-filer checkas in.
+- Självtestet testar också sig självt: `layoutProblems` körs mot ett temporärt träd med
+  lösa filer av alla slag, och `Guardrails.check` körs mot ett temporärt projekt med en
+  `@interface` direkt under `fixtures/`, i en olistad katalog (båda ska rapporteras) och i
+  en listad fixture-katalog (ska inte rapporteras).
 - Radnumren i `Fixtures.ALL` gäller fixture-filerna som de är. Ändras en fixture-fil ska
   numren uppdateras i samma ändring; självtestet skriver ut de faktiska raderna.
 - **Inga riktiga `.jar`- eller byggfiler i repot, inte ens som fixtures.** Fixtures för

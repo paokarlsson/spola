@@ -1,0 +1,13 @@
+fix(guardrails): check fixture roots and detect renamed jars by content
+
+Only the fixture directories listed in Fixtures.ALL are now exempt, so
+loose files under fixtures/ are checked. Archives holding compiled code
+are flagged regardless of name, and renamed .class files are found by
+magic number. More build-tool files (Mill, Buck, Pants, .mvn, .gradle) are
+caught. Still open: shebang Java scripts without .java skip the source check.
+
+Gauntlet-Run: 20261001-2101-bygge-och-guardrails
+Gauntlet-Round: 3/5
+Gauntlet-Verdict: FAIL (0 blocker, 1 major, 6 minor upheld)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>

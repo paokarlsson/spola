@@ -17,9 +17,14 @@ public enum Rule {
     FOREIGN_IMPORT("1. Inga tredjepartsberoenden", "only JDK and project packages may be imported"),
     /** §1: a module may only require JDK modules and project modules. */
     FOREIGN_REQUIRES("1. Inga tredjepartsberoenden", "only JDK modules and project modules may be required"),
-    /** §1: jar archives ({@code .jar}, {@code .jmod}, {@code .war}, {@code .ear}) may only exist in the build output directory. */
+    /**
+     * §1: jar archives may only exist in the build output directory. An archive is a jar by
+     * name ({@code .jar}, {@code .jmod}, {@code .war}, {@code .ear}) or by content (a zip file
+     * with compiled Java code, a manifest or a nested archive, whatever its name).
+     */
     FOREIGN_JAR("1. Inga tredjepartsberoenden",
-            "no jar/jmod/war/ear archives outside the build output directory (framework/out/)"),
+            "no jar archives (jar/jmod/war/ear by name, or any zip holding Java code) outside the"
+                    + " build output directory (framework/out/)"),
     /** §1: no build files from Maven, Gradle or other third-party build tools. */
     FOREIGN_BUILD_FILE("1. Inga tredjepartsberoenden", "no files from Maven, Gradle or other third-party build tools"),
     /**

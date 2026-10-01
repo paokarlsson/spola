@@ -4,10 +4,12 @@ import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.file.FileVisitResult;
 import java.nio.file.Files;
+import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.nio.file.SimpleFileVisitor;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Comparator;
 import java.util.List;
 import java.util.function.Predicate;
@@ -64,6 +66,15 @@ final class FileTree {
 
     static boolean hasExtension(Path file, String extension) {
         return file.getFileName().toString().endsWith(extension);
+    }
+
+    /** Whether the regular file {@code file} begins with the bytes {@code magic}. */
+    static boolean startsWith(Path file, byte[] magic) {
+        try (var in = Files.newInputStream(file, LinkOption.NOFOLLOW_LINKS)) {
+            return Arrays.equals(in.readNBytes(magic.length), magic);
+        } catch (IOException e) {
+            throw new UncheckedIOException("cannot read " + file, e);
+        }
     }
 
     /** {@code file} relative to {@code root}, with {@code /} as separator. */
