@@ -1,0 +1,8 @@
+# Fixture: files the self-test creates (empty) in a scratch directory before running the
+# file check. Real build files are never committed, not even as fixtures.
+pom.xml
+modules/a/build.gradle
+modules/b/build.gradle.kts
+settings.gradle
+build.xml
+docs/pom.xml.md

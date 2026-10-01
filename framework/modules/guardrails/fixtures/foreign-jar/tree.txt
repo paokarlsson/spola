@@ -1,0 +1,8 @@
+# Fixture: files the self-test creates (empty) in a scratch directory before running the
+# file check. Real jar files are never committed, not even as fixtures.
+# Output directory of the scratch tree is "out/".
+lib/x.jar
+modules/demo/libs/Thing.JAR
+out/allowed.jar
+out/nested/also-allowed.jar
+notes/jar-files.txt

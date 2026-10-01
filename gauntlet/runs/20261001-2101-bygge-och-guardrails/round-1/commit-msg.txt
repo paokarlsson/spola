@@ -1,0 +1,12 @@
+build(guardrails): add Build.java and the spola.guardrails checks
+
+Add a dependency-free Build.java that compiles the JPMS modules and runs
+the spola.guardrails checks on every build: source, bytecode and file
+checks that enforce REGLER.md, plus self-verifying fixtures. Symlinked
+jars/sources and getParameterAnnotations still get through (3 major).
+
+Gauntlet-Run: 20261001-2101-bygge-och-guardrails
+Gauntlet-Round: 1/5
+Gauntlet-Verdict: FAIL (0 blocker, 3 major, 10 minor upheld)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
