@@ -208,8 +208,9 @@ final class SelfTest {
                     if (!inputs.contains(file)) {
                         problems.add(FileTree.relative(fixturesDir, file) + ": not used by fixture " + name
                                 + " (" + fixture.get().kind() + ")");
-                    } else if (!isText(file)) {
+                    } else if (fixture.get().kind() != Fixture.Kind.LAUNCHER && !isText(file)) {
                         // A class file or archive named .java would only produce javac errors.
+                        // LAUNCHER inputs may be any bytes: that check reads them in every charset.
                         problems.add(FileTree.relative(fixturesDir, file) + ": not a UTF-8 text file");
                     }
                 }

@@ -34,14 +34,15 @@ public enum Rule {
     SYMBOLIC_LINK("1. Inga tredjepartsberoenden",
             "no symbolic links; they can bring in unchecked code or jars from outside the tree"),
     /**
-     * §1 and §2: no Java code the source check cannot analyse: jshell scripts ({@code .jsh}),
-     * and launcher programs without the {@code .java} extension (a {@code #!} script, or any
-     * file javac parses) that javac cannot read, parse or attribute. Such code could hide
-     * annotations, {@code @interface} declarations or third-party imports.
+     * §1 and §2: no Java code the source check cannot analyse. The source launcher and jshell
+     * run files of any name, so besides {@code .java} sources only documents ({@code .md}) may
+     * exist outside the build output; and a document that javac parses (in some charset, at
+     * some release) must be Java source the check can read and attribute. Such code could
+     * otherwise hide annotations, {@code @interface} declarations or third-party imports.
      */
     UNCHECKABLE_SOURCE("1. Inga tredjepartsberoenden, 2. Annoteringar",
-            "no Java code the source check cannot analyse (jshell scripts, or launcher scripts and"
-                    + " other non-.java Java sources that do not compile)");
+            "no code the source check cannot analyse: besides .java sources only .md documents may exist"
+                    + " outside framework/out/, and a document javac parses must compile as read in UTF-8");
 
     private final String section;
     private final String description;

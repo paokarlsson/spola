@@ -118,19 +118,34 @@ final class Fixtures {
                             "java.lang.reflect.Parameter.getAnnotatedType"))),
 
             new Fixture("launcher-source", Fixture.Kind.LAUNCHER, List.of(
-                    // A #! script: the same source check as a .java file.
-                    source("tools/wire", 7, Rule.ANNOTATION_NOT_ALLOWED, "@java.lang.annotation.Retention"),
-                    source("tools/wire", 8, Rule.ANNOTATION_DECLARATION, "@interface wire.Inject"),
-                    source("tools/wire", 11, Rule.ANNOTATION_NOT_ALLOWED, "@wire.Inject"),
-                    source("tools/wire", 13, Rule.ANNOTATION_REFLECTION, "java.lang.Class.isAnnotationPresent"),
-                    // Any file javac parses.
-                    source("tools/generate.txt", 5, Rule.ANNOTATION_NOT_ALLOWED, "@java.beans.BeanProperty"),
-                    // Fail-closed: #! scripts javac cannot parse or attribute, and jshell scripts.
-                    source("tools/broken", 4, Rule.UNCHECKABLE_SOURCE, "launcher script javac cannot parse"),
-                    source("tools/unresolved", 3, Rule.FOREIGN_IMPORT, "import org.example.Injector"),
-                    source("tools/unresolved", 3, Rule.UNCHECKABLE_SOURCE, "Java source javac cannot attribute"),
-                    source("tools/setup.jsh", 0, Rule.UNCHECKABLE_SOURCE, "jshell script"))),
-                    // tools/run.sh and tools/notes.txt are not Java source: skipped.
+                    // Neither .java nor a document: reported whatever it holds (a #! script,
+                    // a shell script, jshell scripts with and without the .jsh extension).
+                    notDocument("tools/wire"),
+                    notDocument("tools/run.sh"),
+                    notDocument("tools/setup.jsh"),
+                    notDocument("tools/setup.txt"),
+                    // A #! document with CR line ends: analysed, with exact line numbers.
+                    source("docs/wire.md", 9, Rule.ANNOTATION_NOT_ALLOWED, "@java.lang.annotation.Retention"),
+                    source("docs/wire.md", 10, Rule.ANNOTATION_DECLARATION, "@interface Wire.Inject"),
+                    source("docs/wire.md", 13, Rule.ANNOTATION_NOT_ALLOWED, "@Wire.Inject"),
+                    source("docs/wire.md", 16, Rule.ANNOTATION_REFLECTION,
+                            "java.lang.reflect.AccessibleObject.isAnnotationPresent"),
+                    // A byte that is not UTF-8: the UTF-8 reading is analysed, the different
+                    // ISO-8859-1 reading that javac also parses is reported.
+                    source("docs/latin1.md", 5, Rule.ANNOTATION_DECLARATION, "@interface Latin1.Tag"),
+                    source("docs/latin1.md", 8, Rule.ANNOTATION_NOT_ALLOWED, "@Latin1.Tag"),
+                    otherReading("docs/latin1.md", "ISO-8859-1"),
+                    // Parses only at --source 8: analysed at that release.
+                    source("docs/old.md", 4, Rule.ANNOTATION_DECLARATION, "@interface Old.Mark"),
+                    source("docs/old.md", 7, Rule.ANNOTATION_NOT_ALLOWED, "@Old.Mark"),
+                    source("docs/old.md", 10, Rule.ANNOTATION_REFLECTION,
+                            "java.lang.reflect.AccessibleObject.isAnnotationPresent"),
+                    // Java only when read as ISO-8859-1: reported.
+                    otherReading("docs/em.md", "ISO-8859-1"),
+                    // Fail-closed: Java source javac cannot attribute.
+                    source("docs/unresolved.md", 3, Rule.FOREIGN_IMPORT, "import org.example.Injector"),
+                    source("docs/unresolved.md", 3, Rule.UNCHECKABLE_SOURCE, "Java source javac cannot attribute"))),
+                    // docs/notes.md is prose that javac parses in no reading: skipped.
 
             new Fixture("foreign-jar", Fixture.Kind.FILES, List.of(
                     // out/allowed.jar and out/nested/also-allowed.jar are in the output directory: allowed.
@@ -197,6 +212,15 @@ final class Fixtures {
 
     private static Violation source(String file, int line, Rule rule, String subject) {
         return new Violation(file, line, rule, subject, "");
+    }
+
+    private static Violation notDocument(String file) {
+        return new Violation(file, 0, Rule.UNCHECKABLE_SOURCE, "neither a .java source nor a document (.md)", "");
+    }
+
+    private static Violation otherReading(String file, String charset) {
+        return new Violation(file, 0, Rule.UNCHECKABLE_SOURCE, "document that javac parses when read as " + charset,
+                "");
     }
 
     private static Violation bytecode(String file, Rule rule, String subject, String location) {

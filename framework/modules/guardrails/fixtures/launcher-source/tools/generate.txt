@@ -1,8 +1,0 @@
-// Fixture: Java source in a file with any name runs with "java --source 25 generate.txt".
-// javac parses it, so it gets the source check (a compact source file would need a name
-// that is a valid class name, so this one declares its class).
-class Generate {
-    @java.beans.BeanProperty
-    public static void main(String[] args) {
-    }
-}

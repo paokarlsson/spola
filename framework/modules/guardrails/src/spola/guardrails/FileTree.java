@@ -68,6 +68,15 @@ final class FileTree {
         return file.getFileName().toString().endsWith(extension);
     }
 
+    /**
+     * Whether {@code file} goes to {@link LauncherCheck} rather than to the {@code .java} source
+     * check: every file without the {@code .java} extension. The main check and the
+     * {@link Fixture.Kind#LAUNCHER} fixtures select files with this one predicate.
+     */
+    static boolean isLauncherCandidate(Path file) {
+        return !hasExtension(file, ".java");
+    }
+
     /** Whether the regular file {@code file} begins with the bytes {@code magic}. */
     static boolean startsWith(Path file, byte[] magic) {
         try (var in = Files.newInputStream(file, LinkOption.NOFOLLOW_LINKS)) {

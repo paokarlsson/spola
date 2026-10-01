@@ -1,0 +1,24 @@
+modules in build order: [spola.guardrails]
+compiled spola.guardrails (17 files)
+packaged out/spola.guardrails.jar
+guardrails: source       18 .java files
+guardrails: source       3 other files: 0 not allowed, 3 documents (0 parse as Java)
+guardrails: bytecode     29 .class files
+guardrails: dependencies 1 module-info.class files
+guardrails: files        75 files
+guardrails: no violations
+guardrails: allowlist ok (6 annotations match REGLER.md)
+guardrails: layout check ok (9 stray or binary files found)
+guardrails: exclusion ok (only listed fixture directories are left out)
+guardrails: fixture ok   source-annotation (2 expected violations)
+guardrails: fixture ok   annotation-declaration (6 expected violations)
+guardrails: fixture ok   bytecode-annotation (37 expected violations)
+guardrails: fixture ok   foreign-requires (1 expected violations)
+guardrails: fixture ok   foreign-import (5 expected violations)
+guardrails: fixture ok   reflective-annotation-read (10 expected violations)
+guardrails: fixture ok   launcher-source (17 expected violations)
+guardrails: fixture ok   foreign-jar (14 expected violations)
+guardrails: fixture ok   foreign-build-file (20 expected violations)
+guardrails: fixture ok   symbolic-link (5 expected violations)
+BUILD OK in 3639 ms
+exit: 0

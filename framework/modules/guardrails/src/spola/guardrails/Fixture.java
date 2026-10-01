@@ -27,7 +27,7 @@ record Fixture(String name, Kind kind, List<Violation> expected) {
                     ? FileTree.files(dir.resolve("src"), List.of(), f -> FileTree.hasExtension(f, ".java"))
                     : List.of();
             case FILES -> FileTree.files(dir, List.of(), f -> FileTree.relative(dir, f).equals("tree.txt"));
-            case LAUNCHER -> FileTree.files(dir, List.of(), f -> !FileTree.hasExtension(f, ".java"));
+            case LAUNCHER -> FileTree.files(dir, List.of(), FileTree::isLauncherCandidate);
         };
     }
 
@@ -53,8 +53,9 @@ record Fixture(String name, Kind kind, List<Violation> expected) {
         FILES,
         /**
          * Source check of the fixture's files that do not end in {@code .java}, exactly as the
-         * main check treats such files ({@link Guardrails#analyzeLauncherSources}): launcher
-         * scripts and other Java source are analysed, jshell scripts reported, the rest skipped.
+         * main check treats such files ({@link Guardrails#analyzeLauncherSources}): files that
+         * are not documents are reported, documents javac parses are analysed or reported, the
+         * rest skipped. The files may be any bytes (the check reads them in every charset).
          */
         LAUNCHER
     }

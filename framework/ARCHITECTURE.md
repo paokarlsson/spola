@@ -65,7 +65,8 @@ Kontroller (paketprivata klasser):
 
 | Kontroll | Hur | Regler |
 |---|---|---|
-| `SourceCheck` | `JavacTask.parse()` + `analyze()` (attribuering), `TreePathScanner`, `Trees.getElement`; för filer utan `.java`-ändelse en `SimpleJavaFileObject` med filens text som launchern läser den | `.jsh` och `#!`-skript som inte kompilerar (`UNCHECKABLE_SOURCE`); annotering utanför tillåtelselistan (fullt kvalificerat namn efter attribuering, så en egen `Override` skiljs från `java.lang.Override`), annoteringar som inte går att lösa upp, `@interface`, import från annat än JDK/projekt, läsning av annoteringar via reflektion: anrop och method references till `java.base`-metoder vars returtyp (efter erasure, även arrayer) är `Annotation` eller `AnnotatedType`, samt `isAnnotationPresent` och `Method.getDefaultValue` |
+| `LauncherCheck` | filer utan `.java`-ändelse: tillåtelselista (`Allowlist.DOCUMENT_EXTENSIONS`), dokument avkodade med varje `Charset` och parsade med en javac-task per release (`--source 8`..25), sedan `SourceCheck.runAnalysis` på UTF-8-läsningen | varje fil som varken är `.java` eller `.md`; dokument som javac parsar i en annan läsning än UTF-8 eller inte kan attribuera (`UNCHECKABLE_SOURCE`) |
+| `SourceCheck` | `JavacTask.parse()` + `analyze()` (attribuering), `TreePathScanner`, `Trees.getElement` | annotering utanför tillåtelselistan (fullt kvalificerat namn efter attribuering, så en egen `Override` skiljs från `java.lang.Override`), annoteringar som inte går att lösa upp, `@interface`, import från annat än JDK/projekt, läsning av annoteringar via reflektion: anrop och method references till `java.base`-metoder vars returtyp (efter erasure, även arrayer) är `Annotation` eller `AnnotatedType`, samt `isAnnotationPresent` och `Method.getDefaultValue` |
 | `BytecodeCheck` | `java.lang.classfile` | `Runtime(In)Visible{,Parameter,Type}Annotations` på klass, fält, metod, record-komponent och i `Code` (typannoteringar i metodkroppar), `AnnotationDefault`, nästlade annoteringar, klasser med `ACC_ANNOTATION` |
 | `DependencyCheck` | `module-info.class` → `ModuleAttribute` | `requires` (även `static`/`transitive`) som varken är JDK-modul eller projektmodul |
 | `FileCheck` | filträd inklusive länkar; innehållet i zip-filer (`java.util.zip`) | jar-arkiv utanför `out/`: efter namn (`.jar`, `.jmod`, `.war`, `.ear`, skiftlägesokänsligt) **och** efter innehåll (en zip-fil med vilket namn som helst, även med skript eller jmod-huvud framför, som innehåller en `.class`-post, en post som börjar med class-filens magiska tal, `META-INF/MANIFEST.MF`, ett arkiv efter namn eller en nästlad zip med något av detta); byggfiler från Maven, Gradle, Ant, Ivy, Bazel, Buck, Pants, Mill, sbt och Make (`pom.xml`, `build.gradle(.kts)`, `gradlew`, `mvnw`, `libs.versions.toml`, `build.xml`, `BUILD`, `BUCK`, `pants.toml`, `build.mill`, `Makefile`, …) samt alla filer under `.mvn/`, `.gradle/`, `.mill/`, `.bsp/`, filer som slutar på `.gradle`, `.gradle.kts`, `.sbt`, `.bzl` samt `project.clj` och `deps.edn`; varje symbolisk länk; en fil som börjar som zip (`PK\3\4`, `PK\5\6`) men som `ZipFile` inte kan öppna räknas som jar (fail-closed) |
@@ -94,7 +95,8 @@ Beslut:
   ansvarar för allt i de undantagna katalogerna: varje fil där måste användas av sin fixture
   (`Fixture.inputs`, det enda stället som säger vilka filer en typ läser: `.java` för
   `SOURCE`/`BYTECODE`, `src/**.java` för `DEPENDENCIES`, `tree.txt` för `FILES`, allt utom
-  `.java` för `LAUNCHER`), och varje sådan fil kontrolleras med exakt angivna
+  `.java` för `LAUNCHER`; `LAUNCHER`-filer får vara vilka byte som helst, övriga måste vara
+  UTF-8-text), och varje sådan fil kontrolleras med exakt angivna
   förväntningar. `out/` undantas från källkontrollen och är den enda plats där jar-arkiv får
   finnas.
 - **Jar-arkiv känns igen på innehåll, inte bara namn.** En omdöpt jar (`.zip`, utan
@@ -102,21 +104,36 @@ Beslut:
   (testdata) är tillåtna. `ZipFile` hittar centralkatalogen från filens slut, så data framför
   arkivet döljer det inte; nästlade arkiv läses med `ZipInputStream` upp till 8 nivåer, och
   djupare nästling räknas som Java-kod.
-- **Java-kod känns igen på innehåll, inte bara på `.java`.** Source launchern kör en fil
-  med vilket namn som helst (`java --source 25 FIL`, eller `./FIL` med en `#!`-rad), så
-  varje fil utanför `out/` och de undantagna katalogerna som inte slutar på `.java` erbjuds
-  `SourceCheck.analyzeLauncherSource`. Filen läses som launchern läser den: UTF-8, en första
-  rad som börjar med `#!` töms (radbrytningen behålls så radnumren stämmer), den implicita
-  klassen i en compact source file får filens namn, `--release 25 --enable-preview`. Varje
-  sådan fil analyseras för sig, som launchern kompilerar den.
-  - Parsar javac filen analyseras den som en `.java`-fil. Fel vid attribuering ger
-    `UNCHECKABLE_SOURCE` (raden för första felet).
-  - Parsar javac den inte kan launchern inte heller köra den, och den hoppas över, utom om
-    första raden är en `#!`-rad som nämner `java`: då är det ett skript som ska vara Java,
-    och det rapporteras som `UNCHECKABLE_SOURCE` (fail-closed). Detsamma gäller om ett
-    sådant skript inte är UTF-8.
-  - jshell-skript (`.jsh`) är inga kompileringsenheter och kan inte analyseras: alltid
-    `UNCHECKABLE_SOURCE`.
+- **Filer utan `.java`-ändelse: tillåtelselista, inte igenkänning** (`LauncherCheck`,
+  gauntlet-runda 5). Source launchern kör en fil med vilket namn som helst (`java --source N
+  FIL`, `./FIL` med `#!`-rad), avkodad med standardteckenkodningen som `-Dfile.encoding`
+  styr, och jshell kör vilken fil som helst. Tidigare rundor försökte känna igen Java på
+  innehållet och hoppade över det som inte såg ut som Java; varje snävare test än
+  launcherns (bara `\n` som radslut, strikt UTF-8, bara `--release 25`) blev en väg runt
+  kontrollen. Nu är beslutet fail-closed:
+  - Utanför `out/` och fixture-katalogerna får bara `.java`-källor och dokument (`.md`,
+    `Allowlist.DOCUMENT_EXTENSIONS`) finnas. Varje annan fil är `UNCHECKABLE_SOURCE`, vad
+    den än innehåller. Det enda predikatet för urvalet är `FileTree.isLauncherCandidate`
+    (används av huvudkontrollen och av `Fixture.inputs` för `LAUNCHER`).
+  - Ett dokument läses som launchern kan läsa det: avkodat med **varje** teckenkodning i
+    JDK:n (felaktiga byte ersätts, som launcherns `InputStreamReader`), en `#!`-rad tömd
+    fram till första `\r`, `\n` eller `\r\n` (som `BufferedReader.readLine`, efter de två
+    byten `#!`), och parsat vid varje release från 8 (den äldsta javac 25 tar) till den
+    körande JDK:ns (`--source N`, `--enable-preview` bara för den senaste, som launchern).
+    Alla läsningar parsas i en javac-task per release (`-Xmaxerrs` högt så att varje enhet
+    rapporterar sina egna fel), vilket tar ungefär 1 s för dagens dokument.
+  - Läsningar utan `;`, `{` och `\` hoppas över utan parsning: en kompileringsenhet med
+    någon deklaration eller import har ett semikolon eller en klammer (eventuellt som
+    unicode-escape).
+  - Parsar ingen läsning är dokumentet inte Java och hoppas över. Parsar UTF-8-läsningen
+    analyseras den som en `.java`-fil vid den nyaste release som parsar den; fel vid
+    attribuering ger `UNCHECKABLE_SOURCE`. Parsar en annan läsning (som skiljer sig från
+    UTF-8-läsningen) rapporteras dokumentet som `UNCHECKABLE_SOURCE`, eftersom det
+    programmet inte är det som analyserades.
+  - Utan moduler (`--source 8`) avgör `SourceCheck` JDK-tillhörighet så här: allt som går
+    att lösa upp kommer från JDK:n eller filen (ingen class path), och `java.*`-paket är
+    `java.base`.
+  - Kvar: jshell-indata i ett `.md`-dokument (se PROGRESS.md).
   - Gränsen: det JDK:n kör eller laddar direkt kontrolleras maskinellt. Innehåll som först
     måste packas upp eller avkodas (gzip, tar, base64, …) gör det inte (se PROGRESS.md).
 - **Class-filer känns igen på innehåll:** bytekodkontrollen läser varje fil som slutar på

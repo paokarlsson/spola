@@ -1,0 +1,3 @@
+// Fixture: jshell runs a script of any name ("jshell setup.txt"): reported.
+@interface Inject {}
+/exit

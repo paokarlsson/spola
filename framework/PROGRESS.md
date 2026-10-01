@@ -14,17 +14,20 @@
   byggfiler från Maven/Gradle/Bazel/Buck/Pants/Mill/Make m.fl. och symboliska länkar).
 - Utöver uppdragets tre kontroller: importer från annat än JDK/projekt och läsning av
   annoteringar via reflektion (REGLER §1 och §2).
-- Källkontrollen omfattar även Java-kod utan filändelsen `.java` som source launchern kan
-  köra: `#!`-skript (JEP 330) och varje annan fil som javac kan parsa. jshell-skript
-  (`.jsh`) och `#!`-skript som nämner `java` men inte går att läsa, parsa eller attribuera
-  rapporteras som `UNCHECKABLE_SOURCE` (fail-closed).
+- Filer utan filändelsen `.java` (utanför `out/` och fixture-katalogerna) kontrolleras
+  fail-closed av `LauncherCheck`, eftersom source launchern och jshell kör filer med vilket
+  namn som helst: bara dokument (`.md`) är tillåtna, varje annan fil ger
+  `UNCHECKABLE_SOURCE`. Ett dokument läses på alla sätt launchern kan läsa det (varje
+  teckenkodning i JDK:n, `#!`-rad avslutad av `\r`, `\n` eller `\r\n`, `--source 8` till 25).
+  Parsar UTF-8-läsningen analyseras dokumentet som en `.java`-fil; parsar en annan läsning
+  rapporteras det.
 - Filkontrollen är fail-closed för zip: en fil som börjar som en zip men som `ZipFile` inte
   kan öppna (skadad, okänd komprimering) räknas som jar.
 - Självtest mot 10 fixtures med exakt angivna förväntade överträdelser, plus kontroll att
   tillåtelselistan i koden stämmer med tabellen i `REGLER.md`, att varje fil under
   `fixtures/` används av sin fixture, och att huvudkontrollen bara undantar de listade
   fixture-katalogerna (inte hela `fixtures/`).
-- Bygget tar ungefär 2 s.
+- Bygget tar ungefär 3–4 s (dokumentkontrollen står för ungefär 1 s).
 
 ## Återstår (enligt `uppdrag/PLAN.md`)
 - 02 testkörare: guardrails självtest ska flyttas in i den nya köraren
@@ -53,9 +56,14 @@
   ladda det, så guardrails läser inte in sådana filer (gränsen från gauntlet-runda 3:
   maskinkontrollen täcker det som JDK:n kör eller laddar direkt). REGLER §1 gäller ändå och
   upprätthålls av granskning.
-- En fil utan `.java`-ändelse och utan `#!`-rad som bara kompilerar med en äldre
-  `--source` (t.ex. `record` som identifierare) parsas inte av javac 25 och hoppas över.
-  Projektet ska vara Java 25 (REGLER §3).
-- Ett `#!`-skript analyseras ensamt och utan class path. Ett skript som behöver andra
-  källfiler eller en class path rapporteras som `UNCHECKABLE_SOURCE` (fail-closed, kan ge
-  falsklarm). Det gäller också en `#!`-rad där `java` bara ingår i ett längre namn.
+- **jshell-indata i dokument:** jshell kör vilken text som helst, rad för rad, och hoppar
+  över det som inte kompilerar. Ett `.md`-dokument kan därför innehålla kodrader som
+  `jshell DOKUMENT.md` kör. Det går inte att avgöra maskinellt utan att förbjuda all prosa,
+  så dokument granskas som text. Alla andra filnamn (även `.jsh`) är redan förbjudna.
+- Ett dokument som är Java analyseras ensamt och utan class path. Behöver det andra
+  källfiler eller en class path rapporteras det som `UNCHECKABLE_SOURCE` (fail-closed).
+  Detsamma gäller ett dokument som är Java och innehåller tecken utanför ASCII, eftersom
+  ISO-8859-1-läsningen då är en annan text som javac också parsar.
+- Nya filtyper i `framework/` (resurser, testdata) kräver att `Allowlist.DOCUMENT_EXTENSIONS`
+  utökas medvetet; de kontrolleras då som dokument. Editorfiler (`.swp`, `.idea/`) i
+  `framework/` ger rött bygge.

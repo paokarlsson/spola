@@ -1,0 +1,13 @@
+fix(guardrails): fail closed on every file that is not .java or .md
+
+Outside out/ and the fixture dirs, any file other than .java or .md is now
+reported as UNCHECKABLE_SOURCE. A new LauncherCheck reads .md files the way
+the launcher could: every charset, CR/LF shebang endings, --source 25 down
+to 8. This closes the CR-only, Latin-1 and older-release bypasses. Still
+open: .md Java checked only against the JDK 25 API.
+
+Gauntlet-Run: 20261001-2101-bygge-och-guardrails
+Gauntlet-Round: 5/5
+Gauntlet-Verdict: FAIL (0 blocker, 1 major, 4 minor upheld)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>

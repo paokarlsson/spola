@@ -2,6 +2,8 @@
 // Fixture: a launcher script that needs a class path cannot be attributed without it.
 import org.example.Injector;
 
-void main() {
-    Injector.run();
+class Unresolved {
+    public static void main(String[] args) {
+        Injector.run();
+    }
 }
