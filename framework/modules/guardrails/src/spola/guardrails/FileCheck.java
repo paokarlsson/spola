@@ -29,8 +29,8 @@ final class FileCheck {
 
     /**
      * File names (lower case) that only third-party build tools use: Maven, Gradle, Ant, Ivy,
-     * Bazel, Buck, Pants, Mill, sbt and Make. Matching ignores case, so Bazel's {@code BUILD}
-     * is {@code build}.
+     * Bazel, Buck, Pants, Mill, sbt, Leiningen, Clojure CLI and Make. Matching ignores case,
+     * so Bazel's {@code BUILD} is {@code build}.
      */
     static final Set<String> BUILD_FILES = Set.of(
             "pom.xml", "mvnw", "mvnw.cmd", "maven-wrapper.properties",
@@ -41,7 +41,15 @@ final class FileCheck {
             ".bazelrc", ".bazelversion",
             "buck", ".buckconfig", "pants.toml", "build.mill", "build.sc",
             "build.sbt",
+            "project.clj", "deps.edn",
             "makefile", "gnumakefile");
+
+    /**
+     * File name endings (lower case) that only third-party build tools use: Gradle scripts
+     * ({@code deps.gradle}, {@code x.gradle.kts}), sbt ({@code plugins.sbt}) and Bazel/Starlark
+     * ({@code deps.bzl}), whatever the rest of the name.
+     */
+    static final List<String> BUILD_FILE_EXTENSIONS = List.of(".gradle", ".gradle.kts", ".sbt", ".bzl");
 
     /** Directory names (lower case) that only third-party build tools use; every file below them is reported. */
     static final Set<String> BUILD_DIRECTORIES = Set.of(".mvn", ".gradle", ".mill", ".bsp");
@@ -54,6 +62,9 @@ final class FileCheck {
 
     /** First bytes of a zip local file header. */
     private static final byte[] ZIP_MAGIC = {'P', 'K', 3, 4};
+
+    /** First bytes of an empty zip file (end of central directory record only). */
+    private static final byte[] EMPTY_ZIP_MAGIC = {'P', 'K', 5, 6};
 
     /** Archives nested deeper than this are reported without looking further. */
     private static final int MAX_NESTING = 8;
@@ -78,7 +89,8 @@ final class FileCheck {
                     && (ARCHIVES.stream().anyMatch(name::endsWith) || !link && holdsJavaCode(file))) {
                 out.add(new Violation(relative, 0, Rule.FOREIGN_JAR, relative, ""));
             }
-            if (BUILD_FILES.contains(name) || inBuildDirectory(relative)) {
+            if (BUILD_FILES.contains(name) || BUILD_FILE_EXTENSIONS.stream().anyMatch(name::endsWith)
+                    || inBuildDirectory(relative)) {
                 out.add(new Violation(relative, 0, Rule.FOREIGN_BUILD_FILE, relative, ""));
             }
         }
@@ -94,7 +106,9 @@ final class FileCheck {
     /**
      * Whether {@code file} is a zip archive that packages Java code. {@link ZipFile} finds the
      * central directory from the end of the file, so data in front of the archive (a launcher
-     * script, the jmod header) does not hide it.
+     * script, the jmod header) does not hide it. Fail-closed: a file that starts like a zip
+     * file but that {@link ZipFile} cannot open (damaged, or a compression method it does not
+     * support) cannot be shown to be free of Java code, so it counts as holding some.
      */
     private static boolean holdsJavaCode(Path file) {
         if (!Files.isRegularFile(file, LinkOption.NOFOLLOW_LINKS)) {
@@ -110,8 +124,8 @@ final class FileCheck {
                 }
             }
             return false;
-        } catch (ZipException notAZipFile) {
-            return false;
+        } catch (ZipException notReadable) {
+            return FileTree.startsWith(file, ZIP_MAGIC) || FileTree.startsWith(file, EMPTY_ZIP_MAGIC);
         } catch (IOException e) {
             throw new UncheckedIOException("cannot read " + file, e);
         }

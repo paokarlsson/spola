@@ -15,12 +15,18 @@ import com.sun.source.util.Trees;
 import java.io.IOException;
 import java.io.StringWriter;
 import java.io.UncheckedIOException;
+import java.nio.ByteBuffer;
+import java.nio.charset.CharacterCodingException;
+import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.Optional;
 import java.util.Set;
+import java.util.function.Function;
 import javax.lang.model.element.Element;
 import javax.lang.model.element.ElementKind;
 import javax.lang.model.element.ExecutableElement;
@@ -35,6 +41,8 @@ import javax.lang.model.util.Types;
 import javax.tools.Diagnostic;
 import javax.tools.DiagnosticCollector;
 import javax.tools.JavaFileObject;
+import javax.tools.SimpleJavaFileObject;
+import javax.tools.StandardJavaFileManager;
 import javax.tools.StandardLocation;
 import javax.tools.ToolProvider;
 
@@ -69,6 +77,138 @@ final class SourceCheck {
         if (files.isEmpty()) {
             return new Outcome(List.of(), List.of());
         }
+        var analysis = analyze(root, fileManager -> fileManager.getJavaFileObjectsFromPaths(files), options,
+                projectModules);
+        return new Outcome(analysis.violations(), analysis.errors().stream().map(d -> describe(root, d)).toList());
+    }
+
+    /** Violations found and the javac errors (when non-empty, attribution may be incomplete). */
+    private record Analysis(List<Violation> violations, List<Diagnostic<? extends JavaFileObject>> errors) {
+    }
+
+    /**
+     * Source check of a file that does not end in {@code .java} but that the source launcher
+     * can still run ({@code java --source 25 FILE}, or {@code ./FILE} with a {@code #!} first
+     * line, JEP 330). The file is read like the launcher reads it: UTF-8, a first line
+     * starting with {@code #!} is blanked (so line numbers stay exact), the implicit class of a
+     * compact source file is named after the file, and preview features are enabled.
+     *
+     * <ul>
+     *   <li>A {@code .jsh} file (a jshell script) is Java code that is not a compilation unit,
+     *       so the source check cannot analyse it: it is reported as {@link Rule#UNCHECKABLE_SOURCE}.</li>
+     *   <li>A file whose first line is a {@code #!} line naming {@code java} is a launcher script:
+     *       it is analysed, and if javac cannot read, parse or attribute it, it is reported as
+     *       {@link Rule#UNCHECKABLE_SOURCE} (fail-closed).</li>
+     *   <li>Any other file is analysed if it is UTF-8 text that javac parses without errors
+     *       (then the launcher could run it); attribution errors are reported as
+     *       {@link Rule#UNCHECKABLE_SOURCE}. A file javac cannot parse is not Java source and
+     *       the launcher cannot run it either: it is skipped.</li>
+     * </ul>
+     *
+     * @return the violations, or empty if {@code file} is not Java source
+     */
+    static Optional<List<Violation>> analyzeLauncherSource(Path root, Path file) {
+        var relative = FileTree.relative(root, file);
+        if (file.getFileName().toString().toLowerCase(Locale.ROOT).endsWith(".jsh")) {
+            return Optional.of(List.of(new Violation(relative, 0, Rule.UNCHECKABLE_SOURCE, "jshell script", "")));
+        }
+        byte[] bytes;
+        try {
+            bytes = Files.readAllBytes(file);
+        } catch (IOException e) {
+            throw new UncheckedIOException("cannot read " + file, e);
+        }
+        var shebang = bytes.length >= 2 && bytes[0] == '#' && bytes[1] == '!';
+        var launcherScript = shebang && firstLine(bytes).toLowerCase(Locale.ROOT).contains("java");
+        var unchecked = Optional.of(List.of(
+                new Violation(relative, 0, Rule.UNCHECKABLE_SOURCE, "launcher script that is not UTF-8 text", "")));
+        String text;
+        try {
+            text = StandardCharsets.UTF_8.newDecoder()
+                    .onMalformedInput(CodingErrorAction.REPORT)
+                    .onUnmappableCharacter(CodingErrorAction.REPORT)
+                    .decode(ByteBuffer.wrap(bytes))
+                    .toString();
+        } catch (CharacterCodingException notText) {
+            return launcherScript ? unchecked : Optional.empty();
+        }
+        if (shebang) {
+            // Keep the line break so that line numbers match the file.
+            var end = text.indexOf('\n');
+            text = end < 0 ? "" : text.substring(end);
+        }
+        var source = new LauncherSource(file, text);
+        var options = List.of("--release", String.valueOf(Runtime.version().feature()), "--enable-preview");
+        var parseErrors = parseErrors(source, options);
+        if (!parseErrors.isEmpty()) {
+            return launcherScript
+                    ? Optional.of(List.of(new Violation(relative, parseErrors.getFirst().intValue(),
+                            Rule.UNCHECKABLE_SOURCE, "launcher script javac cannot parse", "")))
+                    : Optional.empty();
+        }
+        var analysis = analyze(root, fileManager -> List.of(source), options, Set.of());
+        if (analysis.errors().isEmpty()) {
+            return Optional.of(analysis.violations());
+        }
+        var violations = new ArrayList<>(analysis.violations());
+        violations.add(new Violation(relative, (int) analysis.errors().getFirst().getLineNumber(),
+                Rule.UNCHECKABLE_SOURCE, "Java source javac cannot attribute", ""));
+        return Optional.of(List.copyOf(violations));
+    }
+
+    private static String firstLine(byte[] bytes) {
+        int end = 0;
+        while (end < bytes.length && bytes[end] != '\n') {
+            end++;
+        }
+        return new String(bytes, 0, end, StandardCharsets.ISO_8859_1);
+    }
+
+    /** Lines of the errors javac reports when only parsing {@code source}; empty if it parses. */
+    private static List<Long> parseErrors(JavaFileObject source, List<String> options) {
+        var compiler = ToolProvider.getSystemJavaCompiler();
+        var diagnostics = new DiagnosticCollector<JavaFileObject>();
+        var allOptions = new ArrayList<>(List.of("-proc:none", "-Xlint:none"));
+        allOptions.addAll(options);
+        try (var fileManager = compiler.getStandardFileManager(diagnostics, Locale.ROOT, StandardCharsets.UTF_8)) {
+            var task = (JavacTask) compiler.getTask(new StringWriter(), fileManager, diagnostics, allOptions, null,
+                    List.of(source));
+            task.parse();
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
+        return diagnostics.getDiagnostics().stream()
+                .filter(d -> d.getKind() == Diagnostic.Kind.ERROR)
+                .map(Diagnostic::getLineNumber)
+                .toList();
+    }
+
+    /**
+     * Source text of a launcher program, under the URI of its file (so reports name the file).
+     * Its name need not match a public class, as in the source launcher.
+     */
+    private static final class LauncherSource extends SimpleJavaFileObject {
+        private final String text;
+
+        LauncherSource(Path file, String text) {
+            super(file.toAbsolutePath().normalize().toUri(), Kind.SOURCE);
+            this.text = text;
+        }
+
+        @Override
+        public CharSequence getCharContent(boolean ignoreEncodingErrors) {
+            return text;
+        }
+
+        @Override
+        public boolean isNameCompatible(String simpleName, Kind kind) {
+            return true;
+        }
+    }
+
+    private static Analysis analyze(Path root,
+                                    Function<StandardJavaFileManager, Iterable<? extends JavaFileObject>> units,
+                                    List<String> options, Set<String> projectModules) {
         var compiler = ToolProvider.getSystemJavaCompiler();
         var diagnostics = new DiagnosticCollector<JavaFileObject>();
         var allOptions = new ArrayList<String>(List.of(
@@ -80,8 +220,8 @@ final class SourceCheck {
         try (var fileManager = compiler.getStandardFileManager(diagnostics, Locale.ROOT, StandardCharsets.UTF_8)) {
             // No class path: anything not in the JDK, the project or these files stays unresolved.
             fileManager.setLocation(StandardLocation.CLASS_PATH, List.of());
-            var units = fileManager.getJavaFileObjectsFromPaths(files);
-            var task = (JavacTask) compiler.getTask(new StringWriter(), fileManager, diagnostics, allOptions, null, units);
+            var task = (JavacTask) compiler.getTask(new StringWriter(), fileManager, diagnostics, allOptions, null,
+                    units.apply(fileManager));
             var compilationUnits = task.parse();
             task.analyze();
             var violations = new ArrayList<Violation>();
@@ -90,13 +230,12 @@ final class SourceCheck {
             for (var unit : compilationUnits) {
                 scanner.scanUnit(unit);
             }
-            var errors = diagnostics.getDiagnostics().stream()
+            List<Diagnostic<? extends JavaFileObject>> errors = diagnostics.getDiagnostics().stream()
                     .filter(d -> d.getKind() == Diagnostic.Kind.ERROR)
-                    .map(d -> describe(root, d))
                     .toList();
             // javac's generated record members (canonical constructor, accessors) share the
             // component's annotation trees, so one annotation can be visited more than once.
-            return new Outcome(violations.stream().distinct().toList(), errors);
+            return new Analysis(violations.stream().distinct().toList(), errors);
         } catch (IOException e) {
             throw new UncheckedIOException(e);
         }

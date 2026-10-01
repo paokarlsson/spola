@@ -1,0 +1,1 @@
+Fixture: prose that javac cannot parse is not Java source: skipped.

@@ -17,7 +17,10 @@ import java.util.stream.Stream;
  * <p>The checks are:
  * <ol>
  *   <li>source: every {@code .java} file is parsed and attributed; disallowed annotations,
- *       annotation declarations, foreign imports and reflective annotation reads are reported,</li>
+ *       annotation declarations, foreign imports and reflective annotation reads are reported.
+ *       Other files are analysed the same way if the source launcher could run them
+ *       ({@code #!} scripts, any file javac parses); jshell scripts and launcher scripts that
+ *       do not compile are reported as unanalysable,</li>
  *   <li>bytecode: every class file (by name or content) is read; annotations outside the allowlist
  *       (including parameter and type annotations) and annotation types are reported,</li>
  *   <li>dependencies: every {@code module-info.class} is read; {@code requires} of modules that
@@ -115,6 +118,30 @@ public final class Guardrails {
                     + String.join("\n  ", errors));
         }
         log.println("guardrails: source       " + (moduleSources.size() + looseSources.size()) + " .java files");
+        violations.addAll(analyzeLauncherSources(root, notChecked, log));
+        return violations;
+    }
+
+    /**
+     * Source check of Java code without the {@code .java} extension: every other file outside
+     * the excluded directories and the output directory is offered to
+     * {@link SourceCheck#analyzeLauncherSource(Path, Path)}, which analyses it if the source
+     * launcher could run it ({@code #!} scripts, any file javac parses) and reports jshell
+     * scripts. Each such file is analysed on its own, as the launcher compiles it.
+     */
+    static List<Violation> analyzeLauncherSources(Path root, List<Path> notChecked, PrintStream log) {
+        var candidates = FileTree.files(root, notChecked, f -> !FileTree.hasExtension(f, ".java"));
+        var violations = new ArrayList<Violation>();
+        int analysed = 0;
+        for (var file : candidates) {
+            var result = SourceCheck.analyzeLauncherSource(root, file);
+            if (result.isPresent()) {
+                analysed++;
+                violations.addAll(result.get());
+            }
+        }
+        log.println("guardrails: source       " + analysed + " of " + candidates.size()
+                + " other files are Java source (launcher programs, jshell scripts)");
         return violations;
     }
 

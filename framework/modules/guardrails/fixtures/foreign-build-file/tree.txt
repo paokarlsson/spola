@@ -19,3 +19,12 @@ gradle/libs.versions.toml
 .gradle/8.0/checksums.lock
 # A directory merely named like a tool is fine when it is not one of the tool directories.
 docs/mvn/notes.md
+# Build scripts by extension (Gradle, sbt, Bazel/Starlark), Leiningen and the Clojure CLI.
+gradle/deps.gradle
+scripts/publish.gradle.kts
+project/plugins.sbt
+bazel/deps.bzl
+project.clj
+deps.edn
+# Too generic to be a build file on its own: allowed.
+project/build.properties

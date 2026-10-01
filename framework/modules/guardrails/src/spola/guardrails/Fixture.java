@@ -1,5 +1,7 @@
 package spola.guardrails;
 
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.List;
 
 /**
@@ -13,15 +15,19 @@ import java.util.List;
 record Fixture(String name, Kind kind, List<Violation> expected) {
 
     /**
-     * Whether the self-test reads {@code file} (relative to the fixture directory, {@code /}
-     * as separator) when it runs this fixture. Any other file in the fixture directory would
-     * be excluded from the main check without being checked by the self-test, so it is an error.
+     * The files of the fixture directory {@code dir} that the self-test reads when it runs
+     * this fixture. This is the only place that says so: {@code SelfTest} runs the checks on
+     * exactly these files, and its layout check reports every other file in the directory
+     * (the main check leaves fixture directories out, so such a file would go unchecked).
      */
-    boolean uses(String file) {
+    List<Path> inputs(Path dir) {
         return switch (kind) {
-            case SOURCE, BYTECODE -> file.endsWith(".java");
-            case DEPENDENCIES -> file.startsWith("src/") && file.endsWith(".java");
-            case FILES -> file.equals("tree.txt");
+            case SOURCE, BYTECODE -> FileTree.files(dir, List.of(), f -> FileTree.hasExtension(f, ".java"));
+            case DEPENDENCIES -> Files.isDirectory(dir.resolve("src"))
+                    ? FileTree.files(dir.resolve("src"), List.of(), f -> FileTree.hasExtension(f, ".java"))
+                    : List.of();
+            case FILES -> FileTree.files(dir, List.of(), f -> FileTree.relative(dir, f).equals("tree.txt"));
+            case LAUNCHER -> FileTree.files(dir, List.of(), f -> !FileTree.hasExtension(f, ".java"));
         };
     }
 
@@ -39,7 +45,17 @@ record Fixture(String name, Kind kind, List<Violation> expected) {
          * compiled as modules to a scratch directory; dependency and bytecode check on the result.
          */
         DEPENDENCIES,
-        /** Each path in the fixture's {@code tree.txt} is created as an empty file in a scratch directory; file check on it. */
-        FILES
+        /**
+         * The fixture's {@code tree.txt} describes a file tree (empty files, directories,
+         * symbolic links and generated archives, see {@link TreeSpec}) that the self-test creates
+         * in a scratch directory; file check on it.
+         */
+        FILES,
+        /**
+         * Source check of the fixture's files that do not end in {@code .java}, exactly as the
+         * main check treats such files ({@link Guardrails#analyzeLauncherSources}): launcher
+         * scripts and other Java source are analysed, jshell scripts reported, the rest skipped.
+         */
+        LAUNCHER
     }
 }

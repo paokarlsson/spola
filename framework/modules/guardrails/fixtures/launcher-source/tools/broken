@@ -1,0 +1,5 @@
+#!/usr/bin/env java --source 25
+// Fixture: a launcher script javac cannot parse cannot be checked, so it is reported.
+@interface Hidden {
+    this is not Java
+}

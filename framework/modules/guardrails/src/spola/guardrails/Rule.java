@@ -32,7 +32,16 @@ public enum Rule {
      * the repository, and the checks do not follow links, so its target would go unchecked.
      */
     SYMBOLIC_LINK("1. Inga tredjepartsberoenden",
-            "no symbolic links; they can bring in unchecked code or jars from outside the tree");
+            "no symbolic links; they can bring in unchecked code or jars from outside the tree"),
+    /**
+     * §1 and §2: no Java code the source check cannot analyse: jshell scripts ({@code .jsh}),
+     * and launcher programs without the {@code .java} extension (a {@code #!} script, or any
+     * file javac parses) that javac cannot read, parse or attribute. Such code could hide
+     * annotations, {@code @interface} declarations or third-party imports.
+     */
+    UNCHECKABLE_SOURCE("1. Inga tredjepartsberoenden, 2. Annoteringar",
+            "no Java code the source check cannot analyse (jshell scripts, or launcher scripts and"
+                    + " other non-.java Java sources that do not compile)");
 
     private final String section;
     private final String description;

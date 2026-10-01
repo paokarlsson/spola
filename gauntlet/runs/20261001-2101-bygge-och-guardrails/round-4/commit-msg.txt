@@ -1,0 +1,13 @@
+fix(guardrails): source-check launcher scripts without a .java suffix
+
+Shebang scripts and other extension-less files that javac can parse now
+go through the source check. jshell scripts and unparsable java shebang
+scripts are reported as UNCHECKABLE_SOURCE. Unreadable zips count as jars,
+and more build-file extensions are caught. Still open: CR-only shebangs,
+non-UTF-8 and older-release sources slip past the check.
+
+Gauntlet-Run: 20261001-2101-bygge-och-guardrails
+Gauntlet-Round: 4/5
+Gauntlet-Verdict: FAIL (0 blocker, 3 major, 5 minor upheld)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>

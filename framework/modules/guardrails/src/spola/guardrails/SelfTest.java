@@ -1,6 +1,5 @@
 package spola.guardrails;
 
-import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.io.PrintStream;
@@ -20,8 +19,6 @@ import java.util.Set;
 import java.util.TreeSet;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
-import java.util.zip.ZipEntry;
-import java.util.zip.ZipOutputStream;
 import javax.tools.DiagnosticCollector;
 import javax.tools.JavaFileObject;
 import javax.tools.ToolProvider;
@@ -78,7 +75,7 @@ final class SelfTest {
         Path scratch = null;
         try {
             scratch = Files.createTempDirectory("spola-guardrails-fixture-");
-            var actual = new ArrayList<>(actualViolations(dir, scratch, fixture.kind()));
+            var actual = new ArrayList<>(actualViolations(dir, scratch, fixture));
             var expected = new ArrayList<>(fixture.expected());
             var problems = new ArrayList<String>();
             if (expected.isEmpty()) {
@@ -101,36 +98,45 @@ final class SelfTest {
     }
 
     /**
-     * What the checks report for one fixture. Every {@code .java} file of a fixture goes
-     * through the source check (so its exact source violations are expected too), and every
+     * What the checks report for one fixture, run on exactly {@link Fixture#inputs(Path)}.
+     * Every {@code .java} file of a fixture goes through the source check (so its exact source
+     * violations are expected too), and every
      * compiled fixture goes through the bytecode check: nothing in a fixture directory escapes
      * both the main check and the self-test.
      */
-    private static List<Violation> actualViolations(Path dir, Path scratch, Fixture.Kind kind) throws IOException {
+    private static List<Violation> actualViolations(Path dir, Path scratch, Fixture fixture) throws IOException {
         var result = new ArrayList<Violation>();
-        switch (kind) {
-            case SOURCE -> result.addAll(SourceCheck.analyze(dir, javaFiles(dir), List.of(), Set.of()).violations());
+        var inputs = fixture.inputs(dir);
+        switch (fixture.kind()) {
+            case SOURCE -> result.addAll(SourceCheck.analyze(dir, inputs, List.of(), Set.of()).violations());
             case BYTECODE -> {
-                result.addAll(SourceCheck.analyze(dir, javaFiles(dir), List.of(), Set.of()).violations());
+                result.addAll(SourceCheck.analyze(dir, inputs, List.of(), Set.of()).violations());
                 var classes = Files.createDirectories(scratch.resolve("classes"));
-                compile(javaFiles(dir), List.of("-d", classes.toString()));
+                compile(inputs, List.of("-d", classes.toString()));
                 result.addAll(BytecodeCheck.run(classes, classFiles(classes)));
             }
             case DEPENDENCIES -> {
                 var src = dir.resolve("src");
                 var analysis = Files.createDirectories(scratch.resolve("analysis"));
-                result.addAll(SourceCheck.analyze(dir, javaFiles(src),
+                result.addAll(SourceCheck.analyze(dir, inputs,
                         List.of("--module-source-path", src.toString(), "-d", analysis.toString()), Set.of())
                         .violations());
                 var classes = Files.createDirectories(scratch.resolve("classes"));
-                compile(javaFiles(src), List.of("--module-source-path", src.toString(), "-d", classes.toString()));
+                compile(inputs, List.of("--module-source-path", src.toString(), "-d", classes.toString()));
                 result.addAll(DependencyCheck.run(classes, FileTree.files(classes, List.of(),
                         f -> f.getFileName().toString().equals("module-info.class")), Set.of()));
                 result.addAll(BytecodeCheck.run(classes, classFiles(classes)));
             }
             case FILES -> {
-                materialize(Files.readAllLines(dir.resolve("tree.txt"), StandardCharsets.UTF_8), scratch);
+                for (var tree : inputs) {
+                    TreeSpec.materialize(Files.readAllLines(tree, StandardCharsets.UTF_8), scratch);
+                }
                 result.addAll(FileCheck.run(scratch, FileTree.filesAndLinks(scratch), scratch.resolve("out")));
+            }
+            case LAUNCHER -> {
+                // The same selection and analysis as the main check, with nothing left out.
+                result.addAll(Guardrails.analyzeLauncherSources(dir, List.of(),
+                        new PrintStream(OutputStream.nullOutputStream())));
             }
         }
         return result;
@@ -138,10 +144,6 @@ final class SelfTest {
 
     private static List<Path> classFiles(Path dir) {
         return FileTree.files(dir, List.of(), f -> FileTree.hasExtension(f, ".class"));
-    }
-
-    private static List<Path> javaFiles(Path dir) {
-        return FileTree.files(dir, List.of(), f -> FileTree.hasExtension(f, ".java"));
     }
 
     private static void compile(List<Path> files, List<String> options) throws IOException {
@@ -156,106 +158,6 @@ final class SelfTest {
                 throw new IllegalStateException("fixture does not compile: " + diagnostics.getDiagnostics());
             }
         }
-    }
-
-    /**
-     * Creates the tree described by {@code lines} below {@code scratch}. One entry per line,
-     * {@code #} starts a comment line:
-     * <ul>
-     *   <li>{@code path/to/file} creates an empty file (and its parent directories),</li>
-     *   <li>{@code dir/} (trailing slash) creates a directory,</li>
-     *   <li>{@code path -> target} creates a symbolic link {@code path} pointing at
-     *       {@code target}, written exactly as given (relative to the link's directory).
-     *       The target need not exist,</li>
-     *   <li>{@code path = CONTENT} creates a file with generated content, see {@link #content(String)}.</li>
-     * </ul>
-     */
-    static void materialize(List<String> lines, Path scratch) throws IOException {
-        for (var line : lines) {
-            var entry = line.strip();
-            if (entry.isEmpty() || entry.startsWith("#")) {
-                continue;
-            }
-            var arrow = entry.indexOf(" -> ");
-            var equals = entry.indexOf(" = ");
-            var end = arrow >= 0 ? arrow : equals >= 0 ? equals : entry.length();
-            var path = entry.substring(0, end).strip();
-            var file = scratch.resolve(path).normalize();
-            if (!file.startsWith(scratch) || file.equals(scratch)) {
-                throw new IllegalArgumentException("tree.txt entry escapes the scratch directory: " + entry);
-            }
-            Files.createDirectories(file.getParent());
-            if (arrow >= 0) {
-                Files.createSymbolicLink(file, Path.of(entry.substring(arrow + 4).strip()));
-            } else if (equals >= 0) {
-                Files.write(file, content(entry.substring(equals + 3).strip()));
-            } else if (path.endsWith("/")) {
-                Files.createDirectories(file);
-            } else {
-                Files.createFile(file);
-            }
-        }
-    }
-
-    /**
-     * Generated file content, so that no real archive or class file is ever committed:
-     * <ul>
-     *   <li>{@code class}: the class-file magic number followed by a few bytes,</li>
-     *   <li>{@code zip(ENTRY, ...)}: a zip archive; an entry is {@code name} (empty) or
-     *       {@code name = CONTENT} (nested),</li>
-     *   <li>{@code jmod(ENTRY, ...)}: the jmod header followed by a zip archive,</li>
-     *   <li>{@code script+zip(ENTRY, ...)}: a launcher script followed by a zip archive.</li>
-     * </ul>
-     */
-    static byte[] content(String spec) throws IOException {
-        if (spec.equals("class")) {
-            return new byte[] {(byte) 0xCA, (byte) 0xFE, (byte) 0xBA, (byte) 0xBE, 0, 0, 0, 69};
-        }
-        var open = spec.indexOf('(');
-        if (open < 0 || !spec.endsWith(")")) {
-            throw new IllegalArgumentException("unknown content in tree.txt: " + spec);
-        }
-        var prefix = switch (spec.substring(0, open)) {
-            case "zip" -> new byte[0];
-            case "jmod" -> new byte[] {'J', 'M', 1, 0};
-            case "script+zip" -> "#!/bin/sh\nexec java -jar \"$0\" \"$@\"\n".getBytes(StandardCharsets.UTF_8);
-            default -> throw new IllegalArgumentException("unknown content in tree.txt: " + spec);
-        };
-        var bytes = new ByteArrayOutputStream();
-        bytes.write(prefix);
-        try (var zip = new ZipOutputStream(bytes)) {
-            for (var entry : splitTopLevel(spec.substring(open + 1, spec.length() - 1))) {
-                var equals = entry.indexOf(" = ");
-                zip.putNextEntry(new ZipEntry(equals < 0 ? entry : entry.substring(0, equals).strip()));
-                if (equals >= 0) {
-                    zip.write(content(entry.substring(equals + 3).strip()));
-                }
-                zip.closeEntry();
-            }
-        }
-        return bytes.toByteArray();
-    }
-
-    /** Splits {@code a, b = zip(c, d), e} at the commas outside parentheses. */
-    private static List<String> splitTopLevel(String list) {
-        var parts = new ArrayList<String>();
-        int depth = 0;
-        int start = 0;
-        for (int i = 0; i <= list.length(); i++) {
-            var c = i < list.length() ? list.charAt(i) : ',';
-            if (c == '(') {
-                depth++;
-            } else if (c == ')') {
-                depth--;
-            } else if (c == ',' && depth == 0) {
-                var part = list.substring(start, i).strip();
-                if (!part.isEmpty()) {
-                    parts.add(part);
-                }
-                start = i + 1;
-            }
-        }
-        return parts;
     }
 
     private static void checkAllowlistMatchesRules(Path rules, PrintStream out, List<String> failures) {
@@ -282,7 +184,7 @@ final class SelfTest {
     /**
      * Problems with what lies below {@code fixturesDir}: a directory that is not a listed
      * fixture, a file outside every fixture directory, or a file inside a fixture directory
-     * that its fixture does not use (see {@link Fixture#uses(String)}). The main check leaves
+     * that its fixture does not use (see {@link Fixture#inputs(Path)}). The main check leaves
      * the fixture directories out, so the self-test must account for every file in them.
      */
     static List<String> layoutProblems(Path fixturesDir) {
@@ -301,8 +203,9 @@ final class SelfTest {
             } else if (fixture.isEmpty()) {
                 problems.add(name + ": fixture directory not listed in Fixtures.ALL");
             } else {
+                var inputs = fixture.get().inputs(child);
                 for (var file : FileTree.files(child, List.of(), f -> true)) {
-                    if (!fixture.get().uses(FileTree.relative(child, file))) {
+                    if (!inputs.contains(file)) {
                         problems.add(FileTree.relative(fixturesDir, file) + ": not used by fixture " + name
                                 + " (" + fixture.get().kind() + ")");
                     } else if (!isText(file)) {
@@ -346,6 +249,7 @@ final class SelfTest {
                 "foreign-requires/App.java",
                 "foreign-jar/tree.txt",
                 "foreign-jar/real.jar",
+                "launcher-source/tools/Tool.java",
                 "annotation-declaration/fx/Binary.java = class");
         var expected = List.of(
                 "Stray.java: file outside every fixture directory",
@@ -353,11 +257,12 @@ final class SelfTest {
                 "bytecode-annotation/fx/Pre.class: not used by fixture bytecode-annotation (BYTECODE)",
                 "foreign-jar/real.jar: not used by fixture foreign-jar (FILES)",
                 "foreign-requires/App.java: not used by fixture foreign-requires (DEPENDENCIES)",
+                "launcher-source/tools/Tool.java: not used by fixture launcher-source (LAUNCHER)",
                 "notes.txt: file outside every fixture directory",
                 "source-annotation/fx/A.class: not used by fixture source-annotation (SOURCE)",
                 "unlisted: fixture directory not listed in Fixtures.ALL");
         withScratch(failures, "layout check", scratch -> {
-            materialize(tree, scratch);
+            TreeSpec.materialize(tree, scratch);
             var actual = layoutProblems(scratch);
             if (!new TreeSet<>(actual).equals(new TreeSet<>(expected)) || actual.size() != expected.size()) {
                 failures.add("layout check: expected " + expected + " but got " + actual);

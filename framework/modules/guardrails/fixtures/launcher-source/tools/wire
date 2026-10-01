@@ -1,0 +1,14 @@
+#!/usr/bin/env -S java --source 25
+// Fixture: a launcher script (JEP 330) without the .java extension. Run as ./wire, it is
+// Java code like any .java file and gets the same source check.
+import java.lang.annotation.Retention;
+import java.lang.annotation.RetentionPolicy;
+
+@Retention(RetentionPolicy.RUNTIME)
+@interface Inject {
+}
+
+@Inject
+void main() {
+    IO.println(Inject.class.isAnnotationPresent(Retention.class));
+}

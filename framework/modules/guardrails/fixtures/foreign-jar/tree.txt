@@ -26,3 +26,6 @@ testdata/data.zip = zip(a.txt, b/c.json)
 testdata/empty.zip = zip()
 testdata/nested.zip = zip(inner.zip = zip(x.txt))
 out/lib.zip = zip(fx/A.class)
+# A file that starts like a zip but that ZipFile cannot open cannot be shown to be free of
+# Java code (fail-closed).
+lib/damaged.zip = truncated-zip(data/a.txt)

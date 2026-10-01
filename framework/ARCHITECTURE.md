@@ -65,10 +65,10 @@ Kontroller (paketprivata klasser):
 
 | Kontroll | Hur | Regler |
 |---|---|---|
-| `SourceCheck` | `JavacTask.parse()` + `analyze()` (attribuering), `TreePathScanner`, `Trees.getElement` | annotering utanför tillåtelselistan (fullt kvalificerat namn efter attribuering, så en egen `Override` skiljs från `java.lang.Override`), annoteringar som inte går att lösa upp, `@interface`, import från annat än JDK/projekt, läsning av annoteringar via reflektion: anrop och method references till `java.base`-metoder vars returtyp (efter erasure, även arrayer) är `Annotation` eller `AnnotatedType`, samt `isAnnotationPresent` och `Method.getDefaultValue` |
+| `SourceCheck` | `JavacTask.parse()` + `analyze()` (attribuering), `TreePathScanner`, `Trees.getElement`; för filer utan `.java`-ändelse en `SimpleJavaFileObject` med filens text som launchern läser den | `.jsh` och `#!`-skript som inte kompilerar (`UNCHECKABLE_SOURCE`); annotering utanför tillåtelselistan (fullt kvalificerat namn efter attribuering, så en egen `Override` skiljs från `java.lang.Override`), annoteringar som inte går att lösa upp, `@interface`, import från annat än JDK/projekt, läsning av annoteringar via reflektion: anrop och method references till `java.base`-metoder vars returtyp (efter erasure, även arrayer) är `Annotation` eller `AnnotatedType`, samt `isAnnotationPresent` och `Method.getDefaultValue` |
 | `BytecodeCheck` | `java.lang.classfile` | `Runtime(In)Visible{,Parameter,Type}Annotations` på klass, fält, metod, record-komponent och i `Code` (typannoteringar i metodkroppar), `AnnotationDefault`, nästlade annoteringar, klasser med `ACC_ANNOTATION` |
 | `DependencyCheck` | `module-info.class` → `ModuleAttribute` | `requires` (även `static`/`transitive`) som varken är JDK-modul eller projektmodul |
-| `FileCheck` | filträd inklusive länkar; innehållet i zip-filer (`java.util.zip`) | jar-arkiv utanför `out/`: efter namn (`.jar`, `.jmod`, `.war`, `.ear`, skiftlägesokänsligt) **och** efter innehåll (en zip-fil med vilket namn som helst, även med skript eller jmod-huvud framför, som innehåller en `.class`-post, en post som börjar med class-filens magiska tal, `META-INF/MANIFEST.MF`, ett arkiv efter namn eller en nästlad zip med något av detta); byggfiler från Maven, Gradle, Ant, Ivy, Bazel, Buck, Pants, Mill, sbt och Make (`pom.xml`, `build.gradle(.kts)`, `gradlew`, `mvnw`, `libs.versions.toml`, `build.xml`, `BUILD`, `BUCK`, `pants.toml`, `build.mill`, `Makefile`, …) samt alla filer under `.mvn/`, `.gradle/`, `.mill/`, `.bsp/`; varje symbolisk länk |
+| `FileCheck` | filträd inklusive länkar; innehållet i zip-filer (`java.util.zip`) | jar-arkiv utanför `out/`: efter namn (`.jar`, `.jmod`, `.war`, `.ear`, skiftlägesokänsligt) **och** efter innehåll (en zip-fil med vilket namn som helst, även med skript eller jmod-huvud framför, som innehåller en `.class`-post, en post som börjar med class-filens magiska tal, `META-INF/MANIFEST.MF`, ett arkiv efter namn eller en nästlad zip med något av detta); byggfiler från Maven, Gradle, Ant, Ivy, Bazel, Buck, Pants, Mill, sbt och Make (`pom.xml`, `build.gradle(.kts)`, `gradlew`, `mvnw`, `libs.versions.toml`, `build.xml`, `BUILD`, `BUCK`, `pants.toml`, `build.mill`, `Makefile`, …) samt alla filer under `.mvn/`, `.gradle/`, `.mill/`, `.bsp/`, filer som slutar på `.gradle`, `.gradle.kts`, `.sbt`, `.bzl` samt `project.clj` och `deps.edn`; varje symbolisk länk; en fil som börjar som zip (`PK\3\4`, `PK\5\6`) men som `ZipFile` inte kan öppna räknas som jar (fail-closed) |
 
 Beslut:
 
@@ -92,8 +92,9 @@ Beslut:
   beroendekontrollen, aldrig från filkontrollen. Allt annat under `fixtures/` (en lös
   `.java` direkt i katalogen, en olistad katalog) kontrolleras som vanligt. Självtestet
   ansvarar för allt i de undantagna katalogerna: varje fil där måste användas av sin fixture
-  (`Fixture.uses`: `.java` för `SOURCE`/`BYTECODE`, `src/**.java` för `DEPENDENCIES`,
-  `tree.txt` för `FILES`), och varje `.java` i en fixture källkontrolleras med exakt angivna
+  (`Fixture.inputs`, det enda stället som säger vilka filer en typ läser: `.java` för
+  `SOURCE`/`BYTECODE`, `src/**.java` för `DEPENDENCIES`, `tree.txt` för `FILES`, allt utom
+  `.java` för `LAUNCHER`), och varje sådan fil kontrolleras med exakt angivna
   förväntningar. `out/` undantas från källkontrollen och är den enda plats där jar-arkiv får
   finnas.
 - **Jar-arkiv känns igen på innehåll, inte bara namn.** En omdöpt jar (`.zip`, utan
@@ -101,6 +102,23 @@ Beslut:
   (testdata) är tillåtna. `ZipFile` hittar centralkatalogen från filens slut, så data framför
   arkivet döljer det inte; nästlade arkiv läses med `ZipInputStream` upp till 8 nivåer, och
   djupare nästling räknas som Java-kod.
+- **Java-kod känns igen på innehåll, inte bara på `.java`.** Source launchern kör en fil
+  med vilket namn som helst (`java --source 25 FIL`, eller `./FIL` med en `#!`-rad), så
+  varje fil utanför `out/` och de undantagna katalogerna som inte slutar på `.java` erbjuds
+  `SourceCheck.analyzeLauncherSource`. Filen läses som launchern läser den: UTF-8, en första
+  rad som börjar med `#!` töms (radbrytningen behålls så radnumren stämmer), den implicita
+  klassen i en compact source file får filens namn, `--release 25 --enable-preview`. Varje
+  sådan fil analyseras för sig, som launchern kompilerar den.
+  - Parsar javac filen analyseras den som en `.java`-fil. Fel vid attribuering ger
+    `UNCHECKABLE_SOURCE` (raden för första felet).
+  - Parsar javac den inte kan launchern inte heller köra den, och den hoppas över, utom om
+    första raden är en `#!`-rad som nämner `java`: då är det ett skript som ska vara Java,
+    och det rapporteras som `UNCHECKABLE_SOURCE` (fail-closed). Detsamma gäller om ett
+    sådant skript inte är UTF-8.
+  - jshell-skript (`.jsh`) är inga kompileringsenheter och kan inte analyseras: alltid
+    `UNCHECKABLE_SOURCE`.
+  - Gränsen: det JDK:n kör eller laddar direkt kontrolleras maskinellt. Innehåll som först
+    måste packas upp eller avkodas (gzip, tar, base64, …) gör det inte (se PROGRESS.md).
 - **Class-filer känns igen på innehåll:** bytekodkontrollen läser varje fil som slutar på
   `.class` *eller* börjar med `CAFEBABE`, så en omdöpt class-fil kontrolleras också.
 - **Symboliska länkar är förbjudna** (regel `SYMBOLIC_LINK`, REGLER §1). Ingen kontroll
@@ -134,10 +152,12 @@ modules/x/src/spola/x/Marker.java:3: ANNOTATION_DECLARATION (REGLER.md 2. Annote
 - Typer: `SOURCE` (källkontroll direkt på filerna), `BYTECODE` (källkontroll, sedan
   kompilering till en temporär katalog och bytekodkontroll), `DEPENDENCIES` (källkontroll av
   `src/`, sedan kompilering som moduler och beroende- och bytekodkontroll), `FILES` (varje
-  rad i `tree.txt` skapas i en temporär katalog, filkontroll). `tree.txt` kan beskriva tomma
-  filer, kataloger (`dir/`), symboliska länkar (`sökväg -> mål`) och genererat innehåll
-  (`sökväg = zip(post, post = class, ...)`, `jmod(...)`, `script+zip(...)`, `class`), så att
-  inga riktiga arkiv eller class-filer checkas in.
+  rad i `tree.txt` skapas i en temporär katalog, filkontroll), `LAUNCHER` (samma urval och
+  analys av filer utan `.java`-ändelse som huvudkontrollen, `Guardrails.analyzeLauncherSources`).
+  `tree.txt` (formatet i `TreeSpec`) kan beskriva tomma filer, kataloger (`dir/`),
+  symboliska länkar (`sökväg -> mål`) och genererat innehåll (`sökväg = zip(post, post =
+  class, ...)`, `jmod(...)`, `script+zip(...)`, `truncated-zip(...)`, `class`), så att inga
+  riktiga arkiv eller class-filer checkas in.
 - Självtestet testar också sig självt: `layoutProblems` körs mot ett temporärt träd med
   lösa filer av alla slag, och `Guardrails.check` körs mot ett temporärt projekt med en
   `@interface` direkt under `fixtures/`, i en olistad katalog (båda ska rapporteras) och i
@@ -155,8 +175,8 @@ modules/x/src/spola/x/Marker.java:3: ANNOTATION_DECLARATION (REGLER.md 2. Annote
   huvudkontrollen enligt uppdrag 01 och ingår inte i något bygge.
 
 Fixtures i dag: `source-annotation`, `annotation-declaration`, `bytecode-annotation`,
-`foreign-requires`, `foreign-import`, `reflective-annotation-read`, `foreign-jar`,
-`foreign-build-file`, `symbolic-link`.
+`foreign-requires`, `foreign-import`, `reflective-annotation-read`, `launcher-source`,
+`foreign-jar`, `foreign-build-file`, `symbolic-link`.
 
 Lägga till en fixture: skapa katalogen, lägg till en `Fixture` i `Fixtures.ALL` med de exakta
 förväntade överträdelserna och kör `java Build.java`.

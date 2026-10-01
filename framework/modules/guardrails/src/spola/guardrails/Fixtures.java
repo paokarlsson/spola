@@ -117,6 +117,21 @@ final class Fixtures {
                     source("fx/Reader.java", 47, Rule.ANNOTATION_REFLECTION,
                             "java.lang.reflect.Parameter.getAnnotatedType"))),
 
+            new Fixture("launcher-source", Fixture.Kind.LAUNCHER, List.of(
+                    // A #! script: the same source check as a .java file.
+                    source("tools/wire", 7, Rule.ANNOTATION_NOT_ALLOWED, "@java.lang.annotation.Retention"),
+                    source("tools/wire", 8, Rule.ANNOTATION_DECLARATION, "@interface wire.Inject"),
+                    source("tools/wire", 11, Rule.ANNOTATION_NOT_ALLOWED, "@wire.Inject"),
+                    source("tools/wire", 13, Rule.ANNOTATION_REFLECTION, "java.lang.Class.isAnnotationPresent"),
+                    // Any file javac parses.
+                    source("tools/generate.txt", 5, Rule.ANNOTATION_NOT_ALLOWED, "@java.beans.BeanProperty"),
+                    // Fail-closed: #! scripts javac cannot parse or attribute, and jshell scripts.
+                    source("tools/broken", 4, Rule.UNCHECKABLE_SOURCE, "launcher script javac cannot parse"),
+                    source("tools/unresolved", 3, Rule.FOREIGN_IMPORT, "import org.example.Injector"),
+                    source("tools/unresolved", 3, Rule.UNCHECKABLE_SOURCE, "Java source javac cannot attribute"),
+                    source("tools/setup.jsh", 0, Rule.UNCHECKABLE_SOURCE, "jshell script"))),
+                    // tools/run.sh and tools/notes.txt are not Java source: skipped.
+
             new Fixture("foreign-jar", Fixture.Kind.FILES, List.of(
                     // out/allowed.jar and out/nested/also-allowed.jar are in the output directory: allowed.
                     file("lib/x.jar", Rule.FOREIGN_JAR),
@@ -133,7 +148,9 @@ final class Fixtures {
                     file("lib/nested.zip", Rule.FOREIGN_JAR),
                     file("lib/bundle.zip", Rule.FOREIGN_JAR),
                     file("bin/run.sh", Rule.FOREIGN_JAR),
-                    file("vendor/sdk", Rule.FOREIGN_JAR))),
+                    file("vendor/sdk", Rule.FOREIGN_JAR),
+                    // Starts like a zip, but ZipFile cannot open it: fail-closed.
+                    file("lib/damaged.zip", Rule.FOREIGN_JAR))),
 
             new Fixture("foreign-build-file", Fixture.Kind.FILES, List.of(
                     // docs/pom.xml.md is not a build file: allowed.
@@ -152,7 +169,14 @@ final class Fixtures {
                     file("pants.toml", Rule.FOREIGN_BUILD_FILE),
                     file("gradle/libs.versions.toml", Rule.FOREIGN_BUILD_FILE),
                     file(".mvn/jvm.config", Rule.FOREIGN_BUILD_FILE),
-                    file(".gradle/8.0/checksums.lock", Rule.FOREIGN_BUILD_FILE))),
+                    file(".gradle/8.0/checksums.lock", Rule.FOREIGN_BUILD_FILE),
+                    // By extension, Leiningen and the Clojure CLI; project/build.properties is allowed.
+                    file("gradle/deps.gradle", Rule.FOREIGN_BUILD_FILE),
+                    file("scripts/publish.gradle.kts", Rule.FOREIGN_BUILD_FILE),
+                    file("project/plugins.sbt", Rule.FOREIGN_BUILD_FILE),
+                    file("bazel/deps.bzl", Rule.FOREIGN_BUILD_FILE),
+                    file("project.clj", Rule.FOREIGN_BUILD_FILE),
+                    file("deps.edn", Rule.FOREIGN_BUILD_FILE))),
 
             new Fixture("symbolic-link", Fixture.Kind.FILES, List.of(
                     // vendor/** are regular files and a directory: allowed.
