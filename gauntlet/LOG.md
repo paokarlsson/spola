@@ -6,3 +6,4 @@
 - 2026-10-02 08:24 · 20261002-0751-util-loggning-och-hjalpare · STALLED · 3 rounds · Util part 1: logging on System.Logger and Lombok helpers · commits: ba58f82, 588e977, 9b21e3d · reason: a new MAJOR was upheld every round (1→1→1); the remaining one is an Error from a bad exception's toString escaping Log when Logging.configure has not been called
 - 2026-10-02 08:36 · 20261002-0826-util-log-backend-fel · PASS · 1 rounds · Finish 05a: keep backend logging errors from escaping spola.util Log · commits: b2bb961
 - 2026-10-02 10:10 · 20261002-0935-integration-karnmoduler · PASS · 3 rounds · Integration: kärnmodulerna i ett riktigt program · commits: cf8b464, 86183f6, 71c53f5
+- 2026-10-02 10:43 · 20261002-1011-util-builders · PASS · 1 rounds · Util part 2: record builders and with-methods via generated source · commits: b4faeaa
