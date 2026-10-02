@@ -13,7 +13,9 @@ kodgenerering, ingen reflektion. Modulen har inga `requires` på andra Spola-mod
 | `@SneakyThrows` | `Unchecked.run/get/function/consumer/supplier/runnable` |
 | `@ToString.Exclude` | `ToString.of("User").add(...).secret(...)` |
 
-Builders och with-metoder för records kommer i uppdrag 05b.
+Builders och with-metoder för records (Lomboks `@Builder`, `@Builder(toBuilder = true)` och
+`@With`) finns i modulen `spola.codegen` som genererad, incheckad källkod; se
+[`modules/codegen/README.md`](../codegen/README.md).
 
 ## Loggning: `@Slf4j` och `Log`
 
@@ -255,3 +257,6 @@ record Order(String id, Customer customer, List<Line> lines) {
     }
 }
 ```
+
+Det records inte ger är en läsbar builder och kopior med en ändrad komponent; de genereras av
+`spola.codegen` (se [`modules/codegen/README.md`](../codegen/README.md)).

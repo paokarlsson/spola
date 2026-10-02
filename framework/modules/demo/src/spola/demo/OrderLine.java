@@ -10,7 +10,7 @@ import java.util.regex.Pattern;
  * @param sku the article
  * @param quantity how many, at least 1
  */
-record OrderLine(int line, String sku, int quantity) {
+record OrderLine(int line, String sku, int quantity) implements OrderLineWith {
 
     private static final Pattern FORMAT = Pattern.compile("\\s*([^;\\s]+)\\s*;\\s*([0-9]{1,9})\\s*");
 
@@ -43,7 +43,7 @@ record OrderLine(int line, String sku, int quantity) {
             throw new OrderFileException(file, line, "the sku may only hold visible characters (no control, format or"
                     + " separator characters), got '" + printable(text) + "'");
         }
-        return new OrderLine(line, sku, quantity);
+        return OrderLineWith.builder().line(line).sku(sku).quantity(quantity).build();
     }
 
     /**

@@ -3,10 +3,16 @@
 //     java Build.java
 //
 // Steps: read module-info.java of every module listed in MODULES, order the modules by their
-// `requires`, compile each one with javac (javax.tools), package one jar per module with the
-// JDK jar tool, compile each module's tests, run the guardrails check from the freshly built
-// jar, then run every module's tests with spola.test (the guardrails self-test is one of them).
+// `requires`, compile spola.codegen and check every generated file against its record, compile
+// the other modules with javac (javax.tools), package one jar per module with the JDK jar tool,
+// compile each module's tests, run the guardrails check from the freshly built jar, then run
+// every module's tests with spola.test (the guardrails self-test is one of them).
 // Exit code 0 means green; anything else means red.
+//
+// Generated record builders (spola.codegen):
+//
+//     java Build.java codegen                          regenerate every generated file
+//     java Build.java codegen FILE RECORD              generate RECORD's <Record>With.java next to FILE
 
 import module java.compiler;
 import module jdk.compiler;
@@ -49,12 +55,21 @@ static final List<ModuleDir> MODULES = List.of(
                 new TestEntry("spola.config.ConfigTests", "suite")),
         new ModuleDir("spola.util", Path.of("modules/util"),
                 new TestEntry("spola.util.UtilTests", "suite")),
+        new ModuleDir("spola.codegen", Path.of("modules/codegen"),
+                new TestEntry("spola.codegen.CodegenTests", "suite")),
         new ModuleDir("spola.demo", Path.of("modules/demo"),
                 new TestEntry("spola.demo.DemoTests", "suite")));
 
 /// The test runner module. Test sources of every other module read it (`--add-reads`);
 /// the module itself never `requires` it, so the shipped jar does not depend on it.
 static final String TEST_RUNNER = "spola.test";
+
+/// The generator of record builders. It is compiled first and checks every generated file
+/// before anything else is compiled, so it must not require other project modules.
+static final String CODEGEN = "spola.codegen";
+
+/// First argument that makes `java Build.java` generate instead of building.
+static final String CODEGEN_COMMAND = "codegen";
 
 /// Deliberately broken guardrails examples; never compiled into an artifact.
 static final Path FIXTURES = Path.of("modules/guardrails/fixtures");
@@ -119,35 +134,56 @@ void main(String[] args) {
     }
     installExitGuard();
     var start = System.nanoTime();
+    var codegen = args.length > 0 && args[0].equals(CODEGEN_COMMAND);
+    var what = codegen ? "CODEGEN" : "BUILD";
     int exitCode;
     try {
-        build();
+        if (codegen) {
+            codegen(List.of(args).subList(1, args.length));
+        } else if (args.length > 0) {
+            throw new BuildFailure("unknown argument " + args[0] + "; use `java Build.java` to build or `java Build.java "
+                    + CODEGEN_COMMAND + " [FILE RECORD]` to generate record builders");
+        } else {
+            build();
+        }
         exitCode = 0;
     } catch (BuildFailure failure) {
-        System.err.println("BUILD FAILED: " + failure.getMessage());
+        System.err.println(what + " FAILED: " + failure.getMessage());
         exitCode = 1;
     } catch (Exception | Error unexpected) {
-        System.err.println("BUILD FAILED with an unexpected error:");
+        System.err.println(what + " FAILED with an unexpected error:");
         unexpected.printStackTrace();
         exitCode = 1;
     }
     var millis = (System.nanoTime() - start) / 1_000_000;
-    System.out.println((exitCode == 0 ? "BUILD OK" : "BUILD RED") + " in " + millis + " ms");
+    System.out.println((exitCode == 0 ? what + " OK" : what + " RED") + " in " + millis + " ms");
     decidedExitCode = exitCode;
     System.exit(exitCode);
 }
 
-void build() throws IOException {
+void requireFrameworkDirectory() {
     if (!Files.isRegularFile(Path.of("Build.java")) || !Files.isRegularFile(Path.of("REGLER.md"))) {
         throw new BuildFailure("run `java Build.java` from the framework/ directory");
     }
-    var order = dependencyOrder(readRequires());
+}
+
+void build() throws IOException {
+    requireFrameworkDirectory();
+    var requires = readRequires();
+    var order = dependencyOrder(requires);
     System.out.println("modules in build order: " + order.stream().map(ModuleDir::name).toList());
 
     deleteRecursively(OUT);
     Files.createDirectories(CLASSES);
+    // spola.codegen first, then the check of the generated files, then everything else: a
+    // generated file that is out of date gets the codegen message, not a javac error about it.
+    var codegen = codegenModule(requires);
+    compile(codegen);
+    checkGeneratedFiles();
     for (var module : order) {
-        compile(module);
+        if (module != codegen) {
+            compile(module);
+        }
     }
     for (var module : order) {
         jar(module);
@@ -243,11 +279,17 @@ void visit(String name, Map<String, ModuleDir> byName, Map<String, List<String>>
 }
 
 void compile(ModuleDir module) throws IOException {
+    compile(module, CLASSES);
+}
+
+/// Compiles the module into `<output>/<module>/`, with the modules already in `output` on the
+/// module path.
+void compile(ModuleDir module, Path output) throws IOException {
     var sources = javaSources(module, module.sources());
     var options = new ArrayList<>(JAVAC_OPTIONS);
     options.addAll(List.of(
-            "--module-path", CLASSES.toString(),          // modules compiled before this one
-            "-d", CLASSES.resolve(module.name()).toString()));
+            "--module-path", output.toString(),           // modules compiled before this one
+            "-d", output.resolve(module.name()).toString()));
     javac(module.name(), sources, options);
     System.out.println("compiled " + module.name() + " (" + sources.size() + " files)");
 }
@@ -326,6 +368,78 @@ void jar(ModuleDir module) {
         throw new BuildFailure("jar for " + module.name() + " failed with exit code " + exit);
     }
     System.out.println("packaged " + jarFile);
+}
+
+/// spola.codegen from MODULES, after checking that it requires no project module (it is
+/// compiled before the others).
+ModuleDir codegenModule(Map<String, List<String>> requires) {
+    var module = MODULES.stream().filter(m -> m.name().equals(CODEGEN)).findFirst()
+            .orElseThrow(() -> new BuildFailure(CODEGEN + " is missing from MODULES"));
+    var project = requires.get(CODEGEN).stream().filter(name -> !isJdkModule(name)).toList();
+    if (!project.isEmpty()) {
+        throw new BuildFailure(CODEGEN + " requires " + project + "; it is compiled and run before every other module,"
+                + " so it may require JDK modules only");
+    }
+    return module;
+}
+
+/// The source and test directories of every module: where generated files are looked for.
+List<String> generatedFileRoots() {
+    var roots = new ArrayList<String>();
+    for (var module : MODULES) {
+        roots.add(module.sources().toString());
+        roots.add(module.testSources().toString());
+    }
+    return roots;
+}
+
+/// Runs spola.codegen's `check` from `out/classes/spola.codegen`: every generated file is
+/// generated again in memory from its record's source and compared with the file. Runs before
+/// the other modules are compiled.
+void checkGeneratedFiles() {
+    var args = new ArrayList<>(List.of("check"));
+    args.addAll(generatedFileRoots());
+    System.out.println();
+    System.out.println("generated files:");
+    if (codegenTool(CLASSES.resolve(CODEGEN)).run(System.out, System.err, args.toArray(String[]::new)) != 0) {
+        throw new BuildFailure("generated files do not match their records (see above); regenerate them with"
+                + " `java Build.java " + CODEGEN_COMMAND + "` in framework/");
+    }
+    System.out.println();
+}
+
+/// `java Build.java codegen [FILE RECORD]`: compiles spola.codegen alone into `out/codegen/`
+/// and runs it. Without arguments it regenerates every generated file in the modules' source
+/// and test directories; with a file and a record name it generates that record's file.
+void codegen(List<String> args) throws IOException {
+    requireFrameworkDirectory();
+    if (args.size() != 0 && args.size() != 2) {
+        throw new BuildFailure("usage: java Build.java " + CODEGEN_COMMAND + " [FILE RECORD], e.g. java Build.java "
+                + CODEGEN_COMMAND + " modules/demo/src/spola/demo/OrderLine.java OrderLine");
+    }
+    var codegen = codegenModule(readRequires());
+    var output = OUT.resolve("codegen");
+    deleteRecursively(output);
+    compile(codegen, output);
+    var toolArgs = new ArrayList<String>();
+    if (args.isEmpty()) {
+        toolArgs.add("regenerate");
+        toolArgs.addAll(generatedFileRoots());
+    } else {
+        toolArgs.add("generate");
+        toolArgs.addAll(args);
+    }
+    if (codegenTool(output.resolve(CODEGEN)).run(System.out, System.err, toolArgs.toArray(String[]::new)) != 0) {
+        throw new BuildFailure("code generation failed (see above)");
+    }
+}
+
+/// The ToolProvider of spola.codegen, loaded from its compiled classes in a fresh module layer.
+ToolProvider codegenTool(Path classes) {
+    var boot = ModuleLayer.boot();
+    var configuration = boot.configuration().resolve(ModuleFinder.of(classes), ModuleFinder.of(), Set.of(CODEGEN));
+    var layer = boot.defineModulesWithOneLoader(configuration, ClassLoader.getSystemClassLoader());
+    return findTool(layer, layer.findModule(CODEGEN).orElseThrow(), "spola-codegen");
 }
 
 /// Loads spola.guardrails from its jar into a fresh module layer and runs its ToolProvider:

@@ -14,11 +14,13 @@ framework/
   modules/di/README.md      exempel för spola.di bredvid motsvarande Spring-kod
   modules/config/README.md  exempel för spola.config bredvid motsvarande Spring Boot-kod
   modules/util/README.md    exempel för spola.util bredvid motsvarande Lombok- och Spring Boot-kod
+  modules/codegen/README.md arbetsflödet för genererade builders/with-metoder, bredvid Lombok
   modules/demo/README.md    integrationsprogrammet: körning, Spring Boot-jämförelse, friktionsrapport
   out/                      byggresultat (ignoreras av git)
     classes/<modulnamn>/    kompilerade klasser per modul
     <modulnamn>.jar         en jar per modul (utan tester)
     test-classes/<modulnamn>/   modulen kompilerad igen tillsammans med sina tester
+    codegen/spola.codegen/  generatorn, kompilerad av `java Build.java codegen`
 ```
 
 ## Bygget (`Build.java`)
@@ -53,6 +55,14 @@ framework/
   via `ServiceLoader`. Modulen deklarerar det explicit med
   `provides java.util.spi.ToolProvider with spola.guardrails.GuardrailsTool`. Inget
   reflektionsanrop och ingen ny JVM behövs, och artefakten som testas är den som levereras.
+- **Genererade filer kontrolleras först:** `spola.codegen` kompileras före alla andra moduler,
+  och dess `ToolProvider` (`spola-codegen`, laddad från `out/classes/spola.codegen` i ett eget
+  `ModuleLayer`) kör `check` på källkods- och testkatalogerna för varje modul i `MODULES`.
+  Först därefter kompileras resten. Se "Util del 2" nedan. `spola.codegen` får därför bara
+  kräva JDK-moduler; bygget stoppar annars med ett meddelande.
+- **`java Build.java codegen [FIL RECORD]`** kompilerar bara `spola.codegen` (till
+  `out/codegen/`) och kör `regenerate` (utan argument) eller `generate FIL RECORD`. Ett annat
+  första argument än `codegen` är ett fel i stället för att ignoreras.
 - **Ordning:** kompilera alla moduler, packa jar-filerna, kompilera alla moduler igen med
   sina tester (`out/test-classes/`), kör guardrails (som därmed också ser testkällorna och
   testklassernas bytekod), kör till sist testerna för alla moduler. Testerna för alla moduler
@@ -535,9 +545,8 @@ Uppdrag 05a. Ersätter Lomboks `@Slf4j`/`@Log`, `@Getter(lazy = true)`, `@Sneaky
 `spola.test`. Exempel bredvid Lombok och Spring Boot: `modules/util/README.md`.
 
 **Uppdelning av rad 05 i `PLAN.md`:** rad 05 (util) är delad i 05a (detta: loggning och
-hjälpare) och 05b (builders och with-metoder för records). 05b kräver ett eget designbeslut
-(utan annoteringar och utan runtime-reflektion återstår i praktiken genererad, incheckad
-källkod) och ryms inte här.
+hjälpare) och 05b (builders och with-metoder för records, modulen `spola.codegen`, se "Util
+del 2" nedan).
 
 ### API (paket `spola.util`)
 
@@ -663,6 +672,101 @@ Paketprivat: `MessageFormatter` (platshållarna), `LineFormatter` och `LineHandl
   `String.valueOf`, arrayer expanderas inte). `secret` skriver `***` för ett värde som inte är
   `null` och anropar aldrig dess `toString()`, så varken värde eller längd läcker; `null` visas
   som `null` (avslöjar bara om hemligheten finns, vilket hjälper vid felsökning).
+
+## Util del 2: builders och with-metoder för records (`spola.codegen`)
+
+Uppdrag 05b. Ersätter Lomboks `@Builder`, `@Builder(toBuilder = true)` och `@With` för
+records. Modulen kräver bara `jdk.compiler`; testerna läser `spola.test`. Arbetsflöde och
+exempel bredvid Lombok: `modules/codegen/README.md`.
+
+### API (paket `spola.codegen`)
+
+| Typ | Roll |
+|---|---|
+| `RecordCodegen` | `generate(källfil, recordnamn) -> String` (den genererade källkoden), `targetFile`, `interfaceName`, `SUFFIX` |
+| `GeneratedFiles` | `header`, `write(källfil, recordnamn)`, `find(kataloger)`, `check(kataloger) -> List<Problem>`, `regenerate(kataloger)`; `Problem`, `Written`, `Regeneration`, `MARKER`, `REGENERATE` |
+| `CodegenException` | ett fel vid generering; meddelandet namnger fil och record |
+| `CodegenTool` | `ToolProvider` `spola-codegen`: `generate FIL RECORD`, `regenerate KATALOG...`, `check KATALOG...` |
+
+Paketprivat: `RecordReader` (parsning och kontroller), `RecordModel` (det som genereras från),
+`Renderer` (texten).
+
+### Beslut
+
+- **Genererad, incheckad källkod.** REGLER §2 förbjuder annoteringar som markering, och
+  därmed en annotation processor (den behöver en annotering att reagera på, och `-proc:none`
+  gäller i bygget). Reflektion i runtime (läsa recordets komponenter med
+  `Class.getRecordComponents` och anropa konstruktorn via `MethodHandle`) är förbjuden där den
+  går att undvika (REGLER §4), ger runtime-fel i stället för kompileringsfel och kan inte
+  följas med "Go to definition". Java 25 har inga `with`-uttryck utanför preview. Kvar blir
+  vanlig Java-kod som skrivs av ett verktyg, checkas in och kompileras som all annan kod.
+- **Opt-in via `implements` och ett sealed gränssnitt.** För `Person` genereras
+  `sealed interface PersonWith permits Person` i samma paket och katalog, och recordet väljer
+  stödet med `implements PersonWith`. Gränssnittet ger with-metoderna och `toBuilder()` som
+  `default`-metoder direkt på recordet utan att något i recordet genereras eller ändras.
+  `sealed` med recordet som enda tillåtna typ gör omvandlingen `(Person) this` säker och
+  hindrar andra klasser från att implementera gränssnittet. `builder()` är statisk i
+  gränssnittet (`PersonWith.builder()`), eftersom statiska gränssnittsmetoder inte ärvs.
+  Namnet `<Record>With` är en fast regel i generatorn; inget upptäcks genom namnet.
+- **Åtkomst följer recordet:** gränssnittet är publikt bara om recordet och alla typer runt
+  det är publika (medlemmar i ett gränssnitt räknas som publika), annars paketprivat. Ett
+  privat record kan inte nämnas av ett gränssnitt bredvid och är ett fel.
+- **Allt går genom den kanoniska konstruktorn:** `build()` anropar `new Person(...)`,
+  `withX` är `toBuilder().x(x).build()`. Den kompakta konstruktorns validering och
+  normalisering körs därför alltid. Kostnaden (en builder per `withX`) är liten och koden blir
+  en rad per metod.
+- **Källparsning, inte klasser.** Generatorn parsar recordets källfil med
+  `JavacTask.parse()` (ingen attribuering, ingen klassväg). Den kan därför köras innan något
+  kompilerats, och även när den genererade filen eller recordet inte kompilerar. Typerna skrivs
+  från syntaxträdet i en fast form; annoteringar tas bort. Eftersom gränssnittet ligger på
+  toppnivå kvalificeras namn på medlemstyper i recordet och i typerna runt det
+  (`Rejection` → `Summary.Rejection`, närmaste scope först, typparametrar lämnas). Källfilens
+  importer följer med (`import module`, on-demand och statiska); en enkel import vars namn
+  ingen komponenttyp eller gräns använder tas bort. Det ändrar ingen namnupplösning (en enkel
+  import påverkar bara sitt eget namn) och gör att den genererade filen inte beror på det
+  recordets övriga kod använder (t.ex. `spola.util.ToString` i en `toString`). Begränsning:
+  medlemstyper som ärvs från en supertyp syns inte i syntaxträdet och kvalificeras inte.
+  Komponenter är recordets icke-statiska fält i trädet (parsern gör dem till fält; andra
+  instansfält är inte tillåtna i ett record).
+- **Namn som skulle krocka är fel, inte specialfall:** komponenterna `builder`, `toBuilder`,
+  `build` och `equals` (sättaren `equals(Object)` skulle krocka med `Object.equals`), två
+  komponenter som ger samma `withX`, en egen `toBuilder()` eller `withX(...)` med en parameter i
+  recordet (den skulle tyst ersätta den genererade), och en typ eller typparameter som heter
+  `Builder` (betyder den nästlade klassen inne i gränssnittet).
+- **Rubriken är enda igenkänningen.** En genererad fil börjar med
+  `// Generated by spola.codegen from <Fil>.java, record <Namn>. Do not edit.` och
+  `// Regenerate after changing the record: java Build.java codegen (in framework/)`.
+  Rubriken anger bara källfilens namn (den ligger i samma katalog), inte sökvägen: utdata
+  beror bara på källfilens text och namn, så samma källa ger samma byte var den än ligger, och
+  rubriken blir densamma oavsett hur kommandot anropades. Filnamnet på den genererade filen
+  avgör ingenting; en fil med rubriken men fel namn rapporteras. `write` skriver aldrig över en
+  fil utan rubriken eller en genererad fil för ett annat record.
+- **Kontrollen i varje bygge, före kompileringen.** Bygget kompilerar `spola.codegen` först
+  och kör `check` på `src/` och `test/` i varje modul i `MODULES` innan någon annan modul
+  kompileras: varje genererad fil genereras om i minnet och jämförs tecken för tecken (även
+  radslut och blanktecken). Ett ändrat record (komponent tillagd, omdöpt, ny typ), en
+  handredigerad fil, en skadad rubrik, en borttagen källfil och ett record som inte
+  implementerar gränssnittet ger rött bygge med filens sökväg och `java Build.java codegen`.
+  Eftersom inget kompileras först kommer meddelandet även när den inaktuella filen inte
+  kompilerar (en omdöpt komponent), i stället för ett javac-fel som inte säger varför.
+  Kontrollen kostar en parsning per genererad fil.
+- **Generering är explicit.** Ett vanligt bygge skriver aldrig filer (bara kontroll).
+  `java Build.java codegen` utan argument genererar om alla befintliga genererade filer och
+  skriver bara de som ändras, så på ett rent träd ändras inget. Ett record som ännu inte
+  implementerar gränssnittet får sin fil ändå, med en rad om vad som fattas.
+- **Deterministisk och läsbar utdata:** fast ordning (rubrik, paket, importer, `builder()`,
+  `toBuilder()`, en `withX` per komponent i komponentordning, `Builder` med fält, sättare och
+  `build()`), fyra mellanslag per nivå, radslut `\n`, Javadoc på allt som
+  `-Xdoclint:all/protected` kräver (också typparametrarna), privata konstruktorer i `Builder`
+  (en implicit publik konstruktor skulle ge en doclint-varning). Den genererade koden
+  kompilerar utan varningar under `-Xlint:all -Werror`, också för generiska records
+  (omvandlingen `(Pair<A, B>) this` är kontrollerad eftersom `Pair` är final och implementerar
+  `PairWith<A, B>`).
+- **Testerna kompilerar och kör genererad kod i minnet** (`javax.tools` med byggets flaggor,
+  en egen `ClassLoader` över de kompilerade byte). Den kompilerade testklassen skapas med
+  `Class.forName(...).getConstructor().newInstance()`, reflektion som bara finns i
+  testkoden: klassen finns först när testet körs. Den implementerar
+  `Supplier<List<String>>`, så resten är vanliga anrop.
 
 ## Integration: kärnmodulerna i ett program (`spola.demo`)
 

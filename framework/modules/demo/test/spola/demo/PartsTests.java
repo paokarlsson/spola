@@ -36,6 +36,19 @@ final class PartsTests {
                     assertEquals(new OrderLine(1, "A-100", 12), OrderLine.parse("o.txt", 1, "  A-100 ;\t12 "));
                     assertEquals("line 4: apple x 3", new OrderLine(4, "apple", 3).toString());
                 }),
+                test("OrderLine and Summary.Rejection have generated builders and with-methods (spola.codegen)", () -> {
+                    var order = OrderLineWith.builder().line(4).sku("apple").quantity(3).build();
+                    assertEquals(new OrderLine(4, "apple", 3), order);
+                    assertEquals(new OrderLine(4, "apple", 5), order.withQuantity(5));
+                    assertEquals(new OrderLine(9, "apple", 3), order.withLine(9));
+                    assertEquals(order, order.toBuilder().build());
+                    // The compact constructor runs for with-methods and builders alike.
+                    assertThrows(IllegalArgumentException.class, () -> order.withQuantity(0));
+                    assertThrows(NullPointerException.class, () -> order.toBuilder().sku(null).build());
+                    var rejection = RejectionWith.builder().order(order).reason("unknown sku").build();
+                    assertEquals(new Summary.Rejection(order, "unknown sku"), rejection);
+                    assertEquals(new Summary.Rejection(order, "blocked"), rejection.withReason("blocked"));
+                }),
                 test("a broken line names the file and the line, and shows the line escaped and shortened", () -> {
                     var failure = assertThrows(OrderFileException.class, () -> OrderLine.parse("o.txt", 7, "apple;x"));
                     assertEquals("o.txt line 7: expected 'sku;quantity' with a whole quantity of at least 1, got 'apple;x'",

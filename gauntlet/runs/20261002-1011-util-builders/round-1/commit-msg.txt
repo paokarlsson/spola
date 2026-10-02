@@ -1,0 +1,11 @@
+feat(codegen): generate record builders and with-methods from source
+
+Add spola.codegen, which parses a record's source with the Compiler Tree
+API and writes a checked-in sealed <Record>With interface with withX
+methods, toBuilder() and a nested Builder. Every build regenerates the
+files in memory before compiling and fails on stale or hand-edited ones.
+OrderLine and Summary.Rejection in spola.demo now use the generated code.
+
+Gauntlet-Run: 20261002-1011-util-builders
+Gauntlet-Round: 1/4
+Gauntlet-Verdict: PASS (0 blocker, 0 major, 8 minor upheld)

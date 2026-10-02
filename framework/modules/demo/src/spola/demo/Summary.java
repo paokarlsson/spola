@@ -20,7 +20,7 @@ record Summary(List<OrderLine> processed, List<Rejection> rejected, SortedMap<St
      * @param order the order
      * @param reason why, e.g. {@code unknown sku}
      */
-    record Rejection(OrderLine order, String reason) {
+    record Rejection(OrderLine order, String reason) implements RejectionWith {
     }
 
     Summary {

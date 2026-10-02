@@ -122,6 +122,38 @@
   kastas vidare, `isLoggable` som kastar släpps igenom, JDK:ns standardbackend med
   `ConsoleHandler`/`SimpleFormatter` utan `Logging.configure`).
 
+### Uppdrag 05b: util del 2, builders och with-metoder för records (`spola.codegen`)
+- Rad 05 i `PLAN.md` är därmed klar (05a loggning och hjälpare, 05b builders och with-metoder).
+- Modulen `spola.codegen` (`modules/codegen/`, kräver bara `jdk.compiler`): läser ett records
+  källfil med Compiler Tree API (bara parsning) och genererar `<Record>With.java` bredvid den:
+  `sealed interface <Record>With permits <Record>` med samma åtkomst som recordet, en
+  `withX` per komponent, `toBuilder()`, `builder()` och en nästlad `Builder`. Recordet väljer
+  stödet med `implements <Record>With`. Allt går genom den kanoniska konstruktorn.
+  Stöder toppnivå- och nästlade records, generiska records med gränser, primitiva, array-,
+  varargs- (som array) och generiska komponenttyper, källfilens importer (även
+  `import module`). Medlemstyper kvalificeras; oanvända enkla importer tas bort.
+- API: `RecordCodegen.generate(källfil, record) -> String`, `GeneratedFiles.write/find/check/
+  regenerate`, `CodegenTool` (`ToolProvider` `spola-codegen`). Fel (`CodegenException`)
+  namnger fil och record: saknad/icke-UTF-8/oparsbar fil, saknat record, inte ett record,
+  privat record, inga komponenter, standardpaketet, komponent `builder`/`toBuilder`/`build`/
+  `equals`, krockande `withX`, egen `toBuilder()`/`withX` i recordet, typen `Builder`.
+- `Build.java`: `spola.codegen` kompileras först och `check` körs på `src/` och `test/` i varje
+  modul innan något annat kompileras; en inaktuell eller handredigerad genererad fil ger rött
+  bygge med sökväg och `java Build.java codegen`, även när filen inte längre kompilerar.
+  `java Build.java codegen` genererar om alla genererade filer (skriver bara ändrade);
+  `java Build.java codegen FIL RECORD` genererar en.
+- `spola.demo`: `OrderLine` och `Summary.Rejection` implementerar `OrderLineWith` och
+  `RejectionWith` (incheckade). `OrderLine.parse` bygger med `OrderLineWith.builder()`;
+  `PartsTests` använder builders och with-metoder (`withQuantity`, `withReason`, `toBuilder`).
+- `modules/codegen/README.md` (arbetsflödet, genererad kod bredvid Lomboks `@Builder`,
+  `@Builder(toBuilder = true)` och `@With`), länkad från `modules/util/README.md`. Beslut i
+  ARCHITECTURE.md ("Util del 2").
+- 41 tester i `spola.codegen` (genererad kod kompilerad i minnet med byggets flaggor och körd:
+  vanligt, publikt, generiskt, nästlat, primitiva/array/varargs, importer; determinism och
+  rubrik; varje felfall; kontrollen efter tillagd/omdöpt komponent, handredigering, skadad
+  rubrik, fel filnamn, borttaget record; omgenerering). `spola.demo` har 43 tester. Bygget
+  tar ungefär 20–35 s (beroende på maskinen).
+
 ### Uppdrag 05c: integration av kärnmodulerna (`spola.demo`)
 - Modulen `spola.demo` (`modules/demo/`, kräver `spola.di`, `spola.config`, `spola.util`;
   exporterar inget, inget beror på den): en lagertjänst som läser en orderfil (`sku;antal`),
@@ -156,9 +188,6 @@
   Bygget tar ungefär 20 s.
 
 ## Återstår (enligt `uppdrag/PLAN.md`)
-- Rad 05 är delad: 05a (loggning och hjälpare) är klar; **05b (util-builders):** builders och
-  with-metoder för records återstår (kräver eget designbeslut: utan annoteringar och
-  runtime-reflektion återstår i praktiken genererad, incheckad källkod).
 - 06–20 enligt planen.
 - **Kvar från friktionsrapporten i 05c** (`modules/demo/README.md`, avsnitt "Friktion"):
   - **DI:** den typade formen av `to(...)` går inte att blanda `Class` och `Key` i; ett enda
@@ -176,6 +205,14 @@
     `LoggingSettings` efter bindningen, inte i `ConfigException` (punkt 7).
 
 ## Kända problem och begränsningar
+- **Codegen (spola.codegen):** generatorn läser bara syntaxträdet, så en medlemstyp som ärvs
+  från en supertyp till recordet (eller en typ runt det) kvalificeras inte; den genererade
+  filen kompilerar då inte förrän typen skrivs kvalificerad i recordet. Genererade filer känns
+  igen bara på rubriken; tas den bort kontrolleras filen inte längre. Kontrollen jämför tecken
+  för tecken, så en utcheckning med `core.autocrlf=true` (radslut `\r\n`) ger rött bygge.
+  Ett record som självt deklarerar `withX(...)` med en parameter (även med en annan typ än
+  komponentens) avvisas. Generiska varargs-komponenter ger javac:s heap pollution-varning i
+  recordet självt (inte i den genererade koden).
 - **Util (spola.util):** `Logging.configure` tar bort alla handlers på JUL-rotloggern, även
   främmande (de stängs inte). En nivå som någon annan satt på en logger (t.ex. i en
   `logging.properties`) lämnas orörd och går före ett kortare prefix för den loggern och dess
