@@ -29,7 +29,7 @@ record OrderLine(int line, String sku, int quantity) {
      * @param text the line
      * @return the order
      * @throws OrderFileException if the line is not {@code sku;quantity} with a quantity of at
-     *     least 1
+     *     least 1, or the SKU holds a character that is not {@linkplain #visible(int) visible}
      */
     static OrderLine parse(String file, int line, String text) {
         var matcher = FORMAT.matcher(text);
@@ -37,14 +37,33 @@ record OrderLine(int line, String sku, int quantity) {
             throw new OrderFileException(file, line, "expected 'sku;quantity' with a whole quantity of at least 1, got '"
                     + printable(text) + "'");
         }
-        return new OrderLine(line, matcher.group(1), Integer.parseInt(matcher.group(2)));
+        var sku = matcher.group(1);
+        if (!sku.codePoints().allMatch(OrderLine::visible)) {
+            throw new OrderFileException(file, line, "the sku may only hold visible characters (no control, format or"
+                    + " separator characters), got '" + printable(text) + "'");
+        }
+        return new OrderLine(line, sku, Integer.parseInt(matcher.group(2)));
     }
 
-    /** At most 60 characters, control characters escaped, so that the message stays one short line. */
+    /**
+     * Whether a character may be part of a SKU: not a control character (Cc), a format
+     * character (Cf, e.g. U+FEFF or the bidi overrides), a line, paragraph or space separator
+     * (Zl, Zp, Zs), a lone surrogate or unassigned. The SKU is written to the summary and the
+     * audit trail as it is, so it must not be able to move the cursor or break a line.
+     */
+    static boolean visible(int c) {
+        return switch (Character.getType(c)) {
+            case Character.CONTROL, Character.FORMAT, Character.LINE_SEPARATOR, Character.PARAGRAPH_SEPARATOR,
+                 Character.SPACE_SEPARATOR, Character.SURROGATE, Character.UNASSIGNED -> false;
+            default -> true;
+        };
+    }
+
+    /** At most 60 characters, invisible characters escaped, so that the message stays one short line. */
     private static String printable(String text) {
         var shown = new StringBuilder();
         text.codePoints().limit(60).forEach(c -> {
-            if (Character.isISOControl(c) || c == 0x2028 || c == 0x2029) {
+            if (!visible(c) && c != ' ') {
                 shown.append(String.format("\\u%04x", c));
             } else {
                 shown.appendCodePoint(c);

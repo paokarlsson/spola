@@ -38,12 +38,47 @@ final class AuditTrail implements AutoCloseable {
     private int entries;
     private boolean closed;
 
-    AuditTrail(InventorySettings inventory, AuditSettings settings) throws IOException {
-        this.file = settings.file().orElseGet(() -> inventory.orders().resolveSibling(
-                inventory.orders().getFileName() + ".audit"));
+    /**
+     * Opens the audit trail.
+     *
+     * @throws IllegalArgumentException if the trail would be the order file itself
+     * @throws UncheckedIOException if the file cannot be opened for writing
+     */
+    AuditTrail(InventorySettings inventory, AuditSettings settings) {
+        this.file = file(inventory, settings);
+        if (overwritesOrders(inventory, settings)) {
+            throw new IllegalArgumentException("audit.file " + file + " is the order file; it would be overwritten");
+        }
         this.mac = mac(settings.secret());
-        this.writer = Files.newBufferedWriter(file, StandardCharsets.UTF_8);
+        try {
+            this.writer = Files.newBufferedWriter(file, StandardCharsets.UTF_8);
+        } catch (IOException e) {
+            throw new UncheckedIOException("cannot open the audit trail " + file + " (audit.file)", e);
+        }
         LOG.info("audit trail {} opened", file);
+    }
+
+    /** {@code audit.file}, or the order file's name with {@code .audit} added, next to it. */
+    static Path file(InventorySettings inventory, AuditSettings settings) {
+        return settings.file().orElseGet(() -> inventory.orders().resolveSibling(
+                inventory.orders().getFileName() + ".audit"));
+    }
+
+    /** Whether the audit trail would be the order file, which opening the trail would empty. */
+    static boolean overwritesOrders(InventorySettings inventory, AuditSettings settings) {
+        return sameFile(file(inventory, settings), inventory.orders());
+    }
+
+    /** Whether the two paths name the same file, also through links when both exist. */
+    private static boolean sameFile(Path a, Path b) {
+        if (a.toAbsolutePath().normalize().equals(b.toAbsolutePath().normalize())) {
+            return true;
+        }
+        try {
+            return Files.exists(a) && Files.exists(b) && Files.isSameFile(a, b);
+        } catch (IOException e) {
+            return false;
+        }
     }
 
     void accepted(OrderLine order) {

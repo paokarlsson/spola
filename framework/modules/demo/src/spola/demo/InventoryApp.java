@@ -47,7 +47,7 @@ public final class InventoryApp {
     /** A wiring error, a component that could not be created or closed, or an unexpected failure ({@code EX_SOFTWARE}). */
     public static final int SOFTWARE_ERROR = 70;
 
-    /** The order file could not be read ({@code EX_IOERR}). */
+    /** The order file could not be read or the audit trail could not be opened ({@code EX_IOERR}). */
     public static final int IO_ERROR = 74;
 
     /** Missing or invalid configuration ({@code EX_CONFIG}). */
@@ -97,6 +97,10 @@ public final class InventoryApp {
         } catch (ConfigException e) {
             return fail(log, CONFIG_ERROR, "invalid configuration: " + e.getMessage());
         }
+        if (AuditTrail.overwritesOrders(settings.inventory(), settings.audit())) {
+            return fail(log, CONFIG_ERROR, "invalid configuration: audit.file is the order file (inventory.orders) "
+                    + settings.inventory().orders() + "; the audit trail would overwrite it");
+        }
         try {
             Logging.configure(LoggingSettings.defaults().withLevels(settings.logLevels()).withOutput(log));
         } catch (IllegalArgumentException e) { // a logger-name prefix like logging.level.a..b
@@ -116,7 +120,12 @@ public final class InventoryApp {
             return fail(log, DATA_ERROR, "broken order file: " + e.getMessage());
         } catch (UncheckedIOException e) {
             return fail(log, IO_ERROR, e.getMessage() + ": " + e.getCause());
-        } catch (ResolutionException | CloseException e) {
+        } catch (ResolutionException e) {
+            if (e.getCause() instanceof UncheckedIOException io) { // e.g. audit.file in a missing directory
+                return fail(log, IO_ERROR, io.getMessage() + ": " + io.getCause());
+            }
+            return fail(log, SOFTWARE_ERROR, e.getMessage());
+        } catch (CloseException e) {
             return fail(log, SOFTWARE_ERROR, e.getMessage());
         } catch (RuntimeException e) {
             LOG.debug("unexpected failure", e);

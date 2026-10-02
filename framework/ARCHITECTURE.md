@@ -698,6 +698,16 @@ i `modules/demo/README.md` (avsnitt "Friktion").
   slutanvändare kan framkalla med konfiguration. Ingången har därför en paketprivat överlagring
   som tar containermodulerna som funktion; testet utelämnar `CHECKS` och kör programmet genom
   ingången. `main` och den publika `run` använder alltid `InventoryWiring::modules`.
+- **Orderfilen är extern data och valideras vid inläsningen** (REGLER §4). Ett byte order mark
+  först i filen hoppas över. En artikel får bara innehålla synliga tecken
+  (`OrderLine.visible`: inte Cc, Cf, Zl, Zp, Zs, surrogat eller otilldelade); annars är raden
+  trasig. Valet är att avvisa vid inläsningen i stället för att escapa vid utskrift, så att
+  sammanfattningen och det signerade revisionsspåret bara innehåller artiklar som går att
+  läsa och jämföra, och så att det finns en enda plats att kontrollera.
+- **`audit.file` får inte vara orderfilen.** Att öppna spåret tömmer filen, så ingången
+  avvisar det som konfigurationsfel innan containern skapas (`AuditTrail.overwritesOrders`,
+  som konstruktorn också kontrollerar). Ett spår som inte kan öppnas blir
+  `UncheckedIOException` i komponenten och exitkod 74 i ingången.
 - **Loggningen gäller under anropet.** `run` anropar `Logging.configure` med logg-strömmen och
   `Logging.reset()` i `finally`, eftersom JUL-konfigurationen är global för JVM:en och strömmen
   tillhör anroparen. Två samtidiga `run` i samma JVM skulle dela loggning (se rapporten, **Kvar**).

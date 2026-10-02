@@ -91,6 +91,40 @@ final class ProgramTests {
                         assertEquals(8, audit.size());
                     }
                 }),
+                test("a byte order mark and CRLF line ends (an Excel or Notepad export) are read like a plain file", () -> {
+                    try (var shop = Shop.create()) {
+                        standardShop(shop);
+                        var bom = new byte[] {(byte) 0xEF, (byte) 0xBB, (byte) 0xBF};
+                        var text = "apple;3\r\napple;2\r\n".getBytes(StandardCharsets.UTF_8);
+                        var bytes = java.util.Arrays.copyOf(bom, bom.length + text.length);
+                        System.arraycopy(text, 0, bytes, bom.length, text.length);
+                        java.nio.file.Files.write(shop.dir.resolve("orders.txt"), bytes);
+                        var run = shop.run(Shop.environment());
+                        assertEquals(InventoryApp.OK, run.exit(), run.toString());
+                        assertEquals(List.of(
+                                "processed 2 orders, rejected 0",
+                                "processed:",
+                                "  line 1: apple x 3",
+                                "  line 2: apple x 2",
+                                "rejected:",
+                                "final stock:",
+                                "  apple: 5",
+                                "  pear: 5",
+                                "  plum: 2"), run.outLines(), run.toString());
+                        assertTrue(shop.read("orders.txt.audit").startsWith("accepted line=1 sku=apple quantity=3\n"));
+                        assertTrue(!run.all().contains("\ufeff"), run.toString());
+                    }
+                }),
+                test("a byte order mark before a comment line is skipped too", () -> {
+                    try (var shop = Shop.create()) {
+                        standardShop(shop);
+                        shop.write("orders.txt", "\ufeff# exported", "pear;2");
+                        var run = shop.run(Shop.environment());
+                        assertEquals(InventoryApp.OK, run.exit(), run.toString());
+                        assertEquals("processed 1 orders, rejected 0", run.outLines().get(0), run.toString());
+                        assertTrue(run.outLines().contains("  line 2: pear x 2"), run.toString());
+                    }
+                }),
                 test("audit.file puts the audit trail elsewhere", () -> {
                     try (var shop = Shop.create()) {
                         standardShop(shop);

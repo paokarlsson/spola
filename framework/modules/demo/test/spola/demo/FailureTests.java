@@ -76,14 +76,26 @@ final class FailureTests {
                         assertEquals("", run.out());
                     }
                 }),
-                test("a component that cannot be created: the chain is named", () -> {
+                test("an audit trail that cannot be opened: audit.file and the path are named, exit 74", () -> {
                     try (var shop = Shop.create()) {
                         ProgramTests.standardShop(shop);
                         var run = shop.run(Shop.environment(), "--audit.file=" + shop.dir.resolve("no-such-dir/trail.log"));
-                        assertEquals(InventoryApp.SOFTWARE_ERROR, run.exit(), run.toString());
-                        assertTrue(run.log().contains("cannot resolve spola.demo.OrderProcessor -> spola.demo.AuditTrail"),
-                                run.toString());
-                        assertFalse(run.all().contains("\tat "), run.toString());
+                        assertFailure(run, InventoryApp.IO_ERROR, "cannot open the audit trail", "no-such-dir",
+                                "(audit.file)");
+                        assertFalse(run.log().contains("lambda$"), run.toString());
+                        assertEquals("", run.out());
+                    }
+                }),
+                test("audit.file naming the order file: a configuration error, and the order file is left alone", () -> {
+                    try (var shop = Shop.create()) {
+                        ProgramTests.standardShop(shop);
+                        var before = shop.read("orders.txt");
+                        for (var audit : List.of(shop.dir.resolve("orders.txt").toString(),
+                                shop.dir.resolve("sub/../orders.txt").toString())) {
+                            assertFailure(shop.run(Shop.environment(), "--audit.file=" + audit), InventoryApp.CONFIG_ERROR,
+                                    "invalid configuration: audit.file is the order file (inventory.orders)", "orders.txt");
+                            assertEquals(before, shop.read("orders.txt"));
+                        }
                     }
                 }),
                 test("a broken order line: the file and the line number are named", () -> {
@@ -94,6 +106,26 @@ final class FailureTests {
                             shop.write("orders.txt", "pear;1", "# fine", broken);
                             assertFailure(shop.run(Shop.environment()), InventoryApp.DATA_ERROR,
                                     "error: broken order file: orders.txt line 3: expected 'sku;quantity'", "got '" + broken + "'");
+                        }
+                    }
+                }),
+                test("an sku with an invisible character: a broken line, and the character reaches no output", () -> {
+                    try (var shop = Shop.create()) {
+                        ProgramTests.standardShop(shop);
+                        // ESC (cursor control), NEL, LS, PS, RLO (bidi override), BOM not at the start, NBSP, DEL
+                        for (var invisible : List.of("\u001b[1A", "\u0085", "\u2028", "\u2029", "\u202e", "\ufeff",
+                                "\u00a0", "\u007f")) {
+                            shop.write("orders.txt", "pear;1", "ev" + invisible + "il;1");
+                            var run = shop.run(Shop.environment());
+                            var shown = String.format("\\u%04x", (int) invisible.charAt(0));
+                            assertFailure(run, InventoryApp.DATA_ERROR,
+                                    "error: broken order file: orders.txt line 2: the sku may only hold visible characters",
+                                    "got 'ev" + shown);
+                            var audit = shop.read("orders.txt.audit");
+                            assertTrue(audit.startsWith("accepted line=1 sku=pear quantity=1\nclosed entries=1 "), audit);
+                            for (var output : List.of(run.out(), run.log(), audit)) {
+                                assertFalse(output.contains(invisible.substring(0, 1)), "raw " + shown + " in\n" + output);
+                            }
                         }
                     }
                 }),

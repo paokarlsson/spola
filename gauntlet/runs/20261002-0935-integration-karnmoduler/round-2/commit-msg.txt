@@ -1,0 +1,13 @@
+fix(demo): accept BOM order files and reject control chars in SKUs
+
+Skip a UTF-8 byte-order mark at the start of the order file, and treat
+SKUs with control, format or separator characters as broken lines so
+they never reach the summary, log or audit trail. Also refuse an
+audit.file that overwrites the order file, report audit I/O failures
+as exit 74, narrow the README masking claim and merge duplicate converters.
+
+Gauntlet-Run: 20261002-0935-integration-karnmoduler
+Gauntlet-Round: 2/4
+Gauntlet-Verdict: FAIL (0 blocker, 1 major, 6 minor upheld)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>

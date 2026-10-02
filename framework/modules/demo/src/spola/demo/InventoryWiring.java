@@ -41,7 +41,29 @@ final class InventoryWiring {
             "rules.max.quantity", "100",
             "logging.level.root", "INFO");
 
+    private static final Converter<Integer> POSITIVE_INT = intAtLeast(1);
+
+    private static final Converter<Integer> STOCK_LEVEL = intAtLeast(0);
+
+    private static final Converter<String> SECRET = new Converter<>("secret of at least 16 characters", text -> {
+        if (text.length() < 16) {
+            throw new IllegalArgumentException("too short");
+        }
+        return text;
+    });
+
     private InventoryWiring() {
+    }
+
+    /** A whole number of at least {@code min}, whitespace around it allowed. */
+    private static Converter<Integer> intAtLeast(int min) {
+        return new Converter<>("int of at least " + min, text -> {
+            var value = Integer.parseInt(text.strip());
+            if (value < min) {
+                throw new IllegalArgumentException("must be at least " + min);
+            }
+            return value;
+        });
     }
 
     /**
@@ -93,29 +115,6 @@ final class InventoryWiring {
                         a.value("secret", SECRET))),
                 c.section("logging.level", InventoryWiring::logLevels)));
     }
-
-    private static final Converter<Integer> POSITIVE_INT = new Converter<>("int of at least 1", text -> {
-        var value = Integer.parseInt(text.strip());
-        if (value < 1) {
-            throw new IllegalArgumentException("must be at least 1");
-        }
-        return value;
-    });
-
-    private static final Converter<Integer> STOCK_LEVEL = new Converter<>("int of at least 0", text -> {
-        var value = Integer.parseInt(text.strip());
-        if (value < 0) {
-            throw new IllegalArgumentException("must be at least 0");
-        }
-        return value;
-    });
-
-    private static final Converter<String> SECRET = new Converter<>("secret of at least 16 characters", text -> {
-        if (text.length() < 16) {
-            throw new IllegalArgumentException("too short");
-        }
-        return text;
-    });
 
     /** {@code inventory.stock.<sku>=<level>}, one key per SKU. */
     private static Map<String, Integer> stock(Section stock) {

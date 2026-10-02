@@ -24,7 +24,7 @@ rules.blocked=plum
 ```
 
 ```text
-# orders.txt (tomma rader och rader som börjar med # hoppas över)
+# orders.txt (UTF-8; tomma rader och rader som börjar med # hoppas över)
 apple;3
 pear;9
 kiwi;1
@@ -55,6 +55,12 @@ final stock:
 2026-10-02T09:46:50.436+02:00 INFO  [main] spola.demo.AuditTrail : audit trail orders.txt.audit closed after 3 entries
 ```
 
+Orderfilen läses som UTF-8. Ett byte order mark först i filen (som Excel och Notepad skriver)
+hoppas över. En artikel får bara innehålla synliga tecken: en rad vars artikel har ett
+styrtecken, formattecken eller avgränsartecken (t.ex. ESC, U+0085, U+2028, U+202E) är en
+trasig rad (exitkod 65), eftersom artikeln skrivs som den är till sammanfattningen och
+revisionsspåret.
+
 Samma program går att köra utan `main`, vilket testerna gör:
 `InventoryApp.run(args, miljö, ut, logg)` tar argumenten som en lista, miljön som en `Map` och
 två `PrintStream`, och returnerar exitkoden.
@@ -84,8 +90,11 @@ rekommenderar):
 | `audit.secret` | text, minst 16 tecken | krävs | nyckeln som signerar revisionsspåret; **känslig**, visas aldrig |
 | `logging.level.<prefix>` | nivå | `root=INFO` | loggnivå per loggernamn, som i Spring Boot |
 
-Nycklar som slutar på `.secret` eller `.password` maskeras också, liksom värden som byggs av
-ett känsligt värde med en platshållare. Med `--logging.level.spola.demo=DEBUG` loggas hela den
+Nycklar som slutar på `.secret` eller `.password` maskeras också. I konfigurationsdumpen
+(`describe()`) och i konverteringsfel maskeras även värden som byggs av ett känsligt värde med
+en platshållare; binds ett sådant värde som t.ex. en sökväg loggas det däremot som sökväg i
+klartext, så lägg inte hemligheter i andra nycklar. `audit.file` får inte vara orderfilen
+(exitkod 78). Med `--logging.level.spola.demo=DEBUG` loggas hela den
 sammanslagna konfigurationen (maskerad) och varje lagerförändring.
 
 ### Exitkoder och fel
@@ -95,8 +104,8 @@ sammanslagna konfigurationen (maskerad) och varje lagerförändring.
 | 0 | orderfilen är behandlad (avvisade ordrar räknas inte som fel) |
 | 65 | en trasig rad i orderfilen; filen och radnumret står i meddelandet |
 | 70 | ett wiring-fel, en komponent som inte kunde skapas eller stängas, eller ett oväntat fel |
-| 74 | orderfilen kunde inte läsas |
-| 78 | saknad eller ogiltig konfiguration; varje felande nyckel står i meddelandet |
+| 74 | orderfilen kunde inte läsas, eller revisionsspåret kunde inte öppnas (t.ex. en katalog som saknas i `audit.file`) |
+| 78 | saknad eller ogiltig konfiguration (också `audit.file` som pekar på orderfilen); varje felande nyckel står i meddelandet |
 
 Ett fel skrivs som ett meddelande utan stackspår:
 
@@ -337,7 +346,8 @@ i `spola.util`, men felet är ovanligt och fångas redan begripligt, så vi lät
   `NullPointerException`.
 - **Hemligheter.** `sensitive(...)` maskerar `audit.secret` i `describe()` och i fel, också
   när värdet kopieras med en platshållare (`--rules.max.quantity=${audit.secret}` ger ett fel
-  utan hemligheten). `ToString.secret` döljer den i `AuditSettings.toString()`.
+  utan hemligheten). Det gäller dumpen och konverteringsfelen; ett kopierat värde som binds
+  utan fel (t.ex. som sökväg) är vanlig data efter det. `ToString.secret` döljer den i `AuditSettings.toString()`.
 - **Wiring-fel före start.** Glöms en modul bort säger `Container.create` vilken komponent som
   saknar vilket beroende och var bindningen gjordes, innan något har skapats.
 - **Stängning vid fel.** try-with-resources på containern stänger `AuditTrail` både när

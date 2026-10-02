@@ -140,7 +140,12 @@
   `LoggingSettings.parseLevel(String)` (`spola.util`), med tester, Javadoc och README.
 - `modules/demo/README.md`: körning, Spring Boot-jämförelse och avsnittet "Friktion" (2
   **Åtgärdat**, 5 **Kvar**, och det som fungerade bra).
-- 36 tester i `spola.demo` (hela programmet genom ingången, prioritetsordningen med alla fem
+- Runda 2 i 05c: orderfilen tål ett byte order mark först (Excel/Notepad); en artikel med
+  styr-, format- eller avgränsartecken (ESC, U+0085, U+2028, U+202E ...) är en trasig rad
+  (65) i stället för att skrivas rått till sammanfattningen och revisionsspåret; `audit.file`
+  som pekar på orderfilen är ett konfigurationsfel (78); ett revisionsspår som inte kan
+  öppnas ger 74 och nämner `audit.file`.
+- 40 tester i `spola.demo` (hela programmet genom ingången, prioritetsordningen med alla fem
   lager, hemligheten i utdata/logg/fel, stängning vid lyckad och avbruten körning, loggnivåer
   från argument/miljö/profil, alla felvägar, modulgränserna på källkoden, HMAC mot RFC 4231
   testfall 1 och 2, orderradsformatet). `spola.config` har nu 66 tester och `spola.util` 80.

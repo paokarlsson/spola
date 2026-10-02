@@ -13,9 +13,13 @@ import spola.util.Log;
 /**
  * Reads the order file line by line and decides each order: unknown SKU, the checks in
  * order, then the stock. Every decision goes to the audit trail. Blank lines and lines
- * starting with {@code #} are skipped; a broken line stops the processing.
+ * starting with {@code #} are skipped; a broken line stops the processing. A byte order mark
+ * at the start of the file (as Excel and Notepad write) is skipped.
  */
 final class OrderProcessor {
+
+    /** U+FEFF, the byte order mark; read as a character at the start of a UTF-8 file. */
+    private static final char BYTE_ORDER_MARK = '\uFEFF';
 
     private static final Log LOG = Log.forClass(OrderProcessor.class);
 
@@ -48,6 +52,9 @@ final class OrderProcessor {
             var number = 0;
             for (String text; (text = reader.readLine()) != null; ) {
                 number++;
+                if (number == 1 && !text.isEmpty() && text.charAt(0) == BYTE_ORDER_MARK) {
+                    text = text.substring(1);
+                }
                 if (text.isBlank() || text.strip().startsWith("#")) {
                     continue;
                 }
