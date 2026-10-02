@@ -268,12 +268,15 @@
 - Fel: 500 utan detaljer, `Error` dödar inte servern, avbruten anslutning när ett strömmande
   svar redan börjat; loggning via `System.Logger` (`spola.http`) med escapade undantag.
 - Mjukt stopp: lediga anslutningar stängs, pågående får `Connection: close`, resten avbryts
-  efter `shutdownTimeout`; `close()` väntar på alla anslutningstrådar.
+  efter `shutdownTimeout`; `close()` väntar på alla anslutningstrådar (högst 1 s efter
+  avbrottet) och håller ingen monitor, så en handler och en shutdown hook kan anropa den
+  samtidigt. Oläst kropp läses före svaret, så en trasig kropp ger sin status i stället för
+  handlerns svar.
 - `README.md` i modulen med Spring Boot/Tomcat-exempel, gränstabell mot Spring Boots
   egenskaper och tabell över vad som avvisas.
-- 138 tester i `spola.http` (cirka 5 s): `HttpClient` (GET, POST, strömmad POST, HEAD),
+- 171 tester i `spola.http` (cirka 12 s): `HttpClient` (GET, POST, strömmad POST, HEAD),
   keep-alive och pipelining, 71 felaktiga huvuden och 14 felaktiga chunked kroppar med status
-  och RFC-avsnitt, smuggelförsök, chunked åt båda hållen (byte för byte), 100-continue,
+  och RFC-avsnitt (kropparna med en handler som läser hela, en del av eller ingenting av kroppen), smuggelförsök, chunked åt båda hållen (byte för byte), 100-continue,
   tidsgränserna med korta värden, `maxConnections`, fel i handler och `BodyWriter`, svarets
   validering och `Date`, mjukt stopp, 1 000 samtidiga klienter, loggar och felkroppar utan
   styrtecken, och källkodsreglerna.
@@ -296,13 +299,16 @@
     `LoggingSettings` efter bindningen, inte i `ConfigException` (punkt 7).
 
 ## Kända problem och begränsningar
-- **HTTP (spola.http):** felaktiga chunked kroppar upptäcks först när handlern läser kroppen
+- **HTTP (spola.http):** felaktiga chunked kroppar upptäcks först när kroppen läses
   (kroppen läses lat för `100 Continue`), så handlern anropas för dem; den får aldrig kroppen
-  och servern svarar med kroppens status. `Transfer-Encoding` där `chunked` inte är sist ger
+  och servern svarar med kroppens status. Efter ett strömmande svar, eller med
+  `Expect: 100-continue` och en kropp som aldrig begärdes, upptäcks felet först efter
+  handlerns svar; då stängs anslutningen efter svaret. En handler som svarar utan att läsa en
+  stor kropp får sitt svar skickat först när servern läst kroppen. `Transfer-Encoding` där `chunked` inte är sist ger
   400 (RFC 9112 §6.3) i stället för uppdragets 501. En ny anslutning får vänta
   `headerTimeout` på första byten och sedan `headerTimeout` till för huvudet. En handler som
-  varken gör I/O eller reagerar på avbrott håller `close()` kvar efter `shutdownTimeout`
-  (`close()` väntar på alla trådar). En förfrågan som kommer just när `close()` stänger en
+  varken gör I/O eller reagerar på avbrott lever kvar efter `close()` (som slutar vänta 1 s
+  efter avbrottet och loggar en varning). En förfrågan som kommer just när `close()` stänger en
   ledig anslutning går förlorad (klienten ser en stängd anslutning). Efterläsningen efter
   `Connection: close` håller anslutningen (och en plats i `maxConnections`) upp till 2 s om
   klienten inte stänger. Chunk-tilläggens radgräns (4 096 byte) och backlog (1 024) är fasta.

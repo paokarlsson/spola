@@ -1213,6 +1213,18 @@ absolute-form går före `Host` (RFC 9112 §3.2.2) och någon måste avgöra det
   Det är priset för att `100 Continue` ska kunna vänta på handlern; tabelltestet visar för
   dessa fall att handlern aldrig får kroppen, och för alla fel i huvudet att handlern aldrig
   anropas.
+- **Oläst kropp läses före svaret.** Returnerar handlern utan att ha läst hela kroppen läser
+  servern resten (inom `maxBodySize` och `readTimeout`) innan svarets huvud skrivs. Är
+  ramningen trasig, kroppen för stor eller för långsam skickas kroppens status (400/413/431/408)
+  med `Connection: close` i stället för handlerns svar, så att servern aldrig skickar ett svar
+  som ser lyckat ut för en förfrågan den inte kunnat läsa färdigt (gauntlet-runda 2, BRK-1).
+  Tre fall behåller handlerns svar och stänger anslutningen efter det: ett strömmande svar
+  (dess `BodyWriter` körs efter handlern och får läsa kroppen, så servern kan inte läsa den
+  först; ett ramningsfel upptäcks efter svaret och stänger anslutningen), `Expect: 100-continue`
+  där kroppen aldrig begärdes (klienten kan ha avstått från att skicka den, RFC 9110 §10.1.1),
+  och en handler som själv fångat `RequestBodyException` och svarat. Priset är att en handler
+  som svarar tidigt (t.ex. 401 på en stor uppladdning) får sitt svar skickat först när kroppen
+  lästs; den läses ändå för att anslutningen ska kunna bära nästa förfrågan.
 - **`Expect: 100-continue`** (RFC 9110 §10.1.1). `100 Continue` skickas när kroppen läses
   första gången och svaret inte har börjat. Svarar handlern utan att läsa kroppen skickas inget
   `100`, och anslutningen stängs efter svaret, eftersom klienten kan skicka kroppen eller låta
@@ -1302,13 +1314,24 @@ absolute-form går före `Host` (RFC 9112 §3.2.2) och någon måste avgöra det
   samma sak (`lingering_close`).
 - **Mjukt stopp.** Varje anslutning har ett tillstånd (`IDLE` i väntan på en förfrågan,
   `ACTIVE` under en förfrågan, `LINGERING` efter sista svaret, `CLOSED`) i en
-  `AtomicReference`. `close()` sätter `closing`, stänger `ServerSocket` och väntar in
-  acceptor-tråden (därefter tillkommer inga anslutningar), stänger alla anslutningar i `IDLE`
-  och `LINGERING` (ett compare-and-set, så att en anslutning som just fått en förfrågan inte
-  stängs mitt i), och väntar på resten i högst `shutdownTimeout`. Anslutningar med en pågående
-  förfrågan ser `closing` och svarar med `Connection: close`. Det som återstår avbryts: socketen
-  stängs och tråden avbryts (`interrupt`). `close()` returnerar när alla anslutningstrådar är
-  klara. En anslutning som går från `ACTIVE` till `IDLE` läser `closing` efter bytet, och
+  `AtomicReference`; övergångarna står i en tabell i `Connection.State`. `close()` sätter
+  `closing`, stänger `ServerSocket` och väntar in acceptor-tråden (därefter tillkommer inga
+  anslutningar), stänger alla anslutningar i `IDLE` (ett compare-and-set, så att en anslutning
+  som just fått en förfrågan inte stängs mitt i), och väntar på resten i högst
+  `shutdownTimeout`. Anslutningar med en pågående förfrågan ser `closing` och svarar med
+  `Connection: close`; deras efterläsning (och den hos anslutningar som redan är i
+  `LINGERING`) får pågå, men aldrig efter `shutdownTimeout`, så att svaret inte förstörs av en
+  RST (gauntlet-runda 2, BRK-3). Det som återstår avbryts: socketen stängs och tråden avbryts
+  (`interrupt`). `close()` returnerar när alla anslutningstrådar är klara, eller senast
+  `ABORT_GRACE_MILLIS` (1 s) efter avbrottet: en handler som varken gör I/O eller reagerar på
+  avbrott loggas (`WARNING`) och lämnas, i stället för att hålla `close()` kvar för alltid.
+- **`close()` utan monitor.** `close()` är inte `synchronized`. Ett `AtomicBoolean` (`closing`)
+  avgör med compare-and-set vem som stoppar servern, och en `CountDownLatch` släpps när det
+  första anropet är klart. Ett senare anrop från en anslutnings tråd (en handler) returnerar
+  direkt, så att dess svar kan gå ut med `Connection: close`; ett senare anrop från någon annan
+  tråd väntar på spärren. Med en monitor fastnade en handler som anropade `close()` medan en
+  shutdown hook redan var inne i `close()`: handlern väntade på monitorn (som ett avbrott inte
+  når) och hooken väntade på handlerns tråd utan tidsgräns (gauntlet-runda 2, BRK-2). En anslutning som går från `ACTIVE` till `IDLE` läser `closing` efter bytet, och
   `close()` sätter `closing` före genomgången, så antingen ser anslutningen flaggan eller
   `close()` ser `IDLE`. En förfrågan som kommer i samma ögonblick som en ledig anslutning
   stängs kan gå förlorad; klienten ser en stängd keep-alive-anslutning, vilket RFC 9112 §9.3.1

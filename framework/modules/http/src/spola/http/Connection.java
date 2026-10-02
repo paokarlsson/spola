@@ -14,12 +14,32 @@ import java.util.concurrent.atomic.AtomicReference;
  * connection, or the server stops.
  *
  * <p>The state is shared with the server's {@link HttpServer#close()} only: a connection that
- * waits for its next request ({@link State#IDLE}) or lingers after its last response
- * ({@link State#LINGERING}) may be closed at once; one with a request in progress
- * ({@link State#ACTIVE}) is left to finish.
+ * waits for its next request ({@link State#IDLE}) may be closed at once; one with a request in
+ * progress ({@link State#ACTIVE}) is left to finish, and one that lingers after its last response
+ * ({@link State#LINGERING}) ends on its own.
  */
 final class Connection implements Runnable {
 
+    /**
+     * Where the connection is. Every change is a compare-and-set, so the connection's thread and
+     * {@link HttpServer#close()} never both act on the same state:
+     *
+     * <table>
+     * <caption>State transitions</caption>
+     * <tr><th>From</th><th>To</th><th>By</th><th>When</th></tr>
+     * <tr><td>IDLE</td><td>ACTIVE</td><td>connection thread</td><td>the first bytes of a request
+     *     are there</td></tr>
+     * <tr><td>ACTIVE</td><td>IDLE</td><td>connection thread</td><td>a response is done and the
+     *     connection carries another request</td></tr>
+     * <tr><td>ACTIVE or IDLE</td><td>LINGERING</td><td>connection thread</td><td>the last response
+     *     is done; it drops input before closing</td></tr>
+     * <tr><td>IDLE</td><td>CLOSED</td><td>{@link #closeIfIdle()} (close())</td><td>graceful stop;
+     *     the connection thread's next compare-and-set fails and it ends</td></tr>
+     * <tr><td>any</td><td>CLOSED</td><td>{@link #abort()}</td><td>close() after the shutdown
+     *     timeout, or the connection itself after a failed response</td></tr>
+     * <tr><td>any</td><td>CLOSED</td><td>connection thread</td><td>the connection ends</td></tr>
+     * </table>
+     */
     enum State { IDLE, ACTIVE, LINGERING, CLOSED }
 
     /**
@@ -38,7 +58,7 @@ final class Connection implements Runnable {
     private volatile Thread thread;
     private volatile boolean aborted;
     private volatile boolean writeTimedOut;
-    private GuardedOutput guarded;
+    private volatile GuardedOutput guarded; // read by the guard thread
     private ConnectionInput in;
     private BufferedOutputStream wire;
     private ResponseWriter writer;
@@ -57,6 +77,11 @@ final class Connection implements Runnable {
 
     Thread thread() {
         return thread;
+    }
+
+    /** Whether the last response is done and the connection only drops input before closing. */
+    boolean lingering() {
+        return state.get() == State.LINGERING;
     }
 
     @Override
@@ -129,7 +154,22 @@ final class Connection implements Runnable {
         return !server.closing();
     }
 
-    /** Handles one request; returns whether the connection can carry another. */
+    /** What the handler produced: its response, or an error response if it failed. */
+    private record Outcome(Response response, boolean failed) {
+    }
+
+    /**
+     * Handles one request; returns whether the connection can carry another.
+     *
+     * <p>When the handler returns without reading the whole body, the server reads and drops the
+     * rest <em>before</em> it writes the response, so that a body with broken framing (or one
+     * over the limits) is answered with its own status and {@code Connection: close} instead of
+     * the handler's response. Two cases cannot do that and keep the handler's response, with the
+     * connection closed after it: a streaming response (its body writer may still read the
+     * request body), and a request with {@code Expect: 100-continue} whose body was never asked
+     * for (the client may or may not send it, RFC 9110 §10.1.1). A handler that caught a
+     * {@link RequestBodyException} and answered on its own also keeps its response.
+     */
     private boolean exchange(RequestParser.Head head) throws IOException {
         var options = server.options();
         writer.reset();
@@ -140,48 +180,18 @@ final class Connection implements Runnable {
                     }
                 });
         var request = new Request(head, body);
-        Response response = null;
-        Throwable failure = null;
-        try {
-            response = server.handler().handle(request);
-            if (response == null) {
-                failure = new NullPointerException("the handler returned null");
-            }
-        } catch (Exception | Error e) {
-            failure = e;
-        }
-        boolean close = head.closeRequested() || head.version() == HttpVersion.HTTP_1_0;
-        if (failure != null) {
-            response = failureResponse(request, body, failure);
-            close = true;
-        }
-        if (body.failure() != null) {
-            close = true; // the rest of the body cannot be skipped
-        }
-        if (head.expectContinue() && !body.started() && !body.finished()) {
-            close = true; // RFC 9110 10.1.1: the client may or may not send the body now
-        }
-        if (server.closing()) {
-            close = true;
-        }
         boolean headRequest = head.method().equals("HEAD");
+        var outcome = handle(request, body);
+        if (!outcome.failed() && body.failure() == null && !streams(outcome.response(), headRequest)
+                && !awaitsContinue(head, body) && !body.skipRest()) {
+            outcome = new Outcome(bodyFailureResponse(request, body), true);
+        }
+        boolean close = shouldClose(head, body, outcome.failed());
         try {
-            writer.send(response, headRequest, head.version(), close);
+            writer.send(outcome.response(), headRequest, head.version(), close);
         } catch (ResponseWriter.BodyWriterFailed e) {
             body.end();
-            var cause = e.getCause();
-            if (!writer.committed()) {
-                logFailure(request, "the body writer failed before writing", cause);
-                sendError(body.failure() != null ? body.failure().status() : 500);
-                return false;
-            }
-            if (writeTimedOut) {
-                server.log().log(Level.WARNING, "write timeout: closed the connection from " + peer + " during "
-                        + request);
-            } else {
-                logFailure(request, "the body writer failed after the response started; connection aborted", cause);
-            }
-            abort();
+            bodyWriterFailed(request, body, e.getCause());
             return false;
         }
         body.end();
@@ -189,17 +199,67 @@ final class Connection implements Runnable {
             linger = true;
             return false;
         }
-        return body.skipRest();
+        return body.skipRest(); // after a streaming response: the body framing decides
     }
 
-    private Response failureResponse(Request request, BodyStream body, Throwable failure) {
+    /** Calls the handler; a failure (or a {@code null} response) becomes a 500 or the body's status. */
+    private Outcome handle(Request request, BodyStream body) {
+        Throwable failure;
+        try {
+            var response = server.handler().handle(request);
+            if (response != null) {
+                return new Outcome(response, false);
+            }
+            failure = new NullPointerException("the handler returned null");
+        } catch (Exception | Error e) {
+            failure = e;
+        }
         if (body.failure() != null) {
-            debug("request body failed on " + request + " from " + peer + ": " + body.failure().status()
-                    + " (" + body.failure().getMessage() + ")");
-            return errorResponse(body.failure().status());
+            return new Outcome(bodyFailureResponse(request, body), true);
         }
         logFailure(request, "the handler failed", failure);
-        return errorResponse(500);
+        return new Outcome(errorResponse(500), true);
+    }
+
+    /** Whether the response body is written by a {@link BodyWriter} (which may read the request body). */
+    private static boolean streams(Response response, boolean headRequest) {
+        return !headRequest && response.body() instanceof ResponseBody.Streaming;
+    }
+
+    /** Whether the client waits for {@code 100 Continue} that was never sent. */
+    private static boolean awaitsContinue(RequestParser.Head head, BodyStream body) {
+        return head.expectContinue() && !body.started() && !body.finished();
+    }
+
+    /** Whether the response must carry {@code Connection: close} and end the connection. */
+    private boolean shouldClose(RequestParser.Head head, BodyStream body, boolean failed) {
+        return failed
+                || head.closeRequested()
+                || head.version() == HttpVersion.HTTP_1_0
+                || body.failure() != null      // the rest of the body cannot be skipped
+                || awaitsContinue(head, body)  // RFC 9110 10.1.1: the client may or may not send the body now
+                || server.closing();
+    }
+
+    /** A streaming body writer threw: a clean error if nothing went out yet, else an aborted connection. */
+    private void bodyWriterFailed(Request request, BodyStream body, Throwable cause) {
+        if (!writer.committed()) {
+            logFailure(request, "the body writer failed before writing", cause);
+            sendError(body.failure() != null ? body.failure().status() : 500);
+            return;
+        }
+        if (writeTimedOut) {
+            server.log().log(Level.WARNING, "write timeout: closed the connection from " + peer + " during " + request);
+        } else {
+            logFailure(request, "the body writer failed after the response started; connection aborted", cause);
+        }
+        abort();
+    }
+
+    private Response bodyFailureResponse(Request request, BodyStream body) {
+        debug("request body failed on " + request + " from " + peer + ": " + body.failure().status()
+                + " (" + body.failure().getMessage() + ")");
+        return errorResponse(body.failure().status());
     }
 
     private void logFailure(Request request, String what, Throwable failure) {
@@ -234,10 +294,10 @@ final class Connection implements Runnable {
 
     // ---- shutdown and timeouts -----------------------------------------------------------
 
-    /** Closes the connection now if it waits for a request or lingers (graceful stop). */
+    /** Closes the connection now if it waits for a request (graceful stop). */
     void closeIfIdle() {
-        if (state.compareAndSet(State.IDLE, State.CLOSED) || state.compareAndSet(State.LINGERING, State.CLOSED)) {
-            closeQuietly();
+        if (state.compareAndSet(State.IDLE, State.CLOSED)) {
+            HttpServer.closeQuietly(socket);
         }
     }
 
@@ -245,7 +305,7 @@ final class Connection implements Runnable {
     void abort() {
         aborted = true;
         state.set(State.CLOSED);
-        closeQuietly();
+        HttpServer.closeQuietly(socket);
         var t = thread;
         if (t != null && t != Thread.currentThread()) {
             t.interrupt();
@@ -258,19 +318,22 @@ final class Connection implements Runnable {
         if (output != null && output.stalled(now, timeoutNanos)) {
             writeTimedOut = true;
             aborted = true;
-            closeQuietly();
+            HttpServer.closeQuietly(socket);
         }
     }
 
     private void closeSocket() {
-        if (linger && !aborted && !server.closing()) {
+        if (linger && !aborted) {
             lingerBeforeClose();
         }
         state.set(State.CLOSED);
-        closeQuietly();
+        HttpServer.closeQuietly(socket);
     }
 
-    /** Half-closes and drops input until the client closes, at most {@link #LINGER_MILLIS} and {@link #LINGER_BYTES}. */
+    /**
+     * Half-closes and drops input until the client closes, at most {@link #LINGER_MILLIS} and
+     * {@link #LINGER_BYTES}, and during a graceful stop no longer than the shutdown deadline.
+     */
     private void lingerBeforeClose() {
         try {
             wire.flush();
@@ -280,6 +343,10 @@ final class Connection implements Runnable {
                 return;
             }
             long deadline = System.nanoTime() + LINGER_MILLIS * 1_000_000L;
+            long stop = server.shutdownDeadline(); // 0 while the server runs
+            if (stop != 0 && stop - deadline < 0) {
+                deadline = stop;
+            }
             long dropped = 0;
             var sink = new byte[8_192];
             while (dropped < LINGER_BYTES) {
@@ -296,14 +363,6 @@ final class Connection implements Runnable {
             }
         } catch (IOException e) {
             // the client is gone or the server closed the socket; either way we are done
-        }
-    }
-
-    private void closeQuietly() {
-        try {
-            socket.close();
-        } catch (IOException e) {
-            // nothing more to do
         }
     }
 }

@@ -23,6 +23,8 @@ import spola.test.Suite;
  * lazily (only when the handler reads it, so that {@code 100 Continue} can wait for the
  * handler): there the handler is called, but never gets the body; its read throws
  * {@link RequestBodyException} and the server answers the body's status instead of the handler's.
+ * A handler that never reads the body gets the same: the server reads the rest of the body
+ * before it writes the response, and answers the body's status in place of the handler's.
  */
 final class MalformedRequestTests {
 
@@ -201,12 +203,16 @@ final class MalformedRequestTests {
 
     /** Sends the request and checks status, Connection: close and the closed connection. */
     private static void refused(Bad bad, AtomicInteger calls, AtomicInteger bodies) throws Exception {
-        try (var server = Support.start((request) -> {
+        refused(bad, request -> {
             calls.incrementAndGet();
             request.bytes();
             bodies.incrementAndGet();
             return Response.text(200, "handled");
-        }); var c = new Support.Client(server.port())) {
+        });
+    }
+
+    private static void refused(Bad bad, Handler handler) throws Exception {
+        try (var server = Support.start(handler); var c = new Support.Client(server.port())) {
             c.send(bad.request());
             var reply = c.read();
             assertEquals(bad.status(), reply.status(), "status for " + Support.visible(bad.request()));
@@ -240,6 +246,19 @@ final class MalformedRequestTests {
                     refused(bad, calls, bodies);
                     assertEquals(0, bodies.get(), "bodies the handler got");
                 }),
+                parameterized("refused in the chunked body when the handler never reads it", BODY_CASES, bad -> {
+                    calls.set(0);
+                    refused(bad, request -> {
+                        calls.incrementAndGet();
+                        return Response.text(200, "handled");
+                    });
+                    assertEquals(1, calls.get(), "handler calls");
+                }),
+                parameterized("refused in the chunked body when the handler reads only part of it", BODY_CASES,
+                        bad -> refused(bad, request -> {
+                            request.body().read(); // one byte; a body broken from the start throws here
+                            return Response.text(200, "handled");
+                        })),
                 test("exactly at the limits is accepted", () -> {
                     var limits = HttpLimits.DEFAULT;
                     var line = "GET /" + "a".repeat(limits.maxRequestLineLength() - "GET / HTTP/1.1".length())

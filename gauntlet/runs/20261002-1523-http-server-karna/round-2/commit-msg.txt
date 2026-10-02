@@ -1,0 +1,13 @@
+fix(http): validate unread request bodies and make close() deadlock-free
+
+Before writing a non-streamed response, the server now reads and checks
+any body the handler left unread, and sends 400/413 with Connection: close
+on broken framing. close() drops its monitor in favour of a CAS plus latch
+with bounded joins, which fixes the deadlock between an outside close and
+one from a handler. The connection also lingers during a graceful stop.
+
+Gauntlet-Run: 20261002-1523-http-server-karna
+Gauntlet-Round: 2/5
+Gauntlet-Verdict: FAIL (0 blocker, 1 major, 4 minor upheld)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>

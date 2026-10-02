@@ -11,7 +11,9 @@ import java.util.List;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Semaphore;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
@@ -39,6 +41,13 @@ public final class HttpServer implements AutoCloseable {
     /** The listen backlog: connections the operating system queues before they are accepted. */
     static final int BACKLOG = 1_024;
 
+    /**
+     * How long {@link #close()} waits for a connection thread it has aborted (socket closed,
+     * thread interrupted) before it gives up on it. A handler that ignores interrupts and does not
+     * touch the socket would otherwise keep {@code close()} from ever returning.
+     */
+    static final long ABORT_GRACE_MILLIS = 1_000;
+
     private final HttpServerOptions options;
     private final Handler handler;
     private final System.Logger log;
@@ -48,9 +57,10 @@ public final class HttpServer implements AutoCloseable {
     private final AtomicLong connectionIds = new AtomicLong();
     private final Thread acceptor;
     private final Thread guard;
-    private volatile boolean closing;
+    private final AtomicBoolean closing = new AtomicBoolean();
+    private final CountDownLatch closed = new CountDownLatch(1);
+    private volatile long shutdownDeadline; // System.nanoTime() when close() aborts; 0 before close()
     private volatile boolean guardStopped;
-    private boolean closed;
 
     private HttpServer(HttpServerOptions options, Handler handler, System.Logger log) throws IOException {
         this.options = options;
@@ -127,7 +137,12 @@ public final class HttpServer implements AutoCloseable {
     }
 
     boolean closing() {
-        return closing;
+        return closing.get();
+    }
+
+    /** {@link System#nanoTime()} at which {@link #close()} aborts what is left, or 0 before close(). */
+    long shutdownDeadline() {
+        return shutdownDeadline;
     }
 
     /** The number of open connections (for tests). */
@@ -136,7 +151,7 @@ public final class HttpServer implements AutoCloseable {
     }
 
     private void accept() {
-        while (!closing) {
+        while (!closing.get()) {
             try {
                 permits.acquire();
             } catch (InterruptedException e) {
@@ -147,14 +162,14 @@ public final class HttpServer implements AutoCloseable {
                 socket = serverSocket.accept();
             } catch (IOException | RuntimeException | Error e) {
                 permits.release();
-                if (closing) {
+                if (closing.get()) {
                     return;
                 }
                 log.log(Level.WARNING, "accepting a connection failed", LoggedThrowable.of(e));
                 pause();
                 continue;
             }
-            if (closing) {
+            if (closing.get()) {
                 permits.release();
                 closeQuietly(socket);
                 return;
@@ -209,52 +224,104 @@ public final class HttpServer implements AutoCloseable {
      * for a request, lets requests in progress finish (their responses get
      * {@code Connection: close}), and after {@link HttpTimeouts#shutdownTimeout()} aborts what is
      * left (closes the sockets and interrupts the threads). Returns when every connection thread
-     * has ended (except the caller's own, when a handler calls it). Calling it again waits for
-     * the first call and does nothing more.
+     * has ended, or at the latest {@link #ABORT_GRACE_MILLIS} after the abort.
+     *
+     * <p>Only the first call does the work. A later call from a handler (a connection's thread)
+     * returns at once, so that its response can go out (with {@code Connection: close}); a later
+     * call from any other thread waits until the first call has returned. The first call never
+     * waits for the caller's own connection, so a handler may call it too.
      */
     @Override
-    public synchronized void close() {
-        if (closed) {
+    public void close() {
+        if (!closing.compareAndSet(false, true)) {
+            if (!onConnectionThread()) {
+                awaitUninterruptibly(closed);
+            }
             return;
         }
-        closed = true;
+        try {
+            shutdown();
+        } finally {
+            closed.countDown();
+        }
+    }
+
+    private boolean onConnectionThread() {
+        var self = Thread.currentThread();
+        return connections.stream().anyMatch(c -> c.thread() == self);
+    }
+
+    private void shutdown() {
+        long deadline = System.nanoTime() + options.timeouts().shutdownTimeout().toNanos();
+        shutdownDeadline = deadline | 1; // never 0
         boolean interrupted = false;
-        closing = true;
         closeQuietly(serverSocket);
         acceptor.interrupt();
         interrupted |= joinUninterruptibly(acceptor);
-        // The acceptor has ended: no connection is added from here on. A handler may call close()
-        // itself; its own connection is not waited for (it would wait for itself) and ends after
-        // its response, which gets Connection: close.
+        // The acceptor has ended: no connection is added from here on. The caller's own connection
+        // (a handler that calls close()) is not waited for: it would wait for itself.
         var self = Thread.currentThread();
         List<Connection> open = connections.stream().filter(c -> c.thread() != self).toList();
         for (var connection : open) {
             connection.closeIfIdle();
         }
-        long deadline = System.nanoTime() + options.timeouts().shutdownTimeout().toNanos();
-        try {
-            for (var connection : open) {
-                long left = deadline - System.nanoTime();
-                if (left > 0) {
-                    connection.thread().join(Duration.ofNanos(left));
-                }
-            }
-        } catch (InterruptedException e) {
-            interrupted = true;
+        for (var connection : open) {
+            interrupted |= joinUntil(connection.thread(), deadline);
         }
         var left = open.stream().filter(c -> c.thread().isAlive()).toList();
         if (!left.isEmpty()) {
-            log.log(Level.WARNING, "shutdown timeout: aborting " + left.size() + " connection(s) still in progress");
+            // a connection that only lingers after its last response ends at the deadline by itself
+            long busy = left.stream().filter(c -> !c.lingering()).count();
+            if (busy > 0) {
+                log.log(Level.WARNING, "shutdown timeout: aborting " + busy + " connection(s) still in progress");
+            }
             left.forEach(Connection::abort);
-        }
-        for (var connection : open) {
-            interrupted |= joinUninterruptibly(connection.thread());
+            long grace = System.nanoTime() + ABORT_GRACE_MILLIS * 1_000_000L;
+            for (var connection : left) {
+                interrupted |= joinUntil(connection.thread(), grace);
+            }
+            long stuck = left.stream().filter(c -> c.thread().isAlive()).count();
+            if (stuck > 0) {
+                log.log(Level.WARNING, "shutdown: " + stuck + " aborted connection thread(s) did not end; not waiting");
+            }
         }
         guardStopped = true;
         guard.interrupt();
         interrupted |= joinUninterruptibly(guard);
         if (log.isLoggable(Level.INFO)) {
             log.log(Level.INFO, "stopped listening on port " + serverSocket.getLocalPort());
+        }
+        if (interrupted) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    /** Joins {@code thread} until {@code deadline} ({@link System#nanoTime()}); returns whether the caller was interrupted. */
+    private static boolean joinUntil(Thread thread, long deadline) {
+        boolean interrupted = false;
+        while (true) {
+            long left = deadline - System.nanoTime();
+            if (left <= 0) {
+                return interrupted;
+            }
+            try {
+                thread.join(Duration.ofNanos(left));
+                return interrupted;
+            } catch (InterruptedException e) {
+                interrupted = true;
+            }
+        }
+    }
+
+    private static void awaitUninterruptibly(CountDownLatch latch) {
+        boolean interrupted = false;
+        while (true) {
+            try {
+                latch.await();
+                break;
+            } catch (InterruptedException e) {
+                interrupted = true;
+            }
         }
         if (interrupted) {
             Thread.currentThread().interrupt();
@@ -274,7 +341,7 @@ public final class HttpServer implements AutoCloseable {
         }
     }
 
-    private static void closeQuietly(AutoCloseable closeable) {
+    static void closeQuietly(AutoCloseable closeable) {
         try {
             closeable.close();
         } catch (Exception e) {

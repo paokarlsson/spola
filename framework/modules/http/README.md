@@ -126,7 +126,10 @@ Det som skiljer:
   anslutningen i stället, så att klienten aldrig ser ett svar som ser komplett ut.
 - **Mjukt stopp är standard.** `close()` slutar ta emot anslutningar, stänger lediga
   keep-alive-anslutningar, låter pågående förfrågningar bli klara (med `Connection: close`)
-  och avbryter resten efter `shutdownTimeout`.
+  och avbryter resten efter `shutdownTimeout`. Bara första anropet gör jobbet: ett senare
+  anrop från en handler returnerar direkt (så att dess svar kan gå ut), ett senare anrop från
+  en annan tråd väntar tills det första är klart. En handler får alltså stoppa servern samtidigt
+  som en shutdown hook gör det.
 - **Adressen är loopback som standard.** Spring Boot lyssnar på alla adresser; i Spola väljer
   man det uttryckligen (`withAddress(InetAddress.getByName("0.0.0.0"))`).
 - Acceptor-tråden är en plattformstråd som inte är daemon, så en startad server håller
@@ -139,20 +142,24 @@ Det som skiljer:
 | `HttpLimits.maxRequestLineLength` | 8 192 byte | `server.max-http-request-header-size` (gäller request-raden och huvudena tillsammans) | 8 KB | Egen gräns för request-raden; överskriden ger 414. Tomcat ger 400 för hela huvudet. |
 | `HttpLimits.maxHeaderSectionSize` | 16 384 byte | `server.max-http-request-header-size` | 8 KB | Bara huvudraderna (utan request-raden); överskriden ger 431, Tomcat ger 400. Gäller också trailers i en chunked kropp. |
 | `HttpLimits.maxHeaderCount` | 100 | ingen egenskap; Tomcats `maxHeaderCount` via en `TomcatConnectorCustomizer` | 100 | Överskriden ger 431 (Tomcat ger 400). |
-| `HttpLimits.maxBodySize` | 10 MiB | `server.tomcat.max-swallow-size` (hur mycket oläst kropp Tomcat sväljer) och `spring.servlet.multipart.max-request-size` | 2 MB / 10 MB | En gräns för hela kroppen, läst eller inte. `Content-Length` över gränsen ger 413 innan handlern anropas; en chunked kropp över gränsen gör att läsningen kastar och servern svarar 413. Oläst kropp hoppas över inom gränsen, annars stängs anslutningen. Tomcat har ingen generell kroppsgräns för en servlet som läser `getInputStream()` själv. |
+| `HttpLimits.maxBodySize` | 10 MiB | `server.tomcat.max-swallow-size` (hur mycket oläst kropp Tomcat sväljer) och `spring.servlet.multipart.max-request-size` | 2 MB / 10 MB | En gräns för hela kroppen, läst eller inte. `Content-Length` över gränsen ger 413 innan handlern anropas; en chunked kropp över gränsen gör att läsningen kastar och servern svarar 413. Oläst kropp läses och kastas inom gränsen innan svaret skrivs (efter svaret för ett strömmande svar); går det inte får klienten kroppens status i stället, och anslutningen stängs. Tomcat har ingen generell kroppsgräns för en servlet som läser `getInputStream()` själv. |
 | `HttpLimits.maxConnections` | 10 000 | `server.tomcat.max-connections` (+ `server.tomcat.accept-count`) | 8 192 (+ 100) | Samma beteende: vid gränsen slutar servern ta emot, nya anslutningar väntar i operativsystemets kö (Spolas kö är 1 024). Tomcat har dessutom en trådpool (`server.tomcat.threads.max` 200); Spola har en virtuell tråd per anslutning och ingen trådgräns. |
 | `HttpTimeouts.headerTimeout` | 10 s | `server.tomcat.connection-timeout` | Tomcats standard, 60 s (20 s i Tomcats egen `server.xml`) | Total tid från första byte till sista huvudet. Tomcats tidsgräns gäller per läsning, så en klient som skickar en byte i taget kan hålla anslutningen. Svar: 408 och stängd anslutning. Gäller också hur länge en ny anslutning får vänta före första byten. |
 | `HttpTimeouts.idleTimeout` | 60 s | `server.tomcat.keep-alive-timeout` | samma som `connection-timeout` | Stänger utan svar. |
 | `HttpTimeouts.readTimeout` | 30 s | `server.tomcat.connection-timeout` (gäller också kroppen) | 60 s | Utan framsteg, per läsning (en kropp som kommer långsamt men stadigt är tillåten). Svar 408 om svaret inte börjat, sedan stängd anslutning. |
 | `HttpTimeouts.writeTimeout` | 30 s | ingen (Tomcat har bara `connection-timeout` för NIO-skrivningar) | – | En vakttråd stänger socketen när en skrivning stått still längre än gränsen; handlerns `write` kastar då och tråden blir fri. |
-| `HttpTimeouts.shutdownTimeout` | 30 s | `spring.lifecycle.timeout-per-shutdown-phase` med `server.shutdown=graceful` | 30 s | Spola stoppar alltid mjukt. Efter tidsgränsen stängs socketarna och trådarna avbryts; `close()` returnerar när alla anslutningstrådar är klara. |
+| `HttpTimeouts.shutdownTimeout` | 30 s | `spring.lifecycle.timeout-per-shutdown-phase` med `server.shutdown=graceful` | 30 s | Spola stoppar alltid mjukt. Efter tidsgränsen stängs socketarna och trådarna avbryts; `close()` returnerar när alla anslutningstrådar är klara, eller senast 1 s efter avbrottet (en handler som ignorerar avbrottet hålls inte kvar). |
 | `BodyStream.MAX_CHUNK_LINE` (fast) | 4 096 byte | Tomcats `maxExtensionSize` | 8 192 | Chunk-storleksraden inklusive tillägg; längre ger 400. Tilläggen läses aldrig. |
 
 ## Strikt parsning: vad som avvisas
 
 Varje fel ger ett kort svar i klartext med statuskoden, `Connection: close`, och anslutningen
 stängs. Handlern anropas inte (utom när felet sitter i en chunked kropp, som läses först när
-handlern läser den; då kastar läsningen och servern svarar med kroppens status).
+handlern läser den; då kastar läsningen och servern svarar med kroppens status). Läser
+handlern inte hela kroppen läser servern resten innan svaret skrivs, och är kroppen trasig
+skickas kroppens status (400/408/413/431) med `Connection: close` i stället för handlerns svar.
+Två undantag behåller handlerns svar och stänger anslutningen efter det: ett strömmande svar
+(dess `BodyWriter` får läsa kroppen) och `Expect: 100-continue` där kroppen aldrig begärdes.
 
 | Indata | Svar | Avsnitt |
 |---|---|---|

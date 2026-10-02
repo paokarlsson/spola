@@ -120,15 +120,33 @@ final class ChunkedTests {
                             assertTrue(c.closedByServer());
                         }
                     }
-                    // a handler that does not read the body: the server's skipping stops at the limit
-                    // and closes the connection after the handler's response
+                    // a handler that does not read the body: the server skips the rest before it answers,
+                    // stops at the limit and answers 413 instead of the handler's response
                     var ignoring = Support.options().withLimits(HttpLimits.DEFAULT.withMaxBodySize(10));
                     try (var server = Support.start(ignoring, request -> Response.text(200, "ignored"));
                          var c = new Support.Client(server.port())) {
                         c.send("POST / HTTP/1.1\r\nHost: a\r\nTransfer-Encoding: chunked\r\n\r\n"
                                 + "b\r\nhello world\r\n0\r\n\r\n" + Support.get("/never"));
-                        assertEquals("ignored", c.read().text());
+                        var reply = c.read();
+                        assertEquals(413, reply.status());
+                        assertTrue(reply.closes());
                         assertTrue(c.closedByServer(), "closed instead of reading past the limit");
+                    }
+                }),
+                test("an unread body with broken framing after a streaming response closes the connection", () -> {
+                    // A body writer may read the request body, so the server cannot skip it before a
+                    // streaming response: the response goes out, then the framing error ends the connection.
+                    var paths = new java.util.concurrent.CopyOnWriteArrayList<String>();
+                    Handler handler = request -> {
+                        paths.add(request.path());
+                        return Response.stream(200, "text/plain", THREE_PARTS);
+                    };
+                    try (var server = Support.start(handler); var c = new Support.Client(server.port())) {
+                        c.send("POST /first HTTP/1.1\r\nHost: a\r\nTransfer-Encoding: chunked\r\n\r\n"
+                                + "5\r\nhelloX\r\n0\r\n\r\n" + Support.get("/never"));
+                        assertEquals("abcdefghij", c.read().text());
+                        assertTrue(c.closedByServer(), "closed after the response");
+                        assertEquals(java.util.List.of("/first"), java.util.List.copyOf(paths));
                     }
                 }));
     }
