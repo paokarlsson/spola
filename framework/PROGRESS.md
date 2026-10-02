@@ -187,8 +187,34 @@
   testfall 1 och 2, orderradsformatet). `spola.config` har nu 68 tester och `spola.util` 80.
   Bygget tar ungefär 20 s.
 
+### Uppdrag 06a: JSON del 1, trädmodell, parser och skrivare (`spola.json`)
+- Rad 06 i `PLAN.md` är delad i 06a (detta: trädmodell, parser, gränser, skrivare) och 06b
+  (mappning mellan records och JSON); se ARCHITECTURE.md ("JSON del 1").
+- Modulen `spola.json` (`modules/json/`, inga `requires`, ingen reflektion): `sealed interface
+  JsonValue` med `JsonObject` (ordning bevaras, likhet utan ordning), `JsonArray`,
+  `JsonString`, `JsonNumber` (texten behålls, numerisk likhet, exakta omvandlingar som kastar
+  `ArithmeticException`), `JsonBoolean`, `JsonNull`; fabriker och `JsonObject.builder()`.
+- `Json.parse` från `String`, `byte[]`, `InputStream` och `Reader`, med och utan
+  `JsonLimits` (`maxDepth` 512, `maxStringLength` 1 048 576, `maxNumberLength` 1 000,
+  `maxEntries` 100 000, `maxInputSize` 4 MiB). Strikt RFC 8259 utan utvidgningar, dubbla
+  nycklar avvisas, ensamma surrogat avvisas, strikt UTF-8 (RFC 3629) med egen avkodare,
+  inledande BOM hoppas över. Parsern, skrivaren, likheten och hashkoden är inte rekursiva.
+  `JsonParseException` med rad, kolumn och offset; meddelandet är alltid kort, utskrivbar ASCII.
+- `Json.write`/`writePretty` till `String` och `Appendable`, `writeUtf8`/`writePrettyUtf8`
+  till `OutputStream`; escaping av `"`, `\`, U+0000–U+001F, U+007F, U+2028, U+2029.
+- Läsare med sökväg (`string`, `number`, `bool`, `object`, `array`, `get`, `optional`) som
+  kastar `JsonAccessException` (`$.items[2].sku: expected string but found number`).
+- `README.md` i modulen med Jackson-jämförelse och avvikelsetabell.
+- 287 tester i `spola.json`: RFC 8259 §13-exemplen, 57 accepterade och 97 avvisade dokument
+  (varje med regel, genom alla fyra ingångar, rundresa genom båda skrivarna), positioner och
+  säkra meddelanden (även för 1 MiB indata), varje gräns vid och över gränsen, 100 000 nästlade
+  `[` på plattformstråd och virtuell tråd, oändlig ström och `Reader`, tal, dubbla nycklar,
+  ordning, BOM, skrivaren tecken för tecken, läsarna, 1 000 virtuella trådar, och UTF-8-
+  avkodaren mot JDK:ns avkodare (alla tvåbytessekvenser, tre- och fyrbytesstarter, alla
+  kodpunkter). Bygget tar ungefär 30–45 s.
+
 ## Återstår (enligt `uppdrag/PLAN.md`)
-- 06–20 enligt planen.
+- 06b (mappning mellan records och JSON) och 07–20 enligt planen.
 - **Kvar från friktionsrapporten i 05c** (`modules/demo/README.md`, avsnitt "Friktion"):
   - **DI:** den typade formen av `to(...)` går inte att blanda `Class` och `Key` i; ett enda
     kvalificerat beroende gör att alla måste skrivas `Key.of(...)` (punkt 3).
@@ -205,6 +231,13 @@
     `LoggingSettings` efter bindningen, inte i `ConfigException` (punkt 7).
 
 ## Kända problem och begränsningar
+- **JSON (spola.json):** indenterad utskrift växer med kvadraten på djupet (indraget), så
+  `writePretty` på ett mycket djupt träd (tusentals nivåer) ger mycket stor utdata; kompakt
+  utskrift är linjär. Ett parsat träd tar upp till ungefär 25 gånger indatans storlek i minne
+  (cirka 110 MB vid standardgränsen 4 MiB). Inget strömmande API (utanför uppdraget).
+  `bigIntegerValueExact` vägrar heltal med fler än 10 000 siffror. Kolumner räknas i
+  kodpunkter, inte i grafem eller visningsbredd. C1-styrtecken (U+0080–U+009F) escapas inte av
+  skrivaren (bara de tecken uppdraget anger).
 - **Codegen (spola.codegen):** generatorn läser bara syntaxträdet, så en medlemstyp som ärvs
   från en supertyp till recordet (eller en typ runt det) kvalificeras inte; den genererade
   filen kompilerar då inte förrän typen skrivs kvalificerad i recordet. Genererade filer känns

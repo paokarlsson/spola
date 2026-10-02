@@ -1,0 +1,12 @@
+feat(json): add strict RFC 8259 parser, sealed tree model and writer
+
+New module spola.json: an immutable sealed JsonValue tree with value
+semantics and exact-text numbers, a strict non-recursive parser with
+configurable JsonLimits, strict UTF-8 and positioned errors, and a compact
+and pretty writer. Duplicate keys are rejected and a leading BOM is skipped.
+
+Gauntlet-Run: 20261002-1043-json-parser-och-skrivare
+Gauntlet-Round: 1/5
+Gauntlet-Verdict: PASS (0 blocker, 0 major, 6 minor upheld)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>

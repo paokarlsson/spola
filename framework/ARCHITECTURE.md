@@ -16,6 +16,7 @@ framework/
   modules/util/README.md    exempel för spola.util bredvid motsvarande Lombok- och Spring Boot-kod
   modules/codegen/README.md arbetsflödet för genererade builders/with-metoder, bredvid Lombok
   modules/demo/README.md    integrationsprogrammet: körning, Spring Boot-jämförelse, friktionsrapport
+  modules/json/README.md    exempel för spola.json bredvid Jackson, avvikelser från Jacksons standard
   out/                      byggresultat (ignoreras av git)
     classes/<modulnamn>/    kompilerade klasser per modul
     <modulnamn>.jar         en jar per modul (utan tester)
@@ -844,3 +845,133 @@ order mark; inget API ändras.
   skriver ett, och `Properties.load` gjorde det till en del av första nyckeln, så den
   inställningen ignorerades tyst. Bara ett inledande BOM tas bort; ett U+FEFF längre in är
   vanlig text, som förut. Samma regel som orderfilen i `spola.demo` redan hade.
+
+## JSON del 1: trädmodell, parser och skrivare (`spola.json`)
+
+Uppdrag 06a. Rad 06 i `PLAN.md` är delad i två uppdrag av planeraren: **06a** (detta:
+trädmodell, strikt parser, gränser, skrivare) och **06b** (explicit mappning mellan records
+och JSON med kodekar som värden, felrapport med JSON-sökväg för alla fel samtidigt, sealed
+hierarkier med diskriminator). Skälet är att parsern är säkerhetskritisk (REGLER §4) och att
+parsning och mappning var för sig är stora nog för ett eget uppdrag. Modulen har inga
+`requires` (bara `java.base`), ingen reflektion och inget delat föränderligt tillstånd.
+
+### API (paket `spola.json`)
+
+| Typ | Roll |
+|---|---|
+| `JsonValue` | `sealed interface` med exakt sex fall |
+| `JsonObject`, `JsonArray` | behållare; fabriker (`of`, `builder`, `copyOf`) och läsare med sökväg |
+| `JsonString`, `JsonBoolean` (records), `JsonNull` (enum), `JsonNumber` | skalärer |
+| `Json` | `parse` (String, byte[], InputStream, Reader, med och utan `JsonLimits`), `write`, `writePretty`, `writeUtf8`, `writePrettyUtf8` |
+| `JsonLimits` | record med gränserna; `DEFAULT` och `withX` |
+| `JsonParseException` | rad, kolumn, offset, beskrivning |
+| `JsonAccessException` | läsarfel: sökväg, förväntad och faktisk typ |
+
+Interna klasser: `Parser`, `Input` (text och strikt UTF-8), `TextWriter`, `Equality`,
+`Paths`, `Text` (säker återgivning av indata i meddelanden).
+
+### Beslut
+
+- **Trädet är en sealed hierarki med värdesemantik.** `switch` med mönster täcker alla fall
+  utan `default`. `JsonString` och `JsonBoolean` är records; `JsonNull` är en enum med ett
+  värde; `JsonObject`, `JsonArray` och `JsonNumber` är finala klasser eftersom de behöver
+  egen likhet och dold intern representation.
+- **Inget i modellen är rekursivt.** Parsern håller öppna behållare i en lista på heapen,
+  skrivaren likaså, och likhet jämförs med en explicit stack (`Equality`). Hashkoden för
+  `JsonObject`/`JsonArray` räknas ut en gång när behållaren skapas, från barnens redan
+  uträknade hashkoder. Därför kan träd av godtyckligt djup (byggda i kod eller parsade med
+  högt `maxDepth`) jämföras, hashas och skrivas på vilken trådstack som helst, också en
+  virtuell tråds; djupgränsen skyddar minnet, inte stacken. Indenterad utskrift växer med
+  kvadraten på djupet (indraget), vilket är formatets natur.
+- **Dubbla nycklar avvisas** med namnet (escapat, högst 40 tecken) och positionen för den
+  andra förekomsten. Namn jämförs efter avkodning (`"a"` och `"\u0061"` är samma), exakt
+  (ingen skiftlägesvikning eller Unicode-normalisering). RFC 8259 §4 lämnar beteendet öppet;
+  olika parsrar som väljer olika värden är en känd källa till säkerhetsfel (en kontroll som
+  läser första och en hanterare som läser sista värdet). Fabrikerna och buildern avvisar
+  dubbletter på samma sätt (`IllegalArgumentException`).
+- **Medlemmarnas ordning bevaras** (insättningsordning) vid parsning och skrivning, men är
+  inte en del av likheten: JSON-objekt är oordnade (RFC 8259 §4), och två dokument med samma
+  medlemmar ska jämföras lika. Arrayers ordning är en del av likheten.
+- **Tal lagras som sin text** (validerad mot grammatiken i RFC 8259 §6) och omvandlas på
+  begäran. De exakta omvandlingarna (`intValueExact`, `longValueExact`,
+  `bigIntegerValueExact`) kastar `ArithmeticException`, JDK:ns konvention
+  (`BigDecimal.intValueExact`), i stället för ett eget undantag: felet är aritmetiskt, inte
+  ett parsfel. `bigIntegerValueExact` vägrar resultat med fler än
+  `JsonNumber.MAX_EXACT_DIGITS` (10 000) siffror, så `1e1000000000` inte kan låsa en tråd i
+  minuter. `bigDecimalValue` är billigt för alla exponenter som ryms i `BigDecimal` (skala
+  inom `int`) och kastar `ArithmeticException` annars. `doubleValue` avrundar som
+  `Double.parseDouble`.
+- **Talens likhet är numerisk** och räknas på en kanonisk form: tecken, siffrorna utan
+  inledande och avslutande nollor, och exponenten som `BigInteger`. `1`, `1.0`, `1e0` och
+  `10e-1` är lika med samma hashkod, och `-0` är lika med `0`. Den kanoniska formen tar
+  linjär tid i textens längd oavsett exponent (inget `BigDecimal.stripTrailingZeros`, inga
+  tiopotenser), så likhet och hash kan inte användas för DoS. Texten är inte en del av
+  likheten. Hashkoden räknas ut när talet skapas.
+- **Strängar är alltid giltig Unicode.** Parsern avvisar ensamma surrogat, escapade eller ej;
+  ett escapat högt surrogat måste följas av ett escapat lågt (RFC 8259 §7), ett rått av ett
+  rått. `JsonString` och namn i `JsonObject` avvisar ensamma surrogat
+  (`IllegalArgumentException`). Därför har varje träd en UTF-8-form och
+  `parse(write(v)).equals(v)` gäller för alla träd, inte bara parsade (så länge trädet ryms
+  inom de gränser som ges till `parse`; ett träd byggt i kod kan vara djupare eller större än
+  `JsonLimits.DEFAULT`).
+- **Byte-indata avkodas av en egen strikt UTF-8-avkodare** som följer grammatiken i RFC 3629
+  §4 byte för byte (inte JDK:ns `CharsetDecoder`), eftersom felet ska ha exakt byte-offset,
+  rad och kolumn, och avkodningen ska kunna stoppas vid storleksgränsen. Testerna jämför den
+  med JDK:ns avkodare (`CodingErrorAction.REPORT`) för alla tvåbytessekvenser, alla tre- och
+  fyrbytesstarter med varje andra byte och gränsbyten därefter, och alla kodpunkter.
+- **Byte order mark:** ett inledande U+FEFF (EF BB BF i byte-indata) hoppas över i all indata
+  (RFC 8259 §8.1 tillåter det), på samma sätt som `spola.config` gör med
+  konfigurationsfiler. Det räknas i offset och storleksgräns men inte som en kolumn. Ett
+  U+FEFF längre in, utanför en sträng, är ett fel; i en sträng är det ett vanligt tecken.
+  UTF-16- och UTF-32-indata accepteras inte (RFC 8259 §8.1 kräver UTF-8).
+- **Standardgränserna** (`JsonLimits.DEFAULT`):
+  - `maxDepth` 512: djupare legitima dokument är sällsynta; Jackson har 1 000. Uppdragets beslut.
+  - `maxStringLength` 1 048 576 UTF-16-enheter: en fjärdedel av standardstorleken, nog för
+    t.ex. en inbäddad bild i base64 på 750 kB; Jackson har 20 000 000.
+  - `maxNumberLength` 1 000 tecken: som Jacksons `StreamReadConstraints`. Tal längre än så är
+    inte siffror från verkliga system, och omvandlingarna är linjära i längden.
+  - `maxEntries` 100 000 per objekt eller array: en gräns oberoende av storleken för den som
+    höjer `maxInputSize`; större samlingar i en förfrågan är ovanliga och kan tillåtas
+    uttryckligen.
+  - `maxInputSize` 4 MiB: trädet tar flera gånger indatans storlek i minne, eftersom varje
+    värde är ett objekt. Uppmätt för 4 MiB indata: `[10,10,...]` och `{"ab":10}` upprepat
+    ungefär 25 gånger (cirka 110 MB), `[[1],[1],...]` och `["ab",...]` ungefär 13 gånger.
+    För att hålla nere det delas ensiffriga tal, `true`/`false`/`null` och tomma behållare,
+    ett namn som förekommer många gånger lagras en gång per dokument, och behållarna lagras
+    i exakt storlek. 4 MiB räcker för vanliga API-anrop och håller ett enskilt dokument kring
+    100 MB heap i värsta fall; den som tar emot många samtidiga dokument sänker gränsen.
+  Precis vid en gräns accepteras; en över ger `JsonParseException` som namnger gränsen. En
+  ström eller `Reader` läses aldrig mer än en enhet förbi `maxInputSize`, så en ström som
+  aldrig tar slut ger fel i stället för `OutOfMemoryError`. Storleken räknas i byte för
+  byte-indata och i UTF-16-enheter för text, eftersom det är det som faktiskt läses.
+- **Fel:** `JsonParseException` (okontrollerat) har rad (från 1; `\n`, `\r` och `\r\n`
+  avslutar en rad), kolumn (från 1, i kodpunkter) och offset (byte för byte-indata, UTF-16-
+  enheter för text; `isByteOffset()`), och en kort beskrivning av vad som förväntades och vad
+  som hittades, med hänvisning till RFC:n. Meddelandet är alltid utskrivbar ASCII: indata
+  citeras som högst ett tecken (`'x'` eller `U+0009`) eller ett namn på högst 40 tecken med
+  allt utanför utskrivbar ASCII som `\uXXXX`, så att ett fel kan loggas utan att förfalska
+  loggrader. Läsfel från en ström eller `Reader` är inte parsfel: `parse(InputStream)` och
+  `parse(Reader)` deklarerar `IOException`.
+- **Skrivarens escaping** är minimal men säker: `"` och `\` alltid; U+0000–U+001F alltid
+  (kortform `\b \t \n \f \r` där den finns, annars `\u00xx` med gemena hexsiffror); och
+  dessutom U+007F, U+2028 och U+2029. Motivering: U+2028 och U+2029 är radavslutare i
+  JavaScript före ES2019 och i många loggverktyg och textredigerare, så rå JSON inbäddad i
+  `<script>` eller en loggrad kan brytas; U+007F (DEL) är ett styrtecken (kategori Cc) som
+  terminaler kan tolka. Allt annat, surrogatpar inräknade, skrivs rått (giltig UTF-8 och
+  minsta möjliga utdata). C1-styrtecknen (U+0080–U+009F) escapas inte; de är inte
+  radavslutare i JSON eller JavaScript, och uppdraget anger exakt vilka tecken som escapas.
+  `/` escapas inte. Tal skrivs med sin lagrade text.
+- **Indenterad utskrift** är deterministisk: två blanksteg per nivå, ett element eller en
+  medlem per rad, `": "` efter namnet, `\n` som radbrytning oavsett plattform, ingen
+  avslutande radbrytning, tomma behållare som `{}` och `[]`.
+- **`writeUtf8` heter inte `write`**, eftersom en `PrintStream` är både `Appendable` och
+  `OutputStream` och anropet då vore tvetydigt.
+- **Läsare med sökväg.** `JsonObject` och `JsonArray` bär ett fält `path` som inte ingår i
+  värdet (`equals`, `hashCode`, skrivaren). Läsarna (`object`, `array`, `get`, `optional`)
+  returnerar en vy som delar medlemmarna men har vägen dit (`$.items[2]`), så att ett fel
+  längre ner kan nämna hela sökvägen. Ett parsat eller byggt värde, och ett värde hämtat via
+  `members()`/`values()`, har vägen `$`. Valet framför en separat markörtyp: läsarna sitter
+  direkt på trädet, som uppdraget anger (`obj.string("name")`), och vyn kostar ett litet objekt
+  utan kopiering. `optional(namn)` är tom när medlemmen saknas eller är `null`, eftersom de
+  två betyder samma sak för en valfri medlem i de flesta API:er; `contains` och `members()`
+  skiljer dem åt. Namn som inte är identifierare skrivs `["a.b"]` i sökvägen, escapade.
