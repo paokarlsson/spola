@@ -7,3 +7,4 @@
 - 2026-10-02 08:36 · 20261002-0826-util-log-backend-fel · PASS · 1 rounds · Finish 05a: keep backend logging errors from escaping spola.util Log · commits: b2bb961
 - 2026-10-02 10:10 · 20261002-0935-integration-karnmoduler · PASS · 3 rounds · Integration: kärnmodulerna i ett riktigt program · commits: cf8b464, 86183f6, 71c53f5
 - 2026-10-02 10:43 · 20261002-1011-util-builders · PASS · 1 rounds · Util part 2: record builders and with-methods via generated source · commits: b4faeaa
+- 2026-10-02 11:18 · 20261002-1043-json-parser-och-skrivare · PASS · 1 rounds · JSON part 1: tree model, strict parser and writer (spola.json) · commits: 6d96cf9
