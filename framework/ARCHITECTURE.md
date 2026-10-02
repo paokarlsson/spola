@@ -607,7 +607,11 @@ Paketprivat: `MessageFormatter` (platshållarna), `LineFormatter` och `LineHandl
   En rad som börjar i kolumn 0 är därför alltid början på en post: ett loggat värde, inte
   heller ett undantagsmeddelande, kan förfalska en post (log forging). Valt framför att skriva
   om `printStackTrace` för att escapa varje meddelande: tabben är en enkel regel som täcker
-  orsaker, undertryckta undantag och egna `toString` utan att återskapa JDK:ns format. Varje rad
+  orsaker, undertryckta undantag och egna `toString` utan att återskapa JDK:ns format. Kastar
+  `printStackTrace` något (t.ex. en `toString` som kastar `AssertionError` eller en rekursiv
+  `getMessage` som ger `StackOverflowError`) kastas det påbörjade spåret och ersätts av en rad
+  med undantagets klassnamn och en markering; bara fatala `VirtualMachineError` utom
+  `StackOverflowError` släpps igenom, samma regel som för platshållare. Varje rad
   skrivs och flushas direkt; rader från olika trådar blandas aldrig. En `PrintStream` skrivs
   med sin egen teckenkodning, annan `OutputStream` med UTF-8; strömmen stängs aldrig.
 - **`Lazy`:** dubbelkontroll med ett `volatile`-fält och en `ReentrantLock` (en virtuell tråd

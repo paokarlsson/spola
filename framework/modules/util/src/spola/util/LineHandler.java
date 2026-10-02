@@ -33,8 +33,11 @@ final class LineHandler extends Handler {
         String text;
         try {
             text = getFormatter().format(record);
-        } catch (RuntimeException e) {
-            reportError(null, e, ErrorManager.FORMAT_FAILURE);
+        } catch (Throwable e) {
+            if (e instanceof VirtualMachineError fatal && !(fatal instanceof StackOverflowError)) {
+                throw fatal;
+            }
+            reportError(null, e instanceof Exception ex ? ex : new RuntimeException(e), ErrorManager.FORMAT_FAILURE);
             return;
         }
         synchronized (this) {

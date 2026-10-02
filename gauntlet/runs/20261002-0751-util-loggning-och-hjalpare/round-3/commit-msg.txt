@@ -1,0 +1,13 @@
+fix(util): keep errors from bad exceptions inside the console handler
+
+Printing a stack trace whose toString or getMessage throws an Error,
+such as an AssertionError or a StackOverflowError from a recursive
+getMessage, no longer escapes the logging call when the console format
+is installed; the record is logged with a marker line instead. U+2028
+and U+2029 in the escape rule are now written as char escapes.
+
+Gauntlet-Run: 20261002-0751-util-loggning-och-hjalpare
+Gauntlet-Round: 3/4
+Gauntlet-Verdict: FAIL (0 blocker, 1 major, 3 minor upheld)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>

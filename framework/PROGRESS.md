@@ -105,9 +105,10 @@
 - Ingen `java.lang.reflect`/`java.lang.invoke` och ingen preview i huvudkoden. Inga
   resursfiler; loggning konfigureras i kod. `README.md` med Lombok- och Spring Boot-jämförelse
   och hur `logging.level.*` läses med `spola.config`. Beslut i ARCHITECTURE.md ("Util del 1").
-- 69 tester (platshållarregler, inget arbete vid avstängd nivå för alla fem nivåer,
+- 70 tester (platshållarregler, inget arbete vid avstängd nivå för alla fem nivåer,
   nivåmappning, 1 000 virtuella trådar mot en delad `Log`, konsolformat mot
   `ByteArrayOutputStream`, radbrytningar i undantagsmeddelanden kan inte förfalska en post,
+  ett undantag vars `toString`/`getMessage` kastar ett `Error` loggas ändå,
   prefixnivåer, omkonfigurering, `Lazy` med 1 000 virtuella trådar,
   `Unchecked` för alla gränssnitt, `ToString` mot records). Bygget tar ungefär 14 s.
 

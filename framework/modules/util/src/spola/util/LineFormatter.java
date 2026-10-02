@@ -69,15 +69,21 @@ final class LineFormatter extends Formatter {
      * The stack trace as continuation lines. Every line starts with a tab, so a line that starts
      * at column 0 is always a new record, even when an exception message (of the exception, a
      * cause or a suppressed exception) contains line breaks. Within a line, control characters
-     * other than tab are escaped as in {@link #escape}.
+     * other than tab are escaped as in {@link #escape}. If printing the trace throws anything
+     * but a fatal {@link VirtualMachineError} (for example a {@code toString} that throws an
+     * {@code AssertionError}, or a recursive {@code getMessage} that overflows the stack), the
+     * partial trace is dropped and replaced by one line: the exception's class name and a marker.
      */
     private static String stackTrace(Throwable thrown) {
         var text = new StringWriter();
         try (var writer = new PrintWriter(text)) {
             thrown.printStackTrace(writer);
-        } catch (RuntimeException failure) {
+        } catch (Throwable failure) {
+            // toString/getMessage of the exception (or a cause) threw, possibly an Error such as
+            // StackOverflowError from a recursive getMessage. Drop the partial trace and log a
+            // marker instead; MessageFormatter.marker rethrows only fatal VirtualMachineErrors.
             text = new StringWriter();
-            text.write(MessageFormatter.marker("printStackTrace()", failure));
+            text.write(thrown.getClass().getName() + " " + MessageFormatter.marker("printStackTrace()", failure));
         }
         var out = new StringBuilder(text.getBuffer().length() + 64);
         for (var line : text.toString().split("\\r\\n|\\r|\\n")) {
@@ -92,6 +98,8 @@ final class LineFormatter extends Formatter {
      * Appends {@code text} so that it cannot start a new line: line breaks and other control
      * characters (except tab) are written as escapes ({@code \n}, {@code \r},
      * {@code \}{@code uXXXX}), which keeps one record on one line and stops log forging.
+     * U+2028 and U+2029 (line and paragraph separator) are escaped too, since some viewers break
+     * lines on them. This is the single definition of the escape rule.
      */
     static void escape(String text, StringBuilder out) {
         for (int i = 0; i < text.length(); i++) {
@@ -100,7 +108,7 @@ final class LineFormatter extends Formatter {
                 out.append("\\n");
             } else if (c == '\r') {
                 out.append("\\r");
-            } else if ((Character.isISOControl(c) && c != '\t') || c == ' ' || c == ' ') {
+            } else if ((Character.isISOControl(c) && c != '\t') || c == '\u2028' || c == '\u2029') {
                 out.append(String.format("\\u%04x", (int) c));
             } else {
                 out.append(c);

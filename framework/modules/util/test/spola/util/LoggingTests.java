@@ -159,6 +159,31 @@ final class LoggingTests {
                         assertTrue(all.contains("\\u2028"), all);
                     });
                 }),
+                test("a trailing exception whose toString or getMessage throws an Error is still logged", () -> {
+                    var out = new ByteArrayOutputStream();
+                    withLogging(utc(out, Map.of("", Level.INFO)), () -> {
+                        var throwing = new ThrowingToString();
+                        var recursive = new RecursiveMessage();
+                        log("spola.test.badthrown.X").warn("t", throwing);
+                        log("spola.test.badthrown.X").warn("d", recursive);
+                        log("spola.test.badthrown.X").info("after");
+                        var lines = lines(out);
+                        assertEquals(5, lines.size(), String.join("\n", lines));
+                        var first = LINE.matcher(lines.get(0));
+                        assertTrue(first.matches(), lines.get(0));
+                        assertEquals("t", first.group(5));
+                        assertEquals("\t" + ThrowingToString.class.getName()
+                                + " [printStackTrace() threw java.lang.AssertionError]", lines.get(1));
+                        var second = LINE.matcher(lines.get(2));
+                        assertTrue(second.matches(), lines.get(2));
+                        assertEquals("d", second.group(5));
+                        assertEquals("\t" + RecursiveMessage.class.getName()
+                                + " [printStackTrace() threw java.lang.StackOverflowError]", lines.get(3));
+                        var last = LINE.matcher(lines.get(4));
+                        assertTrue(last.matches(), lines.get(4));
+                        assertEquals("after", last.group(5));
+                    });
+                }),
                 test("levels per prefix: the longest prefix wins and prefixes match whole segments", () -> {
                     var out = new ByteArrayOutputStream();
                     var levels = Map.of(
@@ -295,5 +320,25 @@ final class LoggingTests {
                     assertEquals("DEBUG", LineFormatter.levelName(java.util.logging.Level.CONFIG));
                     assertEquals("TRACE", LineFormatter.levelName(java.util.logging.Level.FINEST));
                 }));
+    }
+
+    /** An exception whose {@code toString} throws an {@link Error}. */
+    static final class ThrowingToString extends RuntimeException {
+        private static final long serialVersionUID = 1L;
+
+        @Override
+        public String toString() {
+            throw new AssertionError("boom");
+        }
+    }
+
+    /** The common mistake: {@code getMessage} uses {@code this}, so toString recurses forever. */
+    static final class RecursiveMessage extends RuntimeException {
+        private static final long serialVersionUID = 1L;
+
+        @Override
+        public String getMessage() {
+            return "failed: " + this;
+        }
     }
 }
