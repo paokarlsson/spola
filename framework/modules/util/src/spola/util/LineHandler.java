@@ -34,9 +34,10 @@ final class LineHandler extends Handler {
         try {
             text = getFormatter().format(record);
         } catch (Throwable e) {
-            if (e instanceof VirtualMachineError fatal && !(fatal instanceof StackOverflowError)) {
-                throw fatal;
-            }
+            Failures.rethrowIfFatal(e);
+            // reportError takes an Exception, so a non-fatal Error (say a StackOverflowError from
+            // a formatter) is wrapped only to fit that signature. LineFormatter already catches
+            // what printStackTrace throws, so this is close to unreachable.
             reportError(null, e instanceof Exception ex ? ex : new RuntimeException(e), ErrorManager.FORMAT_FAILURE);
             return;
         }

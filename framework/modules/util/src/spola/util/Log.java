@@ -67,6 +67,40 @@ import java.util.function.Supplier;
  * The methods with one or two arguments do not even allocate an argument array then; the
  * varargs methods get their array from the caller (Java allocates it at the call site).
  *
+ * <h2>Failures</h2>
+ * A call to a logging method ({@code trace}, {@code debug}, {@code info}, {@code warn},
+ * {@code error}: every overload, with and without placeholders, with and without a trailing
+ * {@code Throwable}, and the {@code Supplier} variants) never throws because of
+ * <ol>
+ *   <li>the arguments or the trailing exception: their {@code toString}, {@code getMessage},
+ *       {@code getLocalizedMessage}, {@code printStackTrace}, {@code getCause} and so on, or</li>
+ *   <li>the underlying {@code System.Logger}'s {@code log(...)} throwing, for any reason,</li>
+ * </ol>
+ * except for a fatal {@link VirtualMachineError} that is not a {@link StackOverflowError} (such
+ * as {@link OutOfMemoryError}), which is rethrown. This holds whatever the backend is: the JDK's
+ * default (before or without {@link Logging#configure}), the format {@code Logging} installs,
+ * or a logger passed to {@link #of(System.Logger)}.
+ * <p>
+ * If the backend throws while logging a message with an exception, the message is logged once
+ * more without the exception, followed by a marker with the exception's class name and the
+ * class name of what the backend threw:
+ * {@code text [log(<exception class>) threw <failure class>]}. If that second call throws too,
+ * or if logging a message without an exception throws, the failure is swallowed (fatal errors
+ * aside) and nothing is logged. There is no further retry. Nothing is written about a swallowed
+ * failure, since the only place to write it is the backend that just failed.
+ * <p>
+ * Outside the guarantee:
+ * <ul>
+ *   <li>If the backend's {@link System.Logger#isLoggable} throws, the exception propagates out
+ *       of the logging method (and out of {@code isXxxEnabled}); {@code Log} does not guess
+ *       whether the level is on.</li>
+ *   <li>A message {@link Supplier} or a {@link #defer(Supplier) deferred} argument that throws
+ *       does not make the call throw either: the message is logged with
+ *       {@code [message supplier threw <class name>]} or {@code [supplier threw <class name>]}
+ *       in its place (see the placeholder rules). The same fatal errors propagate.</li>
+ *   <li>A backend that blocks, is slow or drops records is not detected.</li>
+ * </ul>
+ *
  * <h2>Threads</h2>
  * A {@code Log} is immutable and thread-safe; formatting uses only local state. Whether the
  * underlying {@code System.Logger} is thread-safe is up to it (the JDK's are).
@@ -585,11 +619,7 @@ public final class Log {
 
     private void emit(Level level, String format, Object[] arguments) {
         var formatted = MessageFormatter.format(format, arguments);
-        if (formatted.thrown() == null) {
-            logger.log(level, formatted.message());
-        } else {
-            logger.log(level, formatted.message(), formatted.thrown());
-        }
+        deliver(level, formatted.message(), formatted.thrown());
     }
 
     private void log(Level level, Supplier<String> message, Throwable thrown) {
@@ -602,10 +632,39 @@ public final class Log {
         } catch (Throwable failure) {
             text = MessageFormatter.marker("message supplier", failure);
         }
+        deliver(level, text, thrown);
+    }
+
+    /**
+     * Hands the finished text to the backend; the only place {@code Log} calls
+     * {@code logger.log}. Whatever the backend throws is caught (see "Failures" in the class
+     * Javadoc): with an exception, the text is logged once more without it, followed by a marker
+     * with the exception's class name and the failure's; without one, or if the second call
+     * throws too, the failure is swallowed. At most two calls, no recursion.
+     */
+    private void deliver(Level level, String text, Throwable thrown) {
         if (thrown == null) {
-            logger.log(level, text);
-        } else {
+            try {
+                logger.log(level, text);
+            } catch (Throwable failure) {
+                Failures.rethrowIfFatal(failure);
+            }
+            return;
+        }
+        String fallback;
+        try {
             logger.log(level, text, thrown);
+            return;
+        } catch (Throwable failure) {
+            // Typically the backend's printStackTrace hit a bad toString/getMessage, but any
+            // failure counts. getClass().getName() is final and cannot throw.
+            Failures.rethrowIfFatal(failure);
+            fallback = text + " " + MessageFormatter.marker("log(" + thrown.getClass().getName() + ")", failure);
+        }
+        try {
+            logger.log(level, fallback);
+        } catch (Throwable failure) {
+            Failures.rethrowIfFatal(failure);
         }
     }
 }

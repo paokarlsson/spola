@@ -17,6 +17,7 @@ public final class UtilTests {
     public static Suite suite() {
         return Tests.suite("spola.util",
                 LogTests.tests(),
+                LogFailureTests.tests(),
                 LoggingTests.tests(),
                 LazyTests.tests(),
                 UncheckedTests.tests(),

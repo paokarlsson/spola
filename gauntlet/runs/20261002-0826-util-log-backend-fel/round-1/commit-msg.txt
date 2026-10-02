@@ -1,0 +1,14 @@
+fix(util): keep backend logging failures from escaping Log
+
+Every backend call in Log now goes through one place. If the backend
+throws while logging an exception, Log logs the text once more without
+the exception and adds a marker naming both error classes. Other backend
+failures are swallowed, so the backend is called at most twice. Fatal VM
+errors other than StackOverflowError are still rethrown, and that rule
+now lives in one shared helper. Also fixes MNT-2 and MNT-3 from the last run.
+
+Gauntlet-Run: 20261002-0826-util-log-backend-fel
+Gauntlet-Round: 1/2
+Gauntlet-Verdict: PASS (0 blocker, 0 major, 5 minor upheld)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>

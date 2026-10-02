@@ -100,12 +100,11 @@ final class MessageFormatter {
 
     /**
      * The text written instead of a value whose {@code toString()} (or supplier) threw. Only
-     * the class name is shown: the exception's message could contain the value itself.
+     * the class name is shown: the exception's message could contain the value itself. A fatal
+     * failure is rethrown instead ({@link Failures#rethrowIfFatal}).
      */
     static String marker(String what, Throwable failure) {
-        if (failure instanceof VirtualMachineError fatal && !(fatal instanceof StackOverflowError)) {
-            throw fatal;
-        }
+        Failures.rethrowIfFatal(failure);
         return "[" + what + " threw " + failure.getClass().getName() + "]";
     }
 }

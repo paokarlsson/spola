@@ -70,28 +70,34 @@ final class LineFormatter extends Formatter {
      * at column 0 is always a new record, even when an exception message (of the exception, a
      * cause or a suppressed exception) contains line breaks. Within a line, control characters
      * other than tab are escaped as in {@link #escape}. If printing the trace throws anything
-     * but a fatal {@link VirtualMachineError} (for example a {@code toString} that throws an
-     * {@code AssertionError}, or a recursive {@code getMessage} that overflows the stack), the
-     * partial trace is dropped and replaced by one line: the exception's class name and a marker.
+     * that {@link Failures#rethrowIfFatal} lets it catch (for example a {@code toString} that
+     * throws an {@code AssertionError}, or a recursive {@code getMessage} that overflows the
+     * stack), the partial trace is dropped and replaced by one line: the exception's class name
+     * and a marker.
      */
     private static String stackTrace(Throwable thrown) {
-        var text = new StringWriter();
-        try (var writer = new PrintWriter(text)) {
-            thrown.printStackTrace(writer);
-        } catch (Throwable failure) {
-            // toString/getMessage of the exception (or a cause) threw, possibly an Error such as
-            // StackOverflowError from a recursive getMessage. Drop the partial trace and log a
-            // marker instead; MessageFormatter.marker rethrows only fatal VirtualMachineErrors.
-            text = new StringWriter();
-            text.write(thrown.getClass().getName() + " " + MessageFormatter.marker("printStackTrace()", failure));
-        }
-        var out = new StringBuilder(text.getBuffer().length() + 64);
-        for (var line : text.toString().split("\\r\\n|\\r|\\n")) {
+        var text = printed(thrown);
+        var out = new StringBuilder(text.length() + 64);
+        for (var line : text.split("\\r\\n|\\r|\\n")) {
             out.append('\t');
             escape(line, out);
             out.append(System.lineSeparator());
         }
         return out.toString();
+    }
+
+    /** What {@code printStackTrace} prints, or the class name and a marker if it throws. */
+    private static String printed(Throwable thrown) {
+        var text = new StringWriter();
+        try (var writer = new PrintWriter(text)) {
+            thrown.printStackTrace(writer);
+        } catch (Throwable failure) {
+            // toString/getMessage of the exception (or a cause) threw, possibly an Error such as
+            // StackOverflowError from a recursive getMessage. The partial trace is dropped.
+            Failures.rethrowIfFatal(failure);
+            return thrown.getClass().getName() + " " + MessageFormatter.marker("printStackTrace()", failure);
+        }
+        return text.toString();
     }
 
     /**

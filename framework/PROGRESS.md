@@ -97,7 +97,10 @@
 - Modulen `spola.util` (`modules/util/`, kräver bara `java.logging`, inga Spola-moduler):
   `Log` ovanpå `System.Logger` (`forClass`, `of`, fem nivåer, `{}`-platshållare som i SLF4J,
   sista `Throwable` som undantag, `\{}`, markering när `toString` kastar, lata varianter med
-  `Supplier<String>` och `Log.defer`, inget arbete när nivån är av), `Logging.configure`
+  `Supplier<String>` och `Log.defer`, inget arbete när nivån är av, ett loggningsanrop kastar
+  aldrig på grund av dåliga värden/undantag eller en backend som kastar, oavsett backend, utom
+  fatala `VirtualMachineError` utom `StackOverflowError`; gränsen är en `isLoggable` som
+  kastar, som släpps igenom), `Logging.configure`
   (enradigt format på JUL-rotloggern, nivå per prefix där längsta prefix vinner, ersätter
   föregående anrop, egen utström eller `System.err`, `reset()`), `Lazy` (en gång under
   samtidighet, undantag och `null` memoreras inte, leverantören släpps), `Unchecked` med fyra
@@ -105,12 +108,19 @@
 - Ingen `java.lang.reflect`/`java.lang.invoke` och ingen preview i huvudkoden. Inga
   resursfiler; loggning konfigureras i kod. `README.md` med Lombok- och Spring Boot-jämförelse
   och hur `logging.level.*` läses med `spola.config`. Beslut i ARCHITECTURE.md ("Util del 1").
-- 70 tester (platshållarregler, inget arbete vid avstängd nivå för alla fem nivåer,
+- 70 tester i första leveransen (platshållarregler, inget arbete vid avstängd nivå för alla fem nivåer,
   nivåmappning, 1 000 virtuella trådar mot en delad `Log`, konsolformat mot
   `ByteArrayOutputStream`, radbrytningar i undantagsmeddelanden kan inte förfalska en post,
   ett undantag vars `toString`/`getMessage` kastar ett `Error` loggas ändå,
   prefixnivåer, omkonfigurering, `Lazy` med 1 000 virtuella trådar,
   `Unchecked` för alla gränssnitt, `ToString` mot records). Bygget tar ungefär 14 s.
+- Avslut av 05a (körning `20261002-0826-util-log-backend-fel`): garantin ovan hålls i `Log`
+  självt (`Log.deliver`: kastar backenden med undantag loggas texten en gång till utan det,
+  med markeringen `[log(<undantag>) threw <fel>]`; annars sväljs felet; högst två anrop).
+  Regeln för fatala fel står bara i `Failures.rethrowIfFatal`. 79 tester (nya: backend som
+  skriver ut ett dåligt undantag, backend som alltid kastar med räknare, `OutOfMemoryError`
+  kastas vidare, `isLoggable` som kastar släpps igenom, JDK:ns standardbackend med
+  `ConsoleHandler`/`SimpleFormatter` utan `Logging.configure`).
 
 ## Återstår (enligt `uppdrag/PLAN.md`)
 - Rad 05 är delad: 05a (loggning och hjälpare) är klar; **05b (util-builders):** builders och
@@ -126,7 +136,9 @@
   `System.Logger` med JDK:ns JUL-baserade `LoggerFinder`; med en egen `LoggerFinder` styr den
   formatet själv. Escapingen av styrtecken gör ett bokstavligt `\n` i ett meddelande
   omöjligt att skilja från en escapad radbrytning. Stackspårsrader får en tab först (skydd mot
-  förfalskning); verktyg som läser vanliga JDK-stackspår ser därför en extra tab. Varargs-metoderna i `Log` får sin array av
+  förfalskning); verktyg som läser vanliga JDK-stackspår ser därför en extra tab. Kastar
+  backendens `isLoggable` släpps undantaget ur `Log` (utanför garantin, avsiktligt). Ett fel
+  från backenden som `Log` sväljer skrivs ingenstans. Varargs-metoderna i `Log` får sin array av
   anroparen även när nivån är av (Java skapar den vid anropet).
 - **Konfiguration (spola.config):** ett `bind`-anrop ger en felrapport; fel i två separata
   `bind`-anrop rapporteras var för sig (bind ett rotrecord med `section` för en rapport).

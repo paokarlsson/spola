@@ -552,7 +552,7 @@ källkod) och ryms inte här.
 | `ToString` | `of(namn)`, `add(namn, värde)`, `secret(namn, värde)`, `toString()` |
 
 Paketprivat: `MessageFormatter` (platshållarna), `LineFormatter` och `LineHandler`
-(konsolformatet).
+(konsolformatet), `Failures` (regeln för vilka fel loggningen släpper igenom).
 
 ### Beslut
 
@@ -576,6 +576,33 @@ Paketprivat: `MessageFormatter` (platshållarna), `LineFormatter` och `LineHandl
   `StackOverflowError` (t.ex. `OutOfMemoryError`) släpps ut. Loggern får ett färdigt
   meddelande via `log(Level, String)`/`log(Level, String, Throwable)`, aldrig
   `MessageFormat`-parametrar, så `'` och `{0}` i text tolkas inte.
+- **Garantin: ett loggningsanrop kastar inte, oavsett backend.** Ett anrop till en
+  loggmetod i `Log` (alla nivåer, med och utan platshållare, med och utan avslutande
+  `Throwable`, lata varianter) kastar aldrig på grund av (1) argumentens eller det avslutande
+  undantagets `toString`/`getMessage`/`getLocalizedMessage`/`printStackTrace`/`getCause`
+  m.m., eller (2) att backendens `System.Logger.log(...)` kastar, oavsett orsak. Undantaget är
+  fatala `VirtualMachineError` utom `StackOverflowError` (t.ex. `OutOfMemoryError`), som
+  kastas vidare. Garantin gäller med JDK:ns standardbackend (utan `Logging.configure`), med
+  `Logging`s format och med en egen `System.Logger` via `Log.of`. Den hålls i `Log` självt,
+  inte bara i `LineFormatter`/`LineHandler`: JDK:ns `ConsoleHandler`/`SimpleFormatter` fångar
+  bara `Exception`, så ett `AssertionError` eller `StackOverflowError` från
+  `printStackTrace` slapp annars ut, och vi får inte ändra JDK:ns konfiguration som bieffekt.
+  Alla anrop till backenden går genom en metod (`Log.deliver`). Kastar
+  `log(level, text, thrown)` loggas texten en gång till utan undantaget, följd av
+  `[log(<undantagets klass>) threw <felets klass>]` (samma stil som platshållarmarkeringen,
+  bara klassnamn); kastar även det andra anropet, eller kastar `log(level, text)` utan
+  undantag, sväljs felet. Högst två anrop, ingen rekursion. Ett svalt fel skrivs ingenstans:
+  det enda stället att skriva det på är backenden som just misslyckades.
+- **Gränsen för garantin:** kastar backendens `isLoggable(level)` släpps undantaget igenom
+  (också ur `isXxxEnabled`); `Log` gissar inte om nivån är på. En meddelandeleverantör eller
+  `Log.defer`-leverantör som kastar ger som förut en markering i stället för texten
+  (`[message supplier threw …]`, `[supplier threw …]`). En backend som blockerar, är långsam
+  eller tappar poster upptäcks inte.
+- **En regel för fatala fel:** "kasta vidare `VirtualMachineError` utom
+  `StackOverflowError`, fånga allt annat" står bara i `Failures.rethrowIfFatal`, som `Log`,
+  `MessageFormatter`, `LineFormatter` och `LineHandler` anropar. `StackOverflowError` fångas
+  eftersom en rekursiv `toString`/`getMessage` är ett fel i ett värde, inte i JVM:en, och
+  stacken är avvecklad när felet fångas.
 - **Inget arbete när nivån är av:** varje metod frågar `isLoggable` först. Metoderna med ett
   och två argument skapar inte ens argumentarrayen då (varargs-arrayen skapas av anroparen;
   det går inte att undvika i Java). Lata argument är explicita (`Log.defer`) i stället för att
