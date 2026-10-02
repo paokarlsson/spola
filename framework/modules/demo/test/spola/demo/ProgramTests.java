@@ -125,6 +125,25 @@ final class ProgramTests {
                         assertTrue(run.outLines().contains("  line 2: pear x 2"), run.toString());
                     }
                 }),
+                test("a byte order mark at the start of inventory.properties does not hide the first setting", () -> {
+                    try (var shop = Shop.create()) {
+                        // As Windows PowerShell 5.1 (-Encoding UTF8) or older Notepad save it.
+                        shop.write("inventory.properties",
+                                "\ufeffrules.max.quantity=5",
+                                "inventory.orders=" + shop.property("orders.txt"),
+                                "inventory.stock.apple=50");
+                        shop.write("orders.txt", "apple;50");
+                        var run = shop.run(Shop.environment());
+                        assertEquals(InventoryApp.OK, run.exit(), run.toString());
+                        assertEquals(List.of(
+                                "processed 0 orders, rejected 1",
+                                "processed:",
+                                "rejected:",
+                                "  line 1: apple x 50: exceeds max quantity 5",
+                                "final stock:",
+                                "  apple: 50"), run.outLines(), run.toString());
+                    }
+                }),
                 test("audit.file puts the audit trail elsewhere", () -> {
                     try (var shop = Shop.create()) {
                         standardShop(shop);

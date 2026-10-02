@@ -33,7 +33,8 @@ record OrderLine(int line, String sku, int quantity) {
      */
     static OrderLine parse(String file, int line, String text) {
         var matcher = FORMAT.matcher(text);
-        if (!matcher.matches() || Integer.parseInt(matcher.group(2)) < 1) {
+        var quantity = matcher.matches() ? Integer.parseInt(matcher.group(2)) : 0;
+        if (quantity < 1) {
             throw new OrderFileException(file, line, "expected 'sku;quantity' with a whole quantity of at least 1, got '"
                     + printable(text) + "'");
         }
@@ -42,7 +43,7 @@ record OrderLine(int line, String sku, int quantity) {
             throw new OrderFileException(file, line, "the sku may only hold visible characters (no control, format or"
                     + " separator characters), got '" + printable(text) + "'");
         }
-        return new OrderLine(line, sku, Integer.parseInt(matcher.group(2)));
+        return new OrderLine(line, sku, quantity);
     }
 
     /**

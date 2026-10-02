@@ -55,8 +55,10 @@ final stock:
 2026-10-02T09:46:50.436+02:00 INFO  [main] spola.demo.AuditTrail : audit trail orders.txt.audit closed after 3 entries
 ```
 
-Orderfilen läses som UTF-8. Ett byte order mark först i filen (som Excel och Notepad skriver)
-hoppas över. En artikel får bara innehålla synliga tecken: en rad vars artikel har ett
+Orderfilen och `inventory.properties` läses som UTF-8. Ett byte order mark först i filen
+(som Excel och Notepad skriver) hoppas över. En orderfil som inte är giltig UTF-8 (t.ex.
+sparad som Windows-1252) är en trasig fil (exitkod 65), och meddelandet nämner första raden
+med fel. En artikel får bara innehålla synliga tecken: en rad vars artikel har ett
 styrtecken, formattecken eller avgränsartecken (t.ex. ESC, U+0085, U+2028, U+202E) är en
 trasig rad (exitkod 65), eftersom artikeln skrivs som den är till sammanfattningen och
 revisionsspåret.
@@ -335,6 +337,26 @@ utan ett `IllegalArgumentException` som ingången fångar för sig:
 
 En publik kontroll av ett prefix (så att bindningen kan rapportera det) vore ett litet tillägg
 i `spola.util`, men felet är ovanligt och fångas redan begripligt, så vi lät det vara.
+
+### 8. Ett byte order mark i konfigurationsfilen dolde första inställningen (**Åtgärdat**)
+
+`Source.file` läste filen som UTF-8 men lät ett byte order mark (U+FEFF, som Windows
+PowerShell 5.1 med `-Encoding UTF8` och äldre Notepad skriver) stå kvar. Det blev en del av
+första nyckeln, och inställningen ignorerades tyst:
+
+```properties
+\uFEFFrules.max.quantity=5      # nyckeln blev "\uFEFFrules.max.quantity"
+```
+
+`apple;50` gick då igenom trots gränsen 5, med exitkod 0. Applikationen kunde inte rätta det
+själv utan att läsa filen på egen hand före `spola.config`.
+
+**Åtgärd:** `Source.file` och `Source.optionalFile` i `spola.config` hoppar över ett byte
+order mark först i filen (bara där; inget API ändras). Test: `SourceTests` "a byte order mark
+at the start of a file is skipped, not part of the first key" och "only a leading byte order
+mark is skipped; ...", och i `spola.demo` `ProgramTests` "a byte order mark at the start of
+inventory.properties does not hide the first setting". Dokumenterat i Javadoc, i README för
+`spola.config` (avsnittet "Filer") och i `ARCHITECTURE.md`.
 
 ### Det som fungerade bra
 

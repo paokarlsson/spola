@@ -136,20 +136,24 @@
   `AutoCloseable` och stängs av containern. Felvägar (saknad/ogiltig konfiguration,
   wiring-fel, trasig orderrad, oläslig orderfil) ger ett meddelande och en exitkod (sysexits
   65/70/74/78), utan stackspår.
-- Tillägg i kärnmodulerna efter friktionsrapporten: `Section.keys()` (`spola.config`) och
-  `LoggingSettings.parseLevel(String)` (`spola.util`), med tester, Javadoc och README.
-- `modules/demo/README.md`: körning, Spring Boot-jämförelse och avsnittet "Friktion" (2
+- Ändringar i kärnmodulerna efter friktionsrapporten: `Section.keys()` (`spola.config`),
+  `LoggingSettings.parseLevel(String)` (`spola.util`) och att `Source.file`/`optionalFile`
+  hoppar över ett inledande byte order mark (`spola.config`), med tester, Javadoc och README.
+- `modules/demo/README.md`: körning, Spring Boot-jämförelse och avsnittet "Friktion" (3
   **Åtgärdat**, 5 **Kvar**, och det som fungerade bra).
 - Runda 2 i 05c: orderfilen tål ett byte order mark först (Excel/Notepad); en artikel med
   styr-, format- eller avgränsartecken (ESC, U+0085, U+2028, U+202E ...) är en trasig rad
   (65) i stället för att skrivas rått till sammanfattningen och revisionsspåret; `audit.file`
   som pekar på orderfilen är ett konfigurationsfel (78); ett revisionsspår som inte kan
   öppnas ger 74 och nämner `audit.file`.
-- 40 tester i `spola.demo` (hela programmet genom ingången, prioritetsordningen med alla fem
+- Runda 3 i 05c: ett byte order mark först i `inventory.properties` dolde tyst första
+  inställningen; nu hoppar `spola.config` över det (friktionspunkt 8). En orderfil som inte
+  är UTF-8 ger 65 och första raden med fel i stället för 74 och `MalformedInputException`.
+- 42 tester i `spola.demo` (hela programmet genom ingången, prioritetsordningen med alla fem
   lager, hemligheten i utdata/logg/fel, stängning vid lyckad och avbruten körning, loggnivåer
   från argument/miljö/profil, alla felvägar, modulgränserna på källkoden, HMAC mot RFC 4231
-  testfall 1 och 2, orderradsformatet). `spola.config` har nu 66 tester och `spola.util` 80.
-  Bygget tar ungefär 17 s.
+  testfall 1 och 2, orderradsformatet). `spola.config` har nu 68 tester och `spola.util` 80.
+  Bygget tar ungefär 20 s.
 
 ## Återstår (enligt `uppdrag/PLAN.md`)
 - Rad 05 är delad: 05a (loggning och hjälpare) är klar; **05b (util-builders):** builders och

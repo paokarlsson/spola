@@ -89,7 +89,8 @@ public final class Source {
 
     /**
      * A required properties file. It is read as UTF-8 with {@link Properties#load(java.io.Reader)}
-     * when the configuration is built. A missing or unreadable file is a
+     * when the configuration is built. A UTF-8 byte order mark at the start of the file is
+     * skipped. A missing or unreadable file is a
      * {@link ConfigProblem.SourceError} whose message contains the path.
      *
      * @param path the file
@@ -117,6 +118,7 @@ public final class Source {
         var description = (optional ? "optional file " : "file ") + path;
         var properties = new Properties();
         try (var reader = Files.newBufferedReader(path, StandardCharsets.UTF_8)) {
+            skipByteOrderMark(reader);
             properties.load(reader);
         } catch (NoSuchFileException e) {
             if (!optional) {
@@ -139,6 +141,18 @@ public final class Source {
             }
         }
         return values;
+    }
+
+    /**
+     * Skips a UTF-8 byte order mark (U+FEFF) at the very start of the file. Some Windows editors
+     * write one; without this it would become part of the first key, and that setting would be
+     * silently ignored.
+     */
+    private static void skipByteOrderMark(java.io.BufferedReader reader) throws IOException {
+        reader.mark(1);
+        if (reader.read() != '\uFEFF') {
+            reader.reset();
+        }
     }
 
     /**

@@ -3,6 +3,9 @@ package spola.demo;
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.UncheckedIOException;
+import java.nio.ByteBuffer;
+import java.nio.CharBuffer;
+import java.nio.charset.CharacterCodingException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -40,16 +43,17 @@ final class OrderProcessor {
      * Processes the whole order file.
      *
      * @return the summary
-     * @throws OrderFileException if a line is broken; the orders before it are decided
+     * @throws OrderFileException if a line is broken or the file is not valid UTF-8; the orders
+     *     before it are decided
      * @throws UncheckedIOException if the file cannot be read
      */
     Summary process() {
         LOG.info("processing orders from {}", orders);
         var processed = new ArrayList<OrderLine>();
         var rejected = new ArrayList<Summary.Rejection>();
+        var name = String.valueOf(orders.getFileName());
+        var number = 0;
         try (BufferedReader reader = Files.newBufferedReader(orders, StandardCharsets.UTF_8)) {
-            var name = String.valueOf(orders.getFileName());
-            var number = 0;
             for (String text; (text = reader.readLine()) != null; ) {
                 number++;
                 if (number == 1 && !text.isEmpty() && text.charAt(0) == BYTE_ORDER_MARK) {
@@ -69,11 +73,38 @@ final class OrderProcessor {
                     audit.rejected(order, reason);
                 }
             }
+        } catch (CharacterCodingException e) {
+            throw new OrderFileException(name, firstLineNotUtf8(orders, number + 1),
+                    "not valid UTF-8; save the order file as UTF-8");
         } catch (IOException e) {
             throw new UncheckedIOException("cannot read the order file " + orders, e);
         }
         LOG.info("processed {} orders, rejected {}", processed.size(), rejected.size());
         return Summary.of(processed, rejected, stock.levels());
+    }
+
+    /**
+     * The number of the first line that is not valid UTF-8. The reader decodes ahead in blocks,
+     * so its failure does not say which line; this decodes the bytes again to find it.
+     * {@code fallback} if the file cannot be read again.
+     */
+    private static int firstLineNotUtf8(Path file, int fallback) {
+        try {
+            var bytes = ByteBuffer.wrap(Files.readAllBytes(file));
+            var result = StandardCharsets.UTF_8.newDecoder().decode(bytes, CharBuffer.allocate(bytes.remaining()), true);
+            if (!result.isError()) {
+                return fallback;
+            }
+            var line = 1;
+            for (var i = 0; i < bytes.position(); i++) {
+                if (bytes.get(i) == '\n') {
+                    line++;
+                }
+            }
+            return line;
+        } catch (IOException e) {
+            return fallback;
+        }
     }
 
     /** Why the order is rejected, or {@code null} if it was taken from the stock. */

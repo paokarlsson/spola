@@ -129,6 +129,18 @@ final class FailureTests {
                         }
                     }
                 }),
+                test("an order file that is not UTF-8 (Windows-1252): a broken file with a line, exit 65", () -> {
+                    try (var shop = Shop.create()) {
+                        ProgramTests.standardShop(shop);
+                        // "pear;1", then "p\u00e4r;1" with the \u00e4 as the single Windows-1252 byte 0xE4
+                        var bytes = new byte[] {'p', 'e', 'a', 'r', ';', '1', '\n', 'p', (byte) 0xE4, 'r', ';', '1', '\n'};
+                        java.nio.file.Files.write(shop.dir.resolve("orders.txt"), bytes);
+                        var run = shop.run(Shop.environment());
+                        assertFailure(run, InventoryApp.DATA_ERROR,
+                                "error: broken order file: orders.txt line 2: not valid UTF-8");
+                        assertFalse(run.all().contains("MalformedInputException"), run.toString());
+                    }
+                }),
                 test("a missing order file: the file is named", () -> {
                     try (var shop = Shop.create()) {
                         ProgramTests.standardShop(shop);

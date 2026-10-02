@@ -176,6 +176,27 @@ final class SourceTests {
                     assertEquals(Optional.of("ab"), config.get("long"));
                     assertEquals(Optional.of("file " + file.toAbsolutePath().normalize()), config.sourceOf("greeting"));
                 })),
+                test("a byte order mark at the start of a file is skipped, not part of the first key", () -> TempDir.with(dir -> {
+                    var file = Files.write(dir.resolve("bom.properties"),
+                            "\uFEFFfirst=1\nsecond=2\n".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                    var config = Config.builder().add(Source.file(file)).build();
+                    assertEquals(Optional.of("1"), config.get("first"));
+                    assertEquals(Optional.of("2"), config.get("second"));
+                    assertEquals(java.util.Set.of("first", "second"), java.util.Set.copyOf(config.keys()));
+                    var optional = Config.builder().add(Source.optionalFile(file)).build();
+                    assertEquals(Optional.of("1"), optional.get("first"));
+                })),
+                test("only a leading byte order mark is skipped; an empty file and a file without one are unchanged", () -> TempDir.with(dir -> {
+                    var empty = Files.write(dir.resolve("empty.properties"), new byte[0]);
+                    assertEquals(0, Config.builder().add(Source.file(empty)).build().keys().size());
+                    var plain = Files.write(dir.resolve("plain.properties"), "k=v\n".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                    assertEquals(Optional.of("v"), Config.builder().add(Source.file(plain)).build().get("k"));
+                    var inner = Files.write(dir.resolve("inner.properties"),
+                            "a=1\n\uFEFFb=2\n".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                    var config = Config.builder().add(Source.file(inner)).build();
+                    assertEquals(Optional.of("2"), config.get("\uFEFFb"));
+                    assertEquals(Optional.empty(), config.get("b"));
+                })),
                 test("a file that is not UTF-8 is an error", () -> TempDir.with(dir -> {
                     var file = Files.write(dir.resolve("latin1.properties"), new byte[] {'k', '=', (byte) 0xE4});
                     var e = assertThrows(ConfigException.class, () -> Config.builder().add(Source.file(file)).build());

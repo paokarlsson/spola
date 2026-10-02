@@ -482,7 +482,8 @@ testerna läser `spola.test`. Exempel bredvid Spring Boot: `modules/config/READM
   Platshållare i profilnyckelns värde ersätts inte. Profilnamn är `[A-Za-z0-9][A-Za-z0-9_.-]*`,
   så ett namn från ett argument inte kan bli `../` i användarens sökvägsfunktion.
 - **Filer:** `java.util.Properties`-format, läst som UTF-8 via `Reader` (felaktig UTF-8 ger
-  fel i stället för ersättningstecken). En valfri fil som inte finns (`NoSuchFileException`)
+  fel i stället för ersättningstecken). Ett byte order mark först i filen hoppas över (sedan
+  05c). En valfri fil som inte finns (`NoSuchFileException`)
   ignoreras; en valfri fil som finns men inte går att läsa är fortfarande ett fel. Sökvägen
   görs absolut och står i källans beskrivning och i felet.
 - **Argument:** `--nyckel=värde`; argument utan `--` lämnas åt applikationen, `--` avslutar.
@@ -720,7 +721,8 @@ i `modules/demo/README.md` (avsnitt "Friktion").
 
 ### Ändringar i kärnmodulerna (05c)
 
-Båda är tillägg; inget befintligt beteende ändras.
+De två första är tillägg. Den tredje ändrar beteendet bara för filer som börjar med ett byte
+order mark; inget API ändras.
 
 - **`Section.keys()`** (`spola.config`): de relativa nycklarna under en sektion, sorterade.
   Skäl: en map vars nycklar inte är kända i förväg (`inventory.stock.<sku>`,
@@ -733,3 +735,8 @@ Båda är tillägg; inget befintligt beteende ändras.
   `IllegalArgumentException` utan värdet i meddelandet; som omvandlare i `spola.config`
   (`c.value(nyckel, "log level", LoggingSettings::parseLevel)`) visar konfigurationen värdet
   själv, och maskerar det om nyckeln är känslig.
+- **`Source.file`/`Source.optionalFile` hoppar över ett byte order mark** (U+FEFF) först i
+  filen (`spola.config`). Skäl: Windows PowerShell 5.1 (`-Encoding UTF8`) och äldre Notepad
+  skriver ett, och `Properties.load` gjorde det till en del av första nyckeln, så den
+  inställningen ignorerades tyst. Bara ett inledande BOM tas bort; ett U+FEFF längre in är
+  vanlig text, som förut. Samma regel som orderfilen i `spola.demo` redan hade.

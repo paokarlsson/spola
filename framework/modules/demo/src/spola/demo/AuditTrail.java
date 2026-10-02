@@ -46,6 +46,8 @@ final class AuditTrail implements AutoCloseable {
      */
     AuditTrail(InventorySettings inventory, AuditSettings settings) {
         this.file = file(inventory, settings);
+        // InventoryApp checks this before the container starts, to report it as a configuration
+        // error; this check is the safety net for anyone else who creates the trail.
         if (overwritesOrders(inventory, settings)) {
             throw new IllegalArgumentException("audit.file " + file + " is the order file; it would be overwritten");
         }

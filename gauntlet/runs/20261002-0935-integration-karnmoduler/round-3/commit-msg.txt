@@ -1,0 +1,13 @@
+fix(config): skip a leading UTF-8 BOM in configuration files
+
+Source.file and Source.optionalFile now ignore a byte-order mark at the
+start of a file, so a BOM-prefixed inventory.properties no longer drops
+its first setting. The demo now reports a non-UTF-8 order file as a data
+error with a line number, and the I/O error mapping and quantity parsing
+are tidied up.
+
+Gauntlet-Run: 20261002-0935-integration-karnmoduler
+Gauntlet-Round: 3/4
+Gauntlet-Verdict: PASS (0 blocker, 0 major, 6 minor upheld)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>

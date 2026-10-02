@@ -135,6 +135,12 @@ Källorna läses när `build()` körs, i den ordning de lades till; för samma n
 källa som lades till sist. Ordningen i exemplet ovan (standardvärden, fil, profilfiler, miljö,
 argument) är en rekommendation, inte inbyggd.
 
+### Filer
+`Source.file` och `Source.optionalFile` läser `Properties`-syntax som UTF-8. Ett byte order
+mark (U+FEFF) först i filen hoppas över, så en fil sparad med BOM (t.ex. av Windows
+PowerShell 5.1 eller äldre Notepad) fungerar som en utan; annars hade BOM blivit en del av
+första nyckeln och den inställningen tyst ignorerats. En fil som inte är giltig UTF-8 är ett fel.
+
 ### Miljövariabler
 Ingen implicit "relaxed binding". Två explicita former:
 - **Prefix:** `Source.environment("APP_")`. Bara variabler som börjar med prefixet (skiftlägeskänsligt)

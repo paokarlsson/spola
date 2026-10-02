@@ -119,10 +119,10 @@ public final class InventoryApp {
         } catch (OrderFileException e) {
             return fail(log, DATA_ERROR, "broken order file: " + e.getMessage());
         } catch (UncheckedIOException e) {
-            return fail(log, IO_ERROR, e.getMessage() + ": " + e.getCause());
+            return ioFailure(log, e);
         } catch (ResolutionException e) {
             if (e.getCause() instanceof UncheckedIOException io) { // e.g. audit.file in a missing directory
-                return fail(log, IO_ERROR, io.getMessage() + ": " + io.getCause());
+                return ioFailure(log, io);
             }
             return fail(log, SOFTWARE_ERROR, e.getMessage());
         } catch (CloseException e) {
@@ -134,6 +134,10 @@ public final class InventoryApp {
             out.flush();
             Logging.reset();
         }
+    }
+
+    private static int ioFailure(PrintStream log, UncheckedIOException e) {
+        return fail(log, IO_ERROR, e.getMessage() + ": " + e.getCause());
     }
 
     private static int fail(PrintStream log, int code, String message) {
