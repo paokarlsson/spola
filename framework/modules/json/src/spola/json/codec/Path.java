@@ -7,32 +7,45 @@ package spola.json.codec;
  * {@code ["any name"]} any other member (escaped like a JSON string, characters outside
  * printable ASCII as {@code \}{@code uXXXX}) and {@code [2]} an array element.
  *
- * <p>A member name longer than {@link Messages#MAX_EXCERPT} characters is cut and followed by
- * its length, outside the quotes ({@code ["aaaa..."... (10000 characters)]}), so that a path
- * stays short whatever the document holds.
+ * <p>Names come in two kinds. A name the codec declares (a field of {@code object}, a sealed
+ * codec's discriminator) is added with {@link #member} and always rendered in full, exactly as
+ * {@code spola.json} renders it, so that two fields never share a path. A name taken from the
+ * data (an unknown member, a map key) is added with {@link #key}; if it is longer than
+ * {@link Messages#MAX_EXCERPT} characters it is cut and followed by its length, outside the
+ * quotes ({@code ["aaaa..."... (10000 characters)]}). Up to 100 problems can share an ancestor,
+ * so an uncut name of a megabyte from the document would otherwise be copied into every one of
+ * their paths.
  */
 final class Path {
 
-    static final Path ROOT = new Path(null, null, -1);
+    static final Path ROOT = new Path(null, null, -1, false);
 
     private final Path parent;
     private final String name;
     private final int index;
+    private final boolean cut;
     private final int depth;
 
-    private Path(Path parent, String name, int index) {
+    private Path(Path parent, String name, int index, boolean cut) {
         this.parent = parent;
         this.name = name;
         this.index = index;
+        this.cut = cut;
         this.depth = parent == null ? 0 : parent.depth + 1;
     }
 
+    /** A member whose name the codec declares; rendered in full. */
     Path member(String name) {
-        return new Path(this, name, -1);
+        return new Path(this, name, -1, false);
+    }
+
+    /** A member whose name comes from the data (unknown member, map key); cut when long. */
+    Path key(String name) {
+        return new Path(this, name, -1, name.length() > Messages.MAX_EXCERPT);
     }
 
     Path element(int index) {
-        return new Path(this, null, index);
+        return new Path(this, null, index, false);
     }
 
     /** The rendered path; not recursive, so any depth renders on any stack. */
@@ -48,17 +61,21 @@ final class Path {
         for (var segment : segments) {
             if (segment.name == null) {
                 out.append('[').append(segment.index).append(']');
+            } else if (segment.cut) {
+                out.append('[').append(Messages.excerpt(segment.name)).append(']');
             } else if (isIdentifier(segment.name)) {
                 out.append('.').append(segment.name);
             } else {
-                out.append('[').append(Messages.excerpt(segment.name)).append(']');
+                out.append("[\"");
+                Messages.appendEscaped(out, segment.name, segment.name.length(), true);
+                out.append("\"]");
             }
         }
         return out.toString();
     }
 
     private static boolean isIdentifier(String name) {
-        if (name.isEmpty() || name.length() > Messages.MAX_EXCERPT) {
+        if (name.isEmpty()) {
             return false;
         }
         for (int i = 0; i < name.length(); i++) {

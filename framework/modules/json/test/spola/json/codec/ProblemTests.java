@@ -7,6 +7,7 @@ import static spola.json.codec.JsonCodecs.STRING;
 import static spola.json.codec.JsonCodecs.list;
 import static spola.json.codec.Problems.problem;
 import static spola.test.Assertions.assertEquals;
+import static spola.test.Assertions.assertThrows;
 import static spola.test.Assertions.assertTrue;
 import static spola.test.Tests.suite;
 import static spola.test.Tests.test;
@@ -15,6 +16,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import spola.json.Json;
+import spola.json.JsonAccessException;
 import spola.json.JsonArray;
 import spola.json.JsonObject;
 import spola.json.JsonString;
@@ -50,6 +52,9 @@ final class ProblemTests {
             field("customer", CUSTOMER, Order::customer),
             field("lines", list(LINE), Order::lines),
             optionalField("note", STRING, Order::note));
+
+    record Lines(String a, String b, String c) {
+    }
 
     /** A value whose compact constructor throws a long message with line breaks. */
     record Code(String value) {
@@ -146,6 +151,37 @@ final class ProblemTests {
                     var json = JsonObject.of("value", JsonString.of("ok"), name, JsonString.of("x"));
                     var e = Problems.exception(() -> CODE.decode(json));
                     assertEquals("$[\"" + "n".repeat(40) + "\"... (10001 characters)]", e.problems().getFirst().path());
+                }),
+                test("declared field names over 40 characters are never cut, and render as in spola.json", () -> {
+                    var line1 = "shippingAddressAdditionalDeliveryInstructionsLine1";
+                    var line2 = "shippingAddressAdditionalDeliveryInstructionsLine2";
+                    var odd = "shipping address \u00e5 \"line\" 3 " + "x".repeat(40);
+                    var codec = JsonCodec.object(Lines::new,
+                            field(line1, STRING, Lines::a),
+                            field(line2, STRING, Lines::b),
+                            field(odd, STRING, Lines::c));
+                    var json = Json.parse("{\"" + line1 + "\": 1, \"" + odd.replace("\"", "\\\"") + "\": true}");
+                    var e = Problems.exception(() -> codec.decode(json));
+                    var object = (JsonObject) json;
+                    var wrongType = assertThrows(JsonAccessException.class, () -> object.string(line1)).path();
+                    var missing = assertThrows(JsonAccessException.class, () -> object.string(line2)).path();
+                    var oddPath = assertThrows(JsonAccessException.class, () -> object.string(odd)).path();
+                    assertEquals("$." + line1, wrongType);
+                    assertEquals("$." + line2, missing);
+                    assertEquals("$[\"shipping address \\u00e5 \\\"line\\\" 3 " + "x".repeat(40) + "\"]", oddPath);
+                    assertEquals(List.of(
+                            problem(wrongType, "expected string but found number"),
+                            problem(oddPath, "expected string but found boolean"),
+                            problem(missing, "missing member")), e.problems());
+                    var encoded = Problems.exception(() -> codec.encode(new Lines("a", null, "c")));
+                    assertEquals(missing, encoded.problems().getFirst().path());
+                }),
+                test("a long map key is cut in the path, as data from the document", () -> {
+                    var key = "k".repeat(41);
+                    var e = Problems.exception(() -> JsonCodecs.map(INT).decode(JsonObject.of(key, JsonString.of("x"))));
+                    assertEquals("$[\"" + "k".repeat(40) + "\"... (41 characters)]", e.problems().getFirst().path());
+                    var ok = Problems.exception(() -> JsonCodecs.map(INT).decode(JsonObject.of("k".repeat(40), JsonString.of("x"))));
+                    assertEquals("$." + "k".repeat(40), ok.problems().getFirst().path());
                 }),
                 test("an exception message with line breaks and 10 000 characters is cleaned and cut", () -> {
                     var e = Problems.exception(() -> CODE.read("{\"value\": \"bad\"}"));

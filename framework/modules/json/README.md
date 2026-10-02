@@ -420,8 +420,11 @@ ignoreras), och med Spring Boots inställningar passerar `admin` tyst.
 - Högst 100 problem listas; finns fler läggs ett sista problem på `$` som säger hur många som
   utelämnades. `getMessage()` är en rad på högst 2 000 tecken.
 - Sökvägar och meddelanden är alltid utskrivbar ASCII: tecken utanför (radbrytningar, U+2028,
-  styrtecken) skrivs som `\uXXXX`. Ett värde citeras med högst 40 tecken, ett
-  undantagsmeddelande med högst 200, ett medlemsnamn i en sökväg med högst 40. Rapporten kan
+  styrtecken) skrivs som `\uXXXX`. Ett värde citeras med högst 40 tecken och ett
+  undantagsmeddelande med högst 200 (gränsen på 40 gäller inte undantagstext som
+  applikationen skrivit). Fältnamn som kodeken deklarerar skrivs alltid helt i sökvägen, som
+  i `JsonAccessException`; namn som kommer från dokumentet (okända medlemmar, nycklar i
+  `map`) kortas till 40 tecken. Rapporten kan
   därför loggas och skickas till en klient som den är.
 - Ett dokument som inte är JSON ger `JsonParseException` från parsern, oinslaget.
 - Kodning stannar vid första värdet som inte går att skriva (`null` utan `nullable`, `NaN`,

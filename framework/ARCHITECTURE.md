@@ -1042,10 +1042,15 @@ vid fel) och `Messages` (säker återgivning av text utifrån).
   antalet och så många problem som får plats inom 2 000 tecken, sedan `... (N more)`.
 - **Säkra meddelanden.** Allt i sökvägar och meddelanden är utskrivbar ASCII; tecken utanför
   skrivs `\uXXXX` (som i `JsonParseException`). Ett värde ur dokumentet citeras med högst 40
-  tecken plus längden. Ett medlemsnamn i en sökväg kortas på samma sätt
-  (`["nnnn..."... (10000 characters)]`): annars kunde 100 problem under en lång nyckel bli
-  hundratals megabyte. Ett undantagsmeddelande från applikationskod (konstruktor, `map`)
-  återges med högst 200 tecken, eftersom det är text som applikationen skrivit för att
+  tecken plus längden. I sökvägar skiljer `Path` på två slags namn (runda 2, BRK-1): ett namn
+  som kodeken deklarerar (ett fält i `object`, en sealed kodeks diskriminator) skrivs alltid
+  helt och exakt som `spola.json` skriver det (`$.name` eller `["escapat"]`), så att två fält
+  aldrig får samma sökväg och `JsonAccessException` och kodeken ger samma sökväg för samma
+  namn. Ett namn som kommer från data (en okänd medlem, en nyckel i `map`) kortas över 40
+  tecken (`["nnnn..."... (10000 characters)]`): annars kunde 100 problem under en lång nyckel
+  bli hundratals megabyte, och deklarerade namn har applikationen själv valt. Ett
+  undantagsmeddelande från applikationskod (konstruktor, `map`) återges med högst 200 tecken
+  (40-teckensgränsen gäller citat av ett värde ur dokumentet, inte undantagstext), eftersom det är text som applikationen skrivit för att
   förklara felet (`quantity must be between 1 and 999`) och 40 tecken skulle klippa vanliga
   meddelanden; det escapas på samma sätt. Undantagsklassens namn tas inte med (det är en
   implementationsdetalj som inte hör hemma i ett svar till en klient). Meddelanden från `DateTimeParseException`

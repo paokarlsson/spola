@@ -1,0 +1,11 @@
+fix(json): render declared field names in full in codec error paths
+
+Codec problem paths now write declared field and discriminator names
+exactly as spola.json's JsonAccessException does, so two long fields can
+no longer share a cut-off path (round-1 MAJOR). Names that come from the
+document (unknown members, map keys) are still cut at 40 characters.
+Minor findings were addressed with documentation and comments.
+
+Gauntlet-Run: 20261002-1118-json-codec-mappning
+Gauntlet-Round: 2/5
+Gauntlet-Verdict: PASS (0 blocker, 0 major, 4 minor upheld)

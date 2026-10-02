@@ -26,7 +26,9 @@ public final class JsonTests {
                 AccessTests.tests(),
                 ConcurrencyTests.tests(),
                 Utf8Tests.tests(),
-                // the mapping package; the tree model's main code does not depend on it
+                // the mapping package; the tree model's main code does not depend on it. Build.java
+                // runs one test entry per module, so this entry reaches the codec suite by its full
+                // name instead of an import, keeping spola.json.codec out of this file's imports.
                 spola.json.codec.CodecTests.tests());
     }
 }

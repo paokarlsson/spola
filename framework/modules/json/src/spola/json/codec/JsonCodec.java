@@ -62,7 +62,9 @@ import spola.json.JsonValue;
  * Both directions count nested objects and arrays and stop with a problem past
  * {@link JsonLimits#DEFAULT}'s {@code maxDepth} (512), the parser's limit, so a deep tree built
  * in code or a deep recursive Java value gives {@link JsonMappingException}, never
- * {@link StackOverflowError}.
+ * {@link StackOverflowError}. The exception is {@link JsonCodecs#JSON}: it hands a
+ * {@code JsonValue} through as it is, without walking it, so it does not count what lies inside;
+ * the tree model and its writer handle any depth without recursion.
  *
  * <p>Codecs cannot be implemented outside this package; compose the existing ones (with
  * {@link #map(Function, Function)} for value types).

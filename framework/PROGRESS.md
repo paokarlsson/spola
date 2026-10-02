@@ -242,6 +242,10 @@
   hierarkier, `map` och `null`, 100 000 nivåer på plattformstråd, virtuell tråd och 512 KiB
   stack, 1 000 virtuella trådar, och källkodsreglerna (ingen reflektion, inget beroende från
   trädet).
+- Runda 2: deklarerade fältnamn kortas aldrig i sökvägar och skrivs som i
+  `JsonAccessException` (`$.name`/`["..."]`); namn från data (okända medlemmar, nycklar i
+  `map`) kortas över 40 tecken. Gränserna för `JSON`-kodekens djup och för `BIG_INTEGER`/
+  `BIG_DECIMAL` mot `maxNumberLength` är dokumenterade. 417 tester i `spola.json`.
 
 ## Återstår (enligt `uppdrag/PLAN.md`)
 - 07–20 enligt planen.
@@ -277,7 +281,9 @@
   räkna). Ett `Error` (inte `RuntimeException`) från applikationskod (konstruktor, `map`,
   getter) släpps igenom. Ingen generering av kodekar från records (kan bli ett senare
   uppdrag med `spola.codegen`), inga namnstrategier, inga mappar med andra nycklar än
-  `String`.
+  `String`. En okänd medlem eller `map`-nyckel längre än 40 tecken kortas i sökvägen, så två
+  sådana namn med samma början kan få samma sökväg. `BIG_INTEGER` skriver upp till 10 000
+  siffror men `read` läser bara 1 000 tecken (`JsonLimits.DEFAULT`).
 - **Codegen (spola.codegen):** generatorn läser bara syntaxträdet, så en medlemstyp som ärvs
   från en supertyp till recordet (eller en typ runt det) kvalificeras inte; den genererade
   filen kompilerar då inte förrän typen skrivs kvalificerad i recordet. Genererade filer känns

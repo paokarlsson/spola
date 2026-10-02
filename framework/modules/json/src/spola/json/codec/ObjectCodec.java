@@ -102,7 +102,7 @@ public final class ObjectCodec<R> extends JsonCodec<R> {
             Integer at = byName.get(name);
             if (at == null) {
                 if (!ignoreUnknown && !name.equals(skip)) {
-                    decoding.report(path.member(name), unknownMessage);
+                    decoding.report(path.key(name), unknownMessage);
                 }
                 continue;
             }

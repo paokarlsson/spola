@@ -41,6 +41,8 @@ final class LazyCodec<T> extends JsonCodec<T> {
         }
     }
 
+    // enterLazy/exitLazy are deliberately not in try/finally: Decoding and Encoding belong to one
+    // decode/encode call, and an exception ends that call, so the counter is thrown away with it.
     @Override
     T decodeAt(JsonValue json, Path path, Decoding decoding) {
         decoding.enterLazy();

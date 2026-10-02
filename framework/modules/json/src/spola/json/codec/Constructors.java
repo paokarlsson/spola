@@ -5,6 +5,10 @@ package spola.json.codec;
  * siblings take: one functional interface per number of fields, 1 to 16. You never write these
  * types; you pass a constructor reference such as {@code Person::new} (or a lambda), and the
  * compiler checks that its parameter types match the fields' types in order.
+ *
+ * <p>Maintenance: {@code Of1}..{@code Of16} here and the 16 {@code JsonCodec.object(OfN, ...)}
+ * overloads are written by hand to one pattern and must be changed together; a change to one
+ * arity is a change to all sixteen.
  */
 public final class Constructors {
 

@@ -28,7 +28,7 @@ final class MapCodec<V> extends JsonCodec<Map<String, V>> {
         int before = decoding.count();
         var out = LinkedHashMap.<String, V>newLinkedHashMap(object.size());
         for (var member : object.members().entrySet()) {
-            out.put(member.getKey(), value.decodeAt(member.getValue(), path.member(member.getKey()), decoding));
+            out.put(member.getKey(), value.decodeAt(member.getValue(), path.key(member.getKey()), decoding));
         }
         decoding.exit(saved);
         return decoding.count() == before ? Collections.unmodifiableSequencedMap(out) : null;
@@ -46,7 +46,7 @@ final class MapCodec<V> extends JsonCodec<Map<String, V>> {
             if (name == null) {
                 throw Encoding.fail(path, "the map has a null key");
             }
-            var member = path.member(name);
+            var member = path.key(name);
             var encoded = value.encodeAt(entry.getValue(), member, encoding);
             try {
                 out.put(name, encoded);

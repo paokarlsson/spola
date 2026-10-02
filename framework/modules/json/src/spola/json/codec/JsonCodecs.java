@@ -139,7 +139,10 @@ public final class JsonCodecs {
      * {@code 1.10}). The scale must be within &plusmn;{@value JsonNumber#MAX_EXACT_DIGITS}, the
      * bound {@code JsonNumber} puts on exact integers: {@code 1e1000000000} would be cheap to
      * hold but not to compute with ({@code toBigInteger}, {@code toPlainString}), so it is
-     * rejected in both directions.
+     * rejected in both directions. The number of digits is not bounded here: {@link
+     * JsonCodec#read(String)} parses with {@code JsonLimits.DEFAULT}, whose {@code maxNumberLength}
+     * is 1 000 characters, so a value written with longer text is valid JSON that {@code read}
+     * rejects; parse with larger limits and {@link JsonCodec#decode} to read it back.
      */
     public static final JsonCodec<BigDecimal> BIG_DECIMAL = new ScalarCodec<>(
             json -> {
@@ -165,7 +168,10 @@ public final class JsonCodecs {
     /**
      * A number with an integer value of at most {@value JsonNumber#MAX_EXACT_DIGITS} digits, as
      * {@link JsonNumber#bigIntegerValueExact()}: {@code 1e1000000000} is rejected at once, in both
-     * directions.
+     * directions. {@link JsonCodec#read(String)} parses with {@code JsonLimits.DEFAULT}, whose
+     * {@code maxNumberLength} is 1 000 characters, so an integer of 1 001 to 10 000 digits is
+     * written but not read back by {@code read}; parse with larger limits and
+     * {@link JsonCodec#decode} for that.
      */
     public static final JsonCodec<BigInteger> BIG_INTEGER = new ScalarCodec<>(
             json -> {
