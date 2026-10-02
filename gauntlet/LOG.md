@@ -9,3 +9,4 @@
 - 2026-10-02 10:43 · 20261002-1011-util-builders · PASS · 1 rounds · Util part 2: record builders and with-methods via generated source · commits: b4faeaa
 - 2026-10-02 11:18 · 20261002-1043-json-parser-och-skrivare · PASS · 1 rounds · JSON part 1: tree model, strict parser and writer (spola.json) · commits: 6d96cf9
 - 2026-10-02 12:02 · 20261002-1118-json-codec-mappning · PASS · 2 rounds · JSON part 2: explicit codec mapping between records and JSON · commits: 10f7936, fcaed2a
+- 2026-10-02 22:44 · 20261002-1523-http-server-karna · PASS · 3 rounds · HTTP server part 1: HTTP/1.1 on virtual threads with abuse limits · commits: ee0a922, 6f65214, f65c082
