@@ -600,8 +600,14 @@ Paketprivat: `MessageFormatter` (platshållarna), `LineFormatter` och `LineHandl
   utfylld till fem tecken (JUL-nivåer däremellan avrundas nedåt: `CONFIG`→`DEBUG`). Trådnamnet
   tas från tråden som loggar (handlern är synkron); en namnlös virtuell tråd blir
   `virtual-<id>`. Radbrytningar och andra styrtecken utom tab i meddelande, trådnamn och
-  loggernamn skrivs som `\n`, `\r`, `\uXXXX`: en post är alltid en rad och ett loggat värde
-  kan inte förfalska rader (log forging). Stackspår på följande rader, oförändrade. Varje rad
+  loggernamn skrivs som `\n`, `\r`, `\uXXXX` (även U+2028/U+2029): postens rad är alltid en
+  rad. Stackspåret (`printStackTrace`, med orsaker och undertryckta undantag) följer på nästa
+  rader, varje rad med en tab först (ramar får alltså två tabbar); en radbrytning i ett
+  undantagsmeddelande ger en ny rad med tab, och övriga styrtecken i den skrivs som escapes.
+  En rad som börjar i kolumn 0 är därför alltid början på en post: ett loggat värde, inte
+  heller ett undantagsmeddelande, kan förfalska en post (log forging). Valt framför att skriva
+  om `printStackTrace` för att escapa varje meddelande: tabben är en enkel regel som täcker
+  orsaker, undertryckta undantag och egna `toString` utan att återskapa JDK:ns format. Varje rad
   skrivs och flushas direkt; rader från olika trådar blandas aldrig. En `PrintStream` skrivs
   med sin egen teckenkodning, annan `OutputStream` med UTF-8; strömmen stängs aldrig.
 - **`Lazy`:** dubbelkontroll med ett `volatile`-fält och en `ReentrantLock` (en virtuell tråd

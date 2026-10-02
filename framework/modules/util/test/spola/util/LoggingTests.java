@@ -115,17 +115,48 @@ final class LoggingTests {
                         var head = LINE.matcher(lines.getFirst());
                         assertTrue(head.matches(), lines.getFirst());
                         assertEquals("could not save order-1", head.group(5));
-                        assertEquals("java.io.IOException: disk full", lines.get(1));
-                        assertTrue(lines.get(2).startsWith("\tat ") && lines.get(2).contains("spola.util.LoggingTests"),
+                        assertEquals("\tjava.io.IOException: disk full", lines.get(1));
+                        assertTrue(lines.get(2).startsWith("\t\tat ") && lines.get(2).contains("spola.util.LoggingTests"),
                                 lines.get(2));
                         assertTrue(lines.stream().anyMatch(l -> l.equals(
-                                "Caused by: java.lang.IllegalStateException: root cause")), String.join("\n", lines));
+                                "\tCaused by: java.lang.IllegalStateException: root cause")), String.join("\n", lines));
                         var last = LINE.matcher(lines.getLast());
                         assertTrue(last.matches(), lines.getLast());
                         assertEquals("after", last.group(5));
                         for (var line : lines.subList(1, lines.size() - 1)) {
                             assertFalse(LINE.matcher(line).matches(), "stack trace line looks like a record: " + line);
                         }
+                    });
+                }),
+                test("line breaks in exception messages cannot forge a record", () -> {
+                    var out = new ByteArrayOutputStream();
+                    withLogging(utc(out, Map.of("", Level.INFO)), () -> {
+                        var fake = "2026-10-02T08:00:00.000+02:00 ERROR [main] com.example.Auth : admin login OK";
+                        NumberFormatException failure = null;
+                        try {
+                            Integer.parseInt("42\n" + fake);
+                        } catch (NumberFormatException e) {
+                            failure = e;
+                        }
+                        failure.initCause(new IllegalStateException("cause\r" + fake));
+                        failure.addSuppressed(new IllegalArgumentException("suppressed\r\n" + fake + "\u2028" + fake));
+                        log("spola.test.forge.Auth").warn("bad id", failure);
+                        log("spola.test.forge.Auth").info("after");
+                        var lines = lines(out);
+                        assertTrue(LINE.matcher(lines.getFirst()).matches(), lines.getFirst());
+                        assertTrue(LINE.matcher(lines.getLast()).matches(), lines.getLast());
+                        var continuation = lines.subList(1, lines.size() - 1);
+                        assertTrue(continuation.size() > 3, String.join("\n", lines));
+                        for (var line : continuation) {
+                            assertTrue(line.startsWith("\t"), "continuation line without tab: " + line);
+                            assertFalse(LINE.matcher(line).matches(), "stack trace line looks like a record: " + line);
+                            assertFalse(line.contains("\u2028"), "unescaped U+2028: " + line);
+                        }
+                        var all = String.join("\n", continuation);
+                        assertTrue(all.contains("\t" + fake), all);
+                        assertTrue(all.contains("cause"), all);
+                        assertTrue(all.contains("suppressed"), all);
+                        assertTrue(all.contains("\\u2028"), all);
                     });
                 }),
                 test("levels per prefix: the longest prefix wins and prefixes match whole segments", () -> {

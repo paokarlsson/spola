@@ -56,18 +56,23 @@ import java.util.logging.Logger;
  * <pre>{@code
  * 2026-10-02T07:51:03.042+02:00 INFO  [main] com.example.OrderService : order 42 placed
  * 2026-10-02T07:51:03.050+02:00 ERROR [virtual-31] com.example.Payment : payment failed
- * java.io.IOException: connection reset
- *     at com.example.Payment.charge(Payment.java:17)
+ *     java.io.IOException: connection reset
+ *         at com.example.Payment.charge(Payment.java:17)
  * }</pre>
  * Timestamp (ISO-8601 with milliseconds and offset, in the configured zone), level padded to
  * five characters ({@code TRACE}, {@code DEBUG}, {@code INFO}, {@code WARN}, {@code ERROR};
  * {@code java.util.logging} levels in between round down, so {@code CONFIG} is {@code DEBUG}
  * and {@code FINEST} is {@code TRACE}), thread name in brackets (an unnamed virtual thread is
- * {@code virtual-<id>}), logger name, {@code " : "}, message. The stack trace of an exception
- * follows on the next lines. Line breaks and other control characters in the message, thread
- * name and logger name are escaped ({@code \n}, {@code \r}, {@code \}{@code uXXXX}), so a
- * record is always one line and a logged value cannot forge extra lines. Each line is written
- * and flushed as soon as it is logged.
+ * {@code virtual-<id>}), logger name, {@code " : "}, message. Line breaks and other control
+ * characters except tab in the message, thread name and logger name are escaped
+ * ({@code \n}, {@code \r}, {@code \}{@code uXXXX}, also U+2028 and U+2029), so the record
+ * line is always one line. The stack trace of an exception ({@code printStackTrace}, with
+ * causes and suppressed exceptions) follows on the next lines, each line prefixed with a tab
+ * (so frames start with two tabs); a line break inside an exception message starts a new
+ * tab-prefixed line, and other control characters in it are escaped as above. A line that
+ * starts at column 0 is therefore always the start of a record: a logged value, including an
+ * exception message, cannot forge a record. Each record is written and flushed as soon as it
+ * is logged.
  *
  * <h2>Threads</h2>
  * {@code configure} and {@link #reset()} are synchronized with each other. Logging while they
@@ -83,9 +88,12 @@ public final class Logging {
     /** Loggers whose level Spola set, with the level each had before; guarded by {@link #LOCK}. */
     private static final Map<Logger, Level> touched = new IdentityHashMap<>();
 
-    /** The root logger's handlers and level before the first {@code configure}; guarded by {@link #LOCK}. */
-    private static List<Handler> originalHandlers;
-    private static Level originalRootLevel;
+    /** The root logger before the first {@code configure}; {@code null} when not configured; guarded by {@link #LOCK}. */
+    private static RootSnapshot original;
+
+    /** The root logger's handlers and level (which may be {@code null}: inherit) at one moment. */
+    private record RootSnapshot(List<Handler> handlers, Level level) {
+    }
 
     private Logging() {
     }
@@ -101,9 +109,8 @@ public final class Logging {
         var handler = new LineHandler(settings.output(), new LineFormatter(settings.zone()));
         synchronized (LOCK) {
             var root = Logger.getLogger("");
-            if (originalHandlers == null) {
-                originalHandlers = List.of(root.getHandlers());
-                originalRootLevel = root.getLevel();
+            if (original == null) {
+                original = new RootSnapshot(List.of(root.getHandlers()), root.getLevel());
             }
             for (var old : root.getHandlers()) {
                 root.removeHandler(old);
@@ -133,7 +140,7 @@ public final class Logging {
      */
     public static void reset() {
         synchronized (LOCK) {
-            if (originalHandlers == null) {
+            if (original == null) {
                 return;
             }
             var root = Logger.getLogger("");
@@ -144,14 +151,13 @@ public final class Logging {
             }
             restoreTouchedLevels();
             var present = List.of(root.getHandlers());
-            for (var handler : originalHandlers) {
+            for (var handler : original.handlers()) {
                 if (!present.contains(handler)) {
                     root.addHandler(handler);
                 }
             }
-            root.setLevel(originalRootLevel);
-            originalHandlers = null;
-            originalRootLevel = null;
+            root.setLevel(original.level());
+            original = null;
         }
     }
 

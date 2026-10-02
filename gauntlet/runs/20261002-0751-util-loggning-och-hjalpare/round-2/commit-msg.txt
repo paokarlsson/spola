@@ -1,0 +1,13 @@
+fix(util): stop exception messages from forging log records
+
+Every stack-trace line in the console format now starts with a tab
+and control characters such as U+2028 are escaped, so a newline in an
+exception message can no longer produce a fake record at column 0.
+Saved root-logger state is grouped in one record, and the duplicated
+per-level methods in Log are documented as edit-together blocks.
+
+Gauntlet-Run: 20261002-0751-util-loggning-och-hjalpare
+Gauntlet-Round: 2/4
+Gauntlet-Verdict: FAIL (0 blocker, 1 major, 4 minor upheld)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>

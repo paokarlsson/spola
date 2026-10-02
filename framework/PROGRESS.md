@@ -105,9 +105,10 @@
 - Ingen `java.lang.reflect`/`java.lang.invoke` och ingen preview i huvudkoden. Inga
   resursfiler; loggning konfigureras i kod. `README.md` med Lombok- och Spring Boot-jämförelse
   och hur `logging.level.*` läses med `spola.config`. Beslut i ARCHITECTURE.md ("Util del 1").
-- 68 tester (platshållarregler, inget arbete vid avstängd nivå för alla fem nivåer,
+- 69 tester (platshållarregler, inget arbete vid avstängd nivå för alla fem nivåer,
   nivåmappning, 1 000 virtuella trådar mot en delad `Log`, konsolformat mot
-  `ByteArrayOutputStream`, prefixnivåer, omkonfigurering, `Lazy` med 1 000 virtuella trådar,
+  `ByteArrayOutputStream`, radbrytningar i undantagsmeddelanden kan inte förfalska en post,
+  prefixnivåer, omkonfigurering, `Lazy` med 1 000 virtuella trådar,
   `Unchecked` för alla gränssnitt, `ToString` mot records). Bygget tar ungefär 14 s.
 
 ## Återstår (enligt `uppdrag/PLAN.md`)
@@ -123,7 +124,8 @@
   barn. En post som loggas medan `configure` pågår kan gå förlorad. `Logging` gäller bara
   `System.Logger` med JDK:ns JUL-baserade `LoggerFinder`; med en egen `LoggerFinder` styr den
   formatet själv. Escapingen av styrtecken gör ett bokstavligt `\n` i ett meddelande
-  omöjligt att skilja från en escapad radbrytning. Varargs-metoderna i `Log` får sin array av
+  omöjligt att skilja från en escapad radbrytning. Stackspårsrader får en tab först (skydd mot
+  förfalskning); verktyg som läser vanliga JDK-stackspår ser därför en extra tab. Varargs-metoderna i `Log` får sin array av
   anroparen även när nivån är av (Java skapar den vid anropet).
 - **Konfiguration (spola.config):** ett `bind`-anrop ger en felrapport; fel i två separata
   `bind`-anrop rapporteras var för sig (bind ett rotrecord med `section` för en rapport).

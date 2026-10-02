@@ -65,15 +65,27 @@ final class LineFormatter extends Formatter {
         return (current.isVirtual() ? "virtual-" : "thread-") + current.threadId();
     }
 
+    /**
+     * The stack trace as continuation lines. Every line starts with a tab, so a line that starts
+     * at column 0 is always a new record, even when an exception message (of the exception, a
+     * cause or a suppressed exception) contains line breaks. Within a line, control characters
+     * other than tab are escaped as in {@link #escape}.
+     */
     private static String stackTrace(Throwable thrown) {
         var text = new StringWriter();
         try (var writer = new PrintWriter(text)) {
             thrown.printStackTrace(writer);
         } catch (RuntimeException failure) {
-            return MessageFormatter.marker("printStackTrace()", failure) + System.lineSeparator();
+            text = new StringWriter();
+            text.write(MessageFormatter.marker("printStackTrace()", failure));
         }
-        var trace = text.toString();
-        return trace.endsWith("\n") ? trace : trace + System.lineSeparator();
+        var out = new StringBuilder(text.getBuffer().length() + 64);
+        for (var line : text.toString().split("\\r\\n|\\r|\\n")) {
+            out.append('\t');
+            escape(line, out);
+            out.append(System.lineSeparator());
+        }
+        return out.toString();
     }
 
     /**

@@ -171,6 +171,12 @@ public final class Log {
         return "Log[" + logger.getName() + "]";
     }
 
+    // The five levels below have the same seven methods each (isXxxEnabled and six log
+    // methods), written out on purpose (an explicit API, no generated code). Edit them
+    // together: a change to one level's block belongs in all five. The one- and two-argument
+    // methods check isLoggable inline before building the argument array, so a disabled level
+    // allocates nothing; the other methods go through log(...), which does the same check.
+
     /**
      * Whether {@code trace} messages are logged: {@link System.Logger#isLoggable} at
      * {@link System.Logger.Level#TRACE}.

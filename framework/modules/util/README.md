@@ -98,9 +98,13 @@ Raderna ser ut så här (stackspår på följande rader):
 ```text
 2026-10-02T07:51:03.042+02:00 INFO  [main] com.example.OrderService : order 42 placed
 2026-10-02T07:51:03.050+02:00 ERROR [virtual-31] com.example.Payment : payment failed
-java.io.IOException: connection reset
-	at com.example.Payment.charge(Payment.java:17)
+	java.io.IOException: connection reset
+		at com.example.Payment.charge(Payment.java:17)
 ```
+
+Varje stackspårsrad börjar med en tab, och radbrytningar i meddelanden escapas, så en rad som
+börjar i kolumn 0 är alltid en ny post: ett loggat värde (inte heller ett undantagsmeddelande)
+kan inte förfalska en post.
 
 ### Nivåerna ur `spola.config`
 
