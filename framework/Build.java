@@ -46,7 +46,9 @@ static final List<ModuleDir> MODULES = List.of(
         new ModuleDir("spola.di", Path.of("modules/di"),
                 new TestEntry("spola.di.DiTests", "suite")),
         new ModuleDir("spola.config", Path.of("modules/config"),
-                new TestEntry("spola.config.ConfigTests", "suite")));
+                new TestEntry("spola.config.ConfigTests", "suite")),
+        new ModuleDir("spola.util", Path.of("modules/util"),
+                new TestEntry("spola.util.UtilTests", "suite")));
 
 /// The test runner module. Test sources of every other module read it (`--add-reads`);
 /// the module itself never `requires` it, so the shipped jar does not depend on it.

@@ -1,0 +1,14 @@
+feat(util): add spola.util logging, Lazy, Unchecked and ToString
+
+New module spola.util replaces Lombok's @Slf4j, @Getter(lazy = true),
+@SneakyThrows and @ToString.Exclude: a Log wrapper over System.Logger
+with SLF4J-style {} placeholders that does no work when the level is
+off, a one-line console format with per-prefix levels, a thread-safe
+Lazy, checked-exception wrappers without sneaky throw, and a toString
+builder that hides secrets.
+
+Gauntlet-Run: 20261002-0751-util-loggning-och-hjalpare
+Gauntlet-Round: 1/4
+Gauntlet-Verdict: FAIL (0 blocker, 1 major, 4 minor upheld)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>

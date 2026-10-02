@@ -1,0 +1,40 @@
+    IOException becomes UncheckedIOException with the original as cause
+      ok      [1] ThrowingRunnable via runnable() (2 ms)
+      ok      [2] ThrowingSupplier via supplier() (1 ms)
+      ok      [3] ThrowingFunction via function() (0 ms)
+      ok      [4] ThrowingConsumer via consumer() (0 ms)
+      ok      [5] ThrowingRunnable via run() (0 ms)
+      ok      [6] ThrowingSupplier via get() (0 ms)
+    InterruptedException sets the interrupt flag again and is wrapped
+      ok      [1] ThrowingRunnable via runnable() (0 ms)
+      ok      [2] ThrowingSupplier via supplier() (0 ms)
+      ok      [3] ThrowingFunction via function() (0 ms)
+      ok      [4] ThrowingConsumer via consumer() (0 ms)
+      ok      [5] ThrowingRunnable via run() (0 ms)
+      ok      [6] ThrowingSupplier via get() (0 ms)
+    another checked exception is wrapped with the original as cause
+      ok      [1] ThrowingRunnable via runnable() (0 ms)
+      ok      [2] ThrowingSupplier via supplier() (0 ms)
+      ok      [3] ThrowingFunction via function() (0 ms)
+      ok      [4] ThrowingConsumer via consumer() (0 ms)
+      ok      [5] ThrowingRunnable via run() (0 ms)
+      ok      [6] ThrowingSupplier via get() (0 ms)
+    RuntimeException and Error pass through as the same instance
+      ok      [1] ThrowingRunnable via runnable() (0 ms)
+      ok      [2] ThrowingSupplier via supplier() (0 ms)
+      ok      [3] ThrowingFunction via function() (0 ms)
+      ok      [4] ThrowingConsumer via consumer() (0 ms)
+      ok      [5] ThrowingRunnable via run() (0 ms)
+      ok      [6] ThrowingSupplier via get() (0 ms)
+    ok      values pass through the adapters (0 ms)
+    ok      wrap is usable in your own catch blocks (0 ms)
+  toString
+    ok      plain fields give exactly a record's toString (12 ms)
+    ok      a secret is masked: not its value, not its length, and its toString is not called (0 ms)
+    ok      a null secret is written as null (0 ms)
+spola.util: OK - 68 tests, 68 ok, 0 failed, 0 skipped, 0 suite fixtures failed, in 195 ms
+
+exit guard:
+  ok - after the decision: exit 0, other hooks and deleteOnExit ran
+  ok - before the decision: System.exit(0) ends red (exit 1)
+BUILD OK in 15907 ms

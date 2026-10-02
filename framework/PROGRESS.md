@@ -93,10 +93,38 @@
   1 000 virtuella trådar). Konfigurationsfiler i testerna skrivs till temporära kataloger.
   Bygget tar ungefär 12 s.
 
+### Uppdrag 05a: util del 1, loggning och hjälpare
+- Modulen `spola.util` (`modules/util/`, kräver bara `java.logging`, inga Spola-moduler):
+  `Log` ovanpå `System.Logger` (`forClass`, `of`, fem nivåer, `{}`-platshållare som i SLF4J,
+  sista `Throwable` som undantag, `\{}`, markering när `toString` kastar, lata varianter med
+  `Supplier<String>` och `Log.defer`, inget arbete när nivån är av), `Logging.configure`
+  (enradigt format på JUL-rotloggern, nivå per prefix där längsta prefix vinner, ersätter
+  föregående anrop, egen utström eller `System.err`, `reset()`), `Lazy` (en gång under
+  samtidighet, undantag och `null` memoreras inte, leverantören släpps), `Unchecked` med fyra
+  `Throwing*`-gränssnitt (ingen sneaky throw), `ToString` med `secret`.
+- Ingen `java.lang.reflect`/`java.lang.invoke` och ingen preview i huvudkoden. Inga
+  resursfiler; loggning konfigureras i kod. `README.md` med Lombok- och Spring Boot-jämförelse
+  och hur `logging.level.*` läses med `spola.config`. Beslut i ARCHITECTURE.md ("Util del 1").
+- 68 tester (platshållarregler, inget arbete vid avstängd nivå för alla fem nivåer,
+  nivåmappning, 1 000 virtuella trådar mot en delad `Log`, konsolformat mot
+  `ByteArrayOutputStream`, prefixnivåer, omkonfigurering, `Lazy` med 1 000 virtuella trådar,
+  `Unchecked` för alla gränssnitt, `ToString` mot records). Bygget tar ungefär 14 s.
+
 ## Återstår (enligt `uppdrag/PLAN.md`)
-- 05–20 enligt planen.
+- Rad 05 är delad: 05a (loggning och hjälpare) är klar; **05b (util-builders):** builders och
+  with-metoder för records återstår (kräver eget designbeslut: utan annoteringar och
+  runtime-reflektion återstår i praktiken genererad, incheckad källkod).
+- 06–20 enligt planen.
 
 ## Kända problem och begränsningar
+- **Util (spola.util):** `Logging.configure` tar bort alla handlers på JUL-rotloggern, även
+  främmande (de stängs inte). En nivå som någon annan satt på en logger (t.ex. i en
+  `logging.properties`) lämnas orörd och går före ett kortare prefix för den loggern och dess
+  barn. En post som loggas medan `configure` pågår kan gå förlorad. `Logging` gäller bara
+  `System.Logger` med JDK:ns JUL-baserade `LoggerFinder`; med en egen `LoggerFinder` styr den
+  formatet själv. Escapingen av styrtecken gör ett bokstavligt `\n` i ett meddelande
+  omöjligt att skilja från en escapad radbrytning. Varargs-metoderna i `Log` får sin array av
+  anroparen även när nivån är av (Java skapar den vid anropet).
 - **Konfiguration (spola.config):** ett `bind`-anrop ger en felrapport; fel i två separata
   `bind`-anrop rapporteras var för sig (bind ett rotrecord med `section` för en rapport).
   Okända nycklar (stavfel i en fil) upptäcks inte. Listelement kan inte innehålla komma.

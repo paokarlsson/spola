@@ -13,6 +13,7 @@ framework/
   modules/guardrails/fixtures/   medvetet felaktiga exempel för guardrails självtest
   modules/di/README.md      exempel för spola.di bredvid motsvarande Spring-kod
   modules/config/README.md  exempel för spola.config bredvid motsvarande Spring Boot-kod
+  modules/util/README.md    exempel för spola.util bredvid motsvarande Lombok- och Spring Boot-kod
   out/                      byggresultat (ignoreras av git)
     classes/<modulnamn>/    kompilerade klasser per modul
     <modulnamn>.jar         en jar per modul (utan tester)
@@ -523,3 +524,104 @@ testerna läser `spola.test`. Exempel bredvid Spring Boot: `modules/config/READM
 - **Oföränderlig och trådsäker:** `Config` har bara `final`-fält med en oföränderlig kopia
   (`TreeMap` i `unmodifiableMap`) av records; säker publicering via `final`. En `Section` hör
   till en bindning; dess fellista är synkroniserad om funktionen själv använder flera trådar.
+
+## Util del 1: loggning och hjälpare (`spola.util`)
+
+Uppdrag 05a. Ersätter Lomboks `@Slf4j`/`@Log`, `@Getter(lazy = true)`, `@SneakyThrows` och
+`@ToString.Exclude`, samt Spring Boots konsolformat och `logging.level.*`. Modulen kräver bara
+`java.logging` (för konsolformateringen) och inga andra Spola-moduler; testerna läser
+`spola.test`. Exempel bredvid Lombok och Spring Boot: `modules/util/README.md`.
+
+**Uppdelning av rad 05 i `PLAN.md`:** rad 05 (util) är delad i 05a (detta: loggning och
+hjälpare) och 05b (builders och with-metoder för records). 05b kräver ett eget designbeslut
+(utan annoteringar och utan runtime-reflektion återstår i praktiken genererad, incheckad
+källkod) och ryms inte här.
+
+### API (paket `spola.util`)
+
+| Typ | Roll |
+|---|---|
+| `Log` | `forClass(Class)`, `of(System.Logger)`, `defer(Supplier)`; `trace/debug/info/warn/error` med `(String)`, `(String, Object)`, `(String, Object, Object)`, `(String, Object...)`, `(Supplier<String>)`, `(Supplier<String>, Throwable)`; `isXxxEnabled()` |
+| `Log.Deferred` | ett lat argument (från `Log.defer`) |
+| `Logging` | `configure(LoggingSettings)`, `reset()` |
+| `LoggingSettings` | record: nivå per prefix, utström, tidszon; `defaults()`, `withLevel`, `withLevels`, `withOutput`, `withZone` |
+| `Lazy<T>` | `of(Supplier)`, `get()`, `isComputed()`; implementerar `Supplier<T>` |
+| `Unchecked` | `run`, `get`, `runnable`, `supplier`, `function`, `consumer`, `wrap(Exception)` |
+| `ThrowingRunnable/Supplier/Function/Consumer` | funktionella gränssnitt med `throws Exception` |
+| `UncheckedException` | inslaget checked undantag; `getCause()` är originalet |
+| `ToString` | `of(namn)`, `add(namn, värde)`, `secret(namn, värde)`, `toString()` |
+
+Paketprivat: `MessageFormatter` (platshållarna), `LineFormatter` och `LineHandler`
+(konsolformatet).
+
+### Beslut
+
+- **`Log` ovanpå `System.Logger`, skapad explicit.** `Log.forClass(X.class)` är
+  `System.getLogger(X.class.getName())`; ingen stackinspektion. `System.getLogger` är i sig
+  anroparkänslig i JDK:n, och anroparen är då `spola.util`; det påverkar bara lokalisering
+  (resursbuntar), som `Log` inte använder. `Log.of(System.Logger)` gör att tester kan
+  injicera en inspelande logger. Nivåmappning: `trace`→`TRACE`, `debug`→`DEBUG`,
+  `info`→`INFO`, `warn`→`WARNING`, `error`→`ERROR`.
+- **Platshållarregler (exakt som i `Log`s Javadoc):** en genomläsning från vänster.
+  `{}` tar nästa argument; slut på argument lämnar `{}` kvar; överskott ignoreras, utom att
+  ett sista argument som är `Throwable` och inte förbrukats skickas som undantag (inte som
+  text). Ett `Throwable` som en platshållare förbrukar blir text (`toString()`) och loggas inte
+  som undantag (vi följer uppdraget, inte SLF4J 2:s specialfall). `\{}` ger bokstavligt `{}`;
+  `\\{}` ger ett bakstreck följt av en platshållare (som SLF4J). Även metoden utan argument
+  formateras, så att `\{}` betyder samma sak överallt. `null` (argument eller meddelande) blir
+  `null`; arrayer `Arrays.deepToString` (primitiva arrayer `Arrays.toString`). Kastar
+  `toString()` (eller en `Log.defer`-leverantör eller en meddelandeleverantör) skrivs
+  `[toString() threw <klass>]` (resp. `supplier`, `message supplier`); undantagets meddelande
+  skrivs inte, eftersom det kan innehålla värdet. Bara `VirtualMachineError` utom
+  `StackOverflowError` (t.ex. `OutOfMemoryError`) släpps ut. Loggern får ett färdigt
+  meddelande via `log(Level, String)`/`log(Level, String, Throwable)`, aldrig
+  `MessageFormat`-parametrar, så `'` och `{0}` i text tolkas inte.
+- **Inget arbete när nivån är av:** varje metod frågar `isLoggable` först. Metoderna med ett
+  och två argument skapar inte ens argumentarrayen då (varargs-arrayen skapas av anroparen;
+  det går inte att undvika i Java). Lata argument är explicita (`Log.defer`) i stället för att
+  varje `Supplier`-argument tolkas som lat: ett objekt som råkar implementera `Supplier` (t.ex.
+  `Lazy`) ska inte ändra betydelse när det loggas, och överlagringar
+  `(String, Supplier<?>...)` bredvid `(String, Object)` ger olika beteende beroende på antalet
+  argument.
+- **Konsolformatet installeras explicit på JUL-rotloggern.** `System.Logger` skriver till
+  `java.util.logging` när `java.logging` finns, så formatet hamnar där. `configure` tar bort
+  *alla* handlers på rotloggern (JDK:ns `ConsoleHandler` skulle annars skriva varje rad två
+  gånger; främmande handlers stängs inte eftersom de inte är våra), återställer nivåerna som
+  ett tidigare anrop satte, sätter nya nivåer och lägger till en handler. Nivåerna är riktiga
+  JUL-loggernivåer (inte ett filter i handlern), så `isLoggable` svarar rätt och avstängda
+  nivåer kostar inget. JUL:s hierarki ärver nivån från närmaste förfader per punktsegment, så
+  "längsta prefix vinner" och "hela segment" följer av den. Loggrarna hålls med starka
+  referenser, annars kan JUL skräpsamla dem och nivån försvinner. Saknas `""` blir roten
+  `INFO` (som Spring Boot). Mappning till JUL som JDK:n gör: `TRACE`→`FINER`,
+  `DEBUG`→`FINE`, `ERROR`→`SEVERE`. Ingen statisk initiering gör något; `reset()` (främst för
+  tester) återställer rotloggerns handlers och nivå från före första `configure`.
+- **Radformat:** `tidsstämpel nivå [tråd] logger : meddelande`, tidsstämpeln ISO-8601 med
+  millisekunder och offset (`uuuu-MM-dd'T'HH:mm:ss.SSSXXX`) i vald zon, nivån i `Log`s namn
+  utfylld till fem tecken (JUL-nivåer däremellan avrundas nedåt: `CONFIG`→`DEBUG`). Trådnamnet
+  tas från tråden som loggar (handlern är synkron); en namnlös virtuell tråd blir
+  `virtual-<id>`. Radbrytningar och andra styrtecken utom tab i meddelande, trådnamn och
+  loggernamn skrivs som `\n`, `\r`, `\uXXXX`: en post är alltid en rad och ett loggat värde
+  kan inte förfalska rader (log forging). Stackspår på följande rader, oförändrade. Varje rad
+  skrivs och flushas direkt; rader från olika trådar blandas aldrig. En `PrintStream` skrivs
+  med sin egen teckenkodning, annan `OutputStream` med UTF-8; strömmen stängs aldrig.
+- **`Lazy`:** dubbelkontroll med ett `volatile`-fält och en `ReentrantLock` (en virtuell tråd
+  som väntar pinnar inte bäraren). Undantag memoreras inte (nästa `get()` försöker igen: ett
+  tillfälligt fel ska inte bli permanent). `null` är ett fel (`NullPointerException`), också
+  utan memorering; `null` som "inte uträknat" gör att värdet inte kan vara `null`, och ett
+  `Optional` uttrycker frånvaro tydligare. Leverantören nollas efter lyckad uträkning.
+  Rekursiv `get()` från den egna leverantören ger `IllegalStateException` i stället för
+  oändlig rekursion. `toString()` räknar inte ut och visar inte värdet. `StableValue` är
+  preview i JDK 25 och används inte.
+- **`Unchecked` utan sneaky throw:** ett checked undantag kastas aldrig odeklarerat (det
+  döljer det för kompilatorn och omöjliggör `catch`). `IOException` → `UncheckedIOException`,
+  `InterruptedException` → avbrottsflaggan sätts igen och undantaget slås in i
+  `UncheckedException`, övriga checked → `UncheckedException` med originalet som `cause`,
+  `RuntimeException`/`Error` släpps igenom som samma instans. Gränssnitten deklarerar
+  `throws Exception` (inte `Throwable`), så bara `Exception` behöver slås in.
+  `InterruptedIOException` är en `IOException` och blir `UncheckedIOException` utan att
+  flaggan rörs.
+- **`ToString`:** samma form som en records `toString` (`Namn[a=1, b=2]`, värden med
+  `String.valueOf`, arrayer expanderas inte). `secret` skriver `***` för ett värde som inte är
+  `null` och anropar aldrig dess `toString()`, så varken värde eller längd läcker; `null` visas
+  som `null` (avslöjar bara om hemligheten finns, vilket hjälper vid felsökning).
+
