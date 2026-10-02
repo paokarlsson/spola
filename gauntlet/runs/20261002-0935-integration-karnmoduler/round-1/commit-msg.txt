@@ -1,0 +1,13 @@
+feat(demo): add spola.demo inventory app using di, config and util
+
+Add a small web-shop inventory program that reads an order file, applies
+it to configured stock and prints a summary, wired with spola.di,
+configured with spola.config and logging through spola.util. Includes a
+friction report, plus Section.keys() in config and
+LoggingSettings.parseLevel in util as small additive fixes.
+
+Gauntlet-Run: 20261002-0935-integration-karnmoduler
+Gauntlet-Round: 1/4
+Gauntlet-Verdict: FAIL (0 blocker, 2 major, 7 minor upheld)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>

@@ -169,6 +169,24 @@ element är fel), `optional` och egna omvandlare: `c.value("color", "Color", Col
 eller `new Converter<>("Color", Color::parse)`, som också går att använda med `list` och
 `optional`. Nästlade records binds med `c.section("pool", p -> ...)`.
 
+### Nycklar som inte är kända i förväg
+`section.keys()` ger nycklarna under en sektion, relativt sektionen och sorterade. Det gör att
+en map kan bindas inne i bindningsfunktionen, så dess värden kontrolleras i samma rapport som
+resten (exemplet är från `modules/demo`):
+
+```java
+// inventory.stock.apple=10, inventory.stock.pear=5
+Map<String, Integer> stock = config.bind("inventory.stock", s -> {
+    var levels = new TreeMap<String, Integer>();
+    for (String sku : s.keys()) {          // "apple", "pear"
+        levels.put(sku, s.intValue(sku));
+    }
+    return levels;
+});
+```
+
+En nyckel som är lika med prefixet (`inventory.stock=x`) tas inte med.
+
 ### Hemligheter
 `sensitive("db.password")` eller `sensitive(key -> key.endsWith(".password"))`. Värdet
 maskeras i felmeddelanden (även omvandlarens eget felmeddelande utelämnas) och i

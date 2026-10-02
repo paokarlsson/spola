@@ -4,6 +4,7 @@ import java.io.OutputStream;
 import java.lang.System.Logger.Level;
 import java.time.ZoneId;
 import java.util.Collections;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.TreeMap;
@@ -63,6 +64,38 @@ public record LoggingSettings(Map<String, Level> levels, OutputStream output, Zo
      */
     public static LoggingSettings defaults() {
         return new LoggingSettings(Map.of("", Level.INFO), System.err, ZoneId.systemDefault());
+    }
+
+    /**
+     * Reads a level name as written in configuration, for example the value of
+     * {@code logging.level.com.example=DEBUG}. Case and surrounding whitespace are ignored.
+     * Accepts the names of {@link Level} ({@code ALL}, {@code TRACE}, {@code DEBUG},
+     * {@code INFO}, {@code WARNING}, {@code ERROR}, {@code OFF}) and {@code WARN}, the name the
+     * console format and Spring Boot use for {@link Level#WARNING}.
+     *
+     * {@snippet :
+     * Level level = LoggingSettings.parseLevel("warn");   // Level.WARNING
+     * }
+     *
+     * @param name the level name
+     * @return the level
+     * @throws IllegalArgumentException if the name is not one of the above; the message lists
+     *     the accepted names
+     * @throws NullPointerException if the name is {@code null}
+     */
+    public static Level parseLevel(String name) {
+        Objects.requireNonNull(name, "name");
+        return switch (name.strip().toUpperCase(Locale.ROOT)) {
+            case "ALL" -> Level.ALL;
+            case "TRACE" -> Level.TRACE;
+            case "DEBUG" -> Level.DEBUG;
+            case "INFO" -> Level.INFO;
+            case "WARN", "WARNING" -> Level.WARNING;
+            case "ERROR" -> Level.ERROR;
+            case "OFF" -> Level.OFF;
+            default -> throw new IllegalArgumentException(
+                    "not a log level (expected TRACE, DEBUG, INFO, WARN, ERROR, OFF or ALL)");
+        };
     }
 
     /**

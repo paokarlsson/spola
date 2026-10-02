@@ -193,6 +193,50 @@ final class BindingTests {
                         return null;
                     });
                 }),
+                test("keys lists the relative keys below a section, sorted, without the prefix itself", () -> {
+                    var config = config(Map.of(
+                            "logging.level", "ignored",
+                            "logging.level.root", "INFO",
+                            "logging.level.spola.demo", "DEBUG",
+                            "logging.levels.x", "not below the section",
+                            "other", "1"));
+                    var keys = config.bind("logging.level", Section::keys);
+                    assertEquals(List.of("root", "spola.demo"), List.copyOf(keys));
+                    assertThrows(UnsupportedOperationException.class, () -> keys.add("x"));
+                    assertEquals(List.of("logging.level", "logging.level.root", "logging.level.spola.demo",
+                            "logging.levels.x", "other"), List.copyOf(config.bind("", Section::keys)));
+                    assertTrue(config.bind("nothing", Section::keys).isEmpty());
+                    var nested = config.bind("", c -> c.section("logging", l -> l.section("level", Section::keys)));
+                    assertEquals(List.of("root", "spola.demo"), List.copyOf(nested));
+                }),
+                test("keys binds a map whose values are checked in the same report", () -> {
+                    var config = config(Map.of("stock.apple", "10", "stock.pear", "many", "stock.plum", "x"));
+                    var failure = assertThrows(ConfigException.class, () -> config.bind("stock", s -> {
+                        var levels = new java.util.TreeMap<String, Integer>();
+                        for (var sku : s.keys()) {
+                            levels.put(sku, s.intValue(sku));
+                        }
+                        return levels;
+                    }));
+                    assertEquals(List.of("stock.pear", "stock.plum"), failure.problems().stream()
+                            .map(p -> ((ConfigProblem.InvalidValue) p).key()).toList());
+                    var good = config(Map.of("stock.apple", "10", "stock.pear", "5")).bind("stock", s -> {
+                        var levels = new java.util.TreeMap<String, Integer>();
+                        for (var sku : s.keys()) {
+                            levels.put(sku, s.intValue(sku));
+                        }
+                        return levels;
+                    });
+                    assertEquals(Map.of("apple", 10, "pear", 5), good);
+                }),
+                test("keys cannot be used after the binding has finished", () -> {
+                    var saved = new AtomicReference<Section>();
+                    config(Map.of("a", "1")).bind("", c -> {
+                        saved.set(c);
+                        return null;
+                    });
+                    assertThrows(IllegalStateException.class, () -> saved.get().keys());
+                }),
                 test("the configuration is immutable and safe to read from many threads", () -> {
                     var config = config(Map.of("a", "1", "b", "${a}2"));
                     assertThrows(UnsupportedOperationException.class, () -> config.keys().clear());

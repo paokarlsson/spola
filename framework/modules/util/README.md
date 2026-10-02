@@ -109,8 +109,12 @@ kan inte förfalska en post.
 ### Nivåerna ur `spola.config`
 
 `spola.util` läser inte konfiguration; det är avsiktligt, så att modulen kan användas utan
-`spola.config`. Vill du ha `logging.level.*` som i Spring Boot läser du nycklarna med
-`spola.config` och skickar in dem:
+`spola.config`. Vill du ha `logging.level.*` som i Spring Boot binder du nycklarna med
+`spola.config` och skickar in dem. `LoggingSettings.parseLevel` läser nivånamnen som Spring
+Boot skriver dem (`TRACE`, `DEBUG`, `INFO`, `WARN` eller `WARNING`, `ERROR`, `OFF`, `ALL`,
+skiftlägesokänsligt) och kastar `IllegalArgumentException` för allt annat, så den fungerar
+direkt som omvandlare. `Section.keys()` ger nycklarna under `logging.level`, så ett felstavat
+nivånamn hamnar i samma felrapport som resten av konfigurationen:
 
 ```java
 Config config = Config.builder()
@@ -118,31 +122,27 @@ Config config = Config.builder()
         .add(Source.arguments(args))
         .build();
 
-Map<String, System.Logger.Level> levels = new HashMap<>();
-String prefix = "logging.level.";
-for (String key : config.keys()) {
-    if (key.startsWith(prefix)) {
-        String name = key.substring(prefix.length());
-        levels.put(name.equals("root") ? "" : name, level(config.get(key).orElseThrow()));
+Map<String, System.Logger.Level> levels = config.bind("logging.level", section -> {
+    var result = new TreeMap<String, System.Logger.Level>();
+    for (String name : section.keys()) {                       // "root", "com.example", ...
+        var level = section.value(name, "log level", LoggingSettings::parseLevel);
+        result.put(name.equals("root") ? "" : name, level);
     }
-}
+    return result;
+});
 Logging.configure(LoggingSettings.defaults().withLevels(levels));
+```
 
-static System.Logger.Level level(String text) {
-    return switch (text.strip().toUpperCase(Locale.ROOT)) {
-        case "TRACE" -> System.Logger.Level.TRACE;
-        case "DEBUG" -> System.Logger.Level.DEBUG;
-        case "INFO" -> System.Logger.Level.INFO;
-        case "WARN", "WARNING" -> System.Logger.Level.WARNING;
-        case "ERROR" -> System.Logger.Level.ERROR;
-        case "OFF" -> System.Logger.Level.OFF;
-        default -> throw new IllegalArgumentException("unknown log level: " + text);
-    };
-}
+Med `logging.level.root=LOUD` blir felet från `bind`:
+
+```text
+the configuration binding of 'logging.level' has 1 problem:
+  - invalid value for 'logging.level.root' from arguments: expected log level, got 'LOUD' (not a log level (expected TRACE, DEBUG, INFO, WARN, ERROR, OFF or ALL))
 ```
 
 Saknas `logging.level.root` blir roten `INFO`. Utskriften går till `System.err` om inget
-annat anges; `withOutput(stream)` skriver till en annan ström (t.ex. i tester).
+annat anges; `withOutput(stream)` skriver till en annan ström (t.ex. i tester). Ett komplett
+program som gör så här finns i `modules/demo` (`InventoryWiring.logLevels`).
 
 ## Lat värde: `@Getter(lazy = true)` och `Lazy`
 

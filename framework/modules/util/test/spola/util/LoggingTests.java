@@ -309,6 +309,25 @@ final class LoggingTests {
                             LoggingSettings.defaults().withLevel("x", Level.TRACE).levels());
                     assertSame(System.err, LoggingSettings.defaults().output());
                 }),
+                test("parseLevel reads level names as written in configuration", () -> {
+                    assertEquals(Level.ALL, LoggingSettings.parseLevel("ALL"));
+                    assertEquals(Level.TRACE, LoggingSettings.parseLevel("trace"));
+                    assertEquals(Level.DEBUG, LoggingSettings.parseLevel(" Debug "));
+                    assertEquals(Level.INFO, LoggingSettings.parseLevel("INFO"));
+                    assertEquals(Level.WARNING, LoggingSettings.parseLevel("warn"));
+                    assertEquals(Level.WARNING, LoggingSettings.parseLevel("WARNING"));
+                    assertEquals(Level.ERROR, LoggingSettings.parseLevel("error"));
+                    assertEquals(Level.OFF, LoggingSettings.parseLevel("off"));
+                    for (var level : Level.values()) {
+                        assertEquals(level, LoggingSettings.parseLevel(level.getName()));
+                    }
+                    for (var bad : List.of("", "LOUD", "FINE", "SEVERE", "debug!", "INFO DEBUG")) {
+                        var failure = assertThrows(IllegalArgumentException.class, () -> LoggingSettings.parseLevel(bad));
+                        assertTrue(failure.getMessage().contains("TRACE, DEBUG, INFO, WARN, ERROR, OFF or ALL"),
+                                failure.getMessage());
+                    }
+                    assertThrows(NullPointerException.class, () -> LoggingSettings.parseLevel(null));
+                }),
                 test("System.Logger levels map to java.util.logging levels as the JDK maps them", () -> {
                     assertEquals(java.util.logging.Level.ALL, Logging.julLevel(Level.ALL));
                     assertEquals(java.util.logging.Level.FINER, Logging.julLevel(Level.TRACE));

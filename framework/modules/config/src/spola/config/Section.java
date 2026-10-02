@@ -3,9 +3,12 @@ package spola.config;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
+import java.util.TreeSet;
 import java.util.function.Function;
 
 /**
@@ -98,6 +101,40 @@ public final class Section {
     public boolean has(String key) {
         checkOpen();
         return config.entry(fullKey(key)) != null;
+    }
+
+    /**
+     * The keys below this section that have a value, relative to the section, sorted. Under
+     * the prefix {@code logging.level}, the keys {@code logging.level.root} and
+     * {@code logging.level.spola.demo} give {@code root} and {@code spola.demo}; a key equal
+     * to the prefix itself ({@code logging.level}) is not included, and neither is one whose
+     * relative part would be blank. For the root section, every key.
+     *
+     * <p>For binding a map whose keys are not known in advance, so that its values are
+     * checked in the same report as the rest of the binding:
+     *
+     * <pre>{@code
+     * Map<String, Integer> stock = c.section("stock", s -> {
+     *     var levels = new TreeMap<String, Integer>();
+     *     for (var sku : s.keys()) {
+     *         levels.put(sku, s.intValue(sku));
+     *     }
+     *     return levels;
+     * });
+     * }</pre>
+     *
+     * @return the relative keys, an unmodifiable sorted set; empty if there are none
+     */
+    public Set<String> keys() {
+        checkOpen();
+        var keys = new TreeSet<String>();
+        var start = prefix.isEmpty() ? "" : prefix + ".";
+        for (var key : config.keys()) {
+            if (key.startsWith(start) && !key.substring(start.length()).isBlank()) {
+                keys.add(key.substring(start.length()));
+            }
+        }
+        return Collections.unmodifiableSortedSet(keys);
     }
 
     /**

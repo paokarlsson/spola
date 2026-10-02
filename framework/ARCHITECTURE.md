@@ -14,6 +14,7 @@ framework/
   modules/di/README.md      exempel för spola.di bredvid motsvarande Spring-kod
   modules/config/README.md  exempel för spola.config bredvid motsvarande Spring Boot-kod
   modules/util/README.md    exempel för spola.util bredvid motsvarande Lombok- och Spring Boot-kod
+  modules/demo/README.md    integrationsprogrammet: körning, Spring Boot-jämförelse, friktionsrapport
   out/                      byggresultat (ignoreras av git)
     classes/<modulnamn>/    kompilerade klasser per modul
     <modulnamn>.jar         en jar per modul (utan tester)
@@ -444,7 +445,7 @@ testerna läser `spola.test`. Exempel bredvid Spring Boot: `modules/config/READM
 | `Source` | en källa, skapad explicit: `map`, `file`, `optionalFile`, `environment(prefix[, env])`, `environmentTable(tabell[, env])`, `systemProperties`, `arguments`; `description()` visas i fel och dump |
 | `Config.Builder` | `add(Source)`, `activeProfiles(...)`/`activeProfilesFrom(nyckel)`, `addForEachProfile(profil -> Source)`, `sensitive(nycklar)`/`sensitive(predikat)`, `build()` |
 | `Config` | oföränderlig: `get`, `sourceOf`, `keys`, `profiles`, `isSensitive`, `describe()`, `bind(prefix, funktion)` |
-| `Section` | det bindningsfunktionen läser från: `string`, `intValue`, `longValue`, `booleanValue`, `doubleValue`, `duration`, `uri`, `path`, `enumValue`, `list`, `optional`, `value(nyckel, Converter)`, `section(delprefix, funktion)`, `has` |
+| `Section` | det bindningsfunktionen läser från: `string`, `intValue`, `longValue`, `booleanValue`, `doubleValue`, `duration`, `uri`, `path`, `enumValue`, `list`, `optional`, `value(nyckel, Converter)`, `section(delprefix, funktion)`, `has`, `keys()` (sedan 05c) |
 | `Converter<T>` | record: typnamn + `Function<String,T>`; inbyggda konstanter (`INT`, `DURATION`, …) och `forEnum(Class)` |
 | `ConfigException` | alla problem på en gång; `problems()` |
 | `ConfigProblem` | sealed: `SourceError`, `PlaceholderError`, `MissingKey`, `InvalidValue` |
@@ -544,7 +545,7 @@ källkod) och ryms inte här.
 | `Log` | `forClass(Class)`, `of(System.Logger)`, `defer(Supplier)`; `trace/debug/info/warn/error` med `(String)`, `(String, Object)`, `(String, Object, Object)`, `(String, Object...)`, `(Supplier<String>)`, `(Supplier<String>, Throwable)`; `isXxxEnabled()` |
 | `Log.Deferred` | ett lat argument (från `Log.defer`) |
 | `Logging` | `configure(LoggingSettings)`, `reset()` |
-| `LoggingSettings` | record: nivå per prefix, utström, tidszon; `defaults()`, `withLevel`, `withLevels`, `withOutput`, `withZone` |
+| `LoggingSettings` | record: nivå per prefix, utström, tidszon; `defaults()`, `withLevel`, `withLevels`, `withOutput`, `withZone`; `parseLevel(namn)` (sedan 05c) |
 | `Lazy<T>` | `of(Supplier)`, `get()`, `isComputed()`; implementerar `Supplier<T>` |
 | `Unchecked` | `run`, `get`, `runnable`, `supplier`, `function`, `consumer`, `wrap(Exception)` |
 | `ThrowingRunnable/Supplier/Function/Consumer` | funktionella gränssnitt med `throws Exception` |
@@ -662,3 +663,63 @@ Paketprivat: `MessageFormatter` (platshållarna), `LineFormatter` och `LineHandl
   `null` och anropar aldrig dess `toString()`, så varken värde eller längd läcker; `null` visas
   som `null` (avslöjar bara om hemligheten finns, vilket hjälper vid felsökning).
 
+## Integration: kärnmodulerna i ett program (`spola.demo`)
+
+Uppdrag 05c. En lagertjänst för en liten webbutik (orderfil in, sammanfattning ut) som
+använder `spola.di`, `spola.config` och `spola.util` tillsammans. Syftet är att pröva
+ergonomin innan fler moduler bygger på API:erna; utfallet är programmet och friktionsrapporten
+i `modules/demo/README.md` (avsnitt "Friktion").
+
+### Struktur
+
+- `InventoryApp` är ingången: `main(String[])` och
+  `run(List<String> args, Map<String,String> miljö, PrintStream ut, PrintStream logg)` som
+  returnerar en exitkod. Den bygger konfigurationen, binder den, konfigurerar loggningen,
+  skapar containern i en try-with-resources, kör och översätter fel till ett meddelande och en
+  exitkod (sysexits: 65 trasig orderfil, 70 wiring/komponent/oväntat, 74 I/O, 78
+  konfiguration).
+- `InventoryWiring` är wiring-modulen: källornas ordning, bindningen till records och
+  containermodulerna (`settings(app, ut)`, `STOCK`, `CHECKS`, `PROCESSING`).
+- Bara de två nämner `Container`, `Binder` eller `Config`; komponenterna (`Stock`,
+  `OrderCheck` med `QuantityLimit`/`BlockedSkus`, `AuditTrail`, `OrderProcessor`,
+  `ReportWriter`) tar records och varandra i konstruktorn. Ett test (`BoundaryTests`)
+  kontrollerar det på källkoden.
+- Ingen modul får bero på `spola.demo`, och modulen exporterar inget paket.
+
+### Beslut
+
+- **Konfigurationsfilens plats är själv konfiguration** (`config.file`). Den läses i en
+  första, mindre omgång (standardvärden, miljö, argument) innan hela konfigurationen byggs. Båda
+  omgångarna markerar samma nycklar som känsliga, så ett fel redan i första omgången inte kan
+  visa hemligheten. Friktionen står i rapporten (**Kvar**).
+- **Settings-records heter `*Settings`, inte `*Config`,** så att en sökning efter `Config`
+  bara träffar ingången och wiring-modulen.
+- **Wiring-felet nås genom ingången.** Ett wiring-fel är ett programmeringsfel, inte något en
+  slutanvändare kan framkalla med konfiguration. Ingången har därför en paketprivat överlagring
+  som tar containermodulerna som funktion; testet utelämnar `CHECKS` och kör programmet genom
+  ingången. `main` och den publika `run` använder alltid `InventoryWiring::modules`.
+- **Loggningen gäller under anropet.** `run` anropar `Logging.configure` med logg-strömmen och
+  `Logging.reset()` i `finally`, eftersom JUL-konfigurationen är global för JVM:en och strömmen
+  tillhör anroparen. Två samtidiga `run` i samma JVM skulle dela loggning (se rapporten, **Kvar**).
+- **Fel utan stackspår.** Kända fel skrivs som `error: <meddelande>` på logg-strömmen. Ett
+  oväntat `RuntimeException` ger `error: unexpected failure: <undantag>` och exitkod 70;
+  stackspåret loggas bara på DEBUG.
+- **Revisionsspåret (`AuditTrail`) är signerat med HMAC-SHA256** (JDK:ns `javax.crypto.Mac`)
+  med den känsliga nyckeln `audit.secret`, så hemligheten har en verklig användning utan att
+  någonsin skrivas ut. Implementationen testas mot RFC 4231 testfall 1 och 2.
+
+### Ändringar i kärnmodulerna (05c)
+
+Båda är tillägg; inget befintligt beteende ändras.
+
+- **`Section.keys()`** (`spola.config`): de relativa nycklarna under en sektion, sorterade.
+  Skäl: en map vars nycklar inte är kända i förväg (`inventory.stock.<sku>`,
+  `logging.level.<prefix>`) gick inte att binda inne i bindningsfunktionen, så värdena kunde
+  inte kontrolleras i samma rapport som resten. En nyckel lika med prefixet och en vars
+  relativa del är blank tas inte med (den senare skulle inte gå att läsa med `Section`).
+- **`LoggingSettings.parseLevel(String)`** (`spola.util`): läser nivånamn som i Spring Boot
+  (`TRACE`, `DEBUG`, `INFO`, `WARN`/`WARNING`, `ERROR`, `OFF`, `ALL`, skiftlägesokänsligt).
+  Skäl: README visade en `switch` som varje applikation fick kopiera. Metoden kastar
+  `IllegalArgumentException` utan värdet i meddelandet; som omvandlare i `spola.config`
+  (`c.value(nyckel, "log level", LoggingSettings::parseLevel)`) visar konfigurationen värdet
+  själv, och maskerar det om nyckeln är känslig.

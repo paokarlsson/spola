@@ -122,11 +122,49 @@
   kastas vidare, `isLoggable` som kastar släpps igenom, JDK:ns standardbackend med
   `ConsoleHandler`/`SimpleFormatter` utan `Logging.configure`).
 
+### Uppdrag 05c: integration av kärnmodulerna (`spola.demo`)
+- Modulen `spola.demo` (`modules/demo/`, kräver `spola.di`, `spola.config`, `spola.util`;
+  exporterar inget, inget beror på den): en lagertjänst som läser en orderfil (`sku;antal`),
+  drar av ordrarna mot lagret och skriver en sammanfattning (behandlade, avvisade med orsak,
+  slutsaldo) och ett HMAC-signerat revisionsspår. Ingången `InventoryApp` (`main` och
+  `run(args, miljö, ut, logg)` som returnerar exitkod) och wiring-modulen `InventoryWiring` är
+  de enda klasserna som nämner `Container`, `Binder` eller `Config`.
+- Konfiguration: standardvärden i koden, fil (`config.file`), profilfil, miljö
+  (`INVENTORY_`), argument; `audit.secret` är känslig; bindning till `*Settings`-records som
+  läggs in i containern med `toInstance`. Loggnivåer ur `logging.level.*` via
+  `Logging.configure`. Sex komponenter, två `OrderCheck` med kvalificerare, `AuditTrail` är
+  `AutoCloseable` och stängs av containern. Felvägar (saknad/ogiltig konfiguration,
+  wiring-fel, trasig orderrad, oläslig orderfil) ger ett meddelande och en exitkod (sysexits
+  65/70/74/78), utan stackspår.
+- Tillägg i kärnmodulerna efter friktionsrapporten: `Section.keys()` (`spola.config`) och
+  `LoggingSettings.parseLevel(String)` (`spola.util`), med tester, Javadoc och README.
+- `modules/demo/README.md`: körning, Spring Boot-jämförelse och avsnittet "Friktion" (2
+  **Åtgärdat**, 5 **Kvar**, och det som fungerade bra).
+- 36 tester i `spola.demo` (hela programmet genom ingången, prioritetsordningen med alla fem
+  lager, hemligheten i utdata/logg/fel, stängning vid lyckad och avbruten körning, loggnivåer
+  från argument/miljö/profil, alla felvägar, modulgränserna på källkoden, HMAC mot RFC 4231
+  testfall 1 och 2, orderradsformatet). `spola.config` har nu 66 tester och `spola.util` 80.
+  Bygget tar ungefär 17 s.
+
 ## Återstår (enligt `uppdrag/PLAN.md`)
 - Rad 05 är delad: 05a (loggning och hjälpare) är klar; **05b (util-builders):** builders och
   with-metoder för records återstår (kräver eget designbeslut: utan annoteringar och
   runtime-reflektion återstår i praktiken genererad, incheckad källkod).
 - 06–20 enligt planen.
+- **Kvar från friktionsrapporten i 05c** (`modules/demo/README.md`, avsnitt "Friktion"):
+  - **DI:** den typade formen av `to(...)` går inte att blanda `Class` och `Key` i; ett enda
+    kvalificerat beroende gör att alla måste skrivas `Key.of(...)` (punkt 3).
+  - **Konfiguration:** konfigurationsfilens plats är själv konfiguration och kräver en första
+    omgång med samma källor och känsliga nycklar upprepade; ingen källa vars sökväg läses från
+    en nyckel (punkt 4).
+  - **Uppstart:** konfiguration, loggning, container och översättning av feltyper till
+    meddelande och exitkod skrivs för hand (ingen gemensam supertyp för felen,
+    `Container.create` tar bara varargs); hör till uppdrag 19 (punkt 5).
+  - **Loggning:** `Logging.configure` är global för JVM:en; ett program som tar sin
+    logg-ström som parameter måste konfigurera och återställa runt anropet, och två samtidiga
+    anrop delar loggning (punkt 6).
+  - **Loggning/konfiguration:** ett ogiltigt logger-prefix (`logging.level.a..b`) upptäcks av
+    `LoggingSettings` efter bindningen, inte i `ConfigException` (punkt 7).
 
 ## Kända problem och begränsningar
 - **Util (spola.util):** `Logging.configure` tar bort alla handlers på JUL-rotloggern, även
