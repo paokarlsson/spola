@@ -28,10 +28,15 @@ import java.util.concurrent.atomic.AtomicLong;
  * } // graceful stop
  * }</pre>
  *
- * <p>One platform thread accepts connections; it is not a daemon thread, so a started server
- * keeps the JVM alive until {@link #close()}. It takes a connection only when fewer than
+ * <p>One platform thread accepts connections. It takes a connection only when fewer than
  * {@link HttpLimits#maxConnections()} are open; otherwise new connections wait in the operating
  * system's backlog. A guard thread enforces {@link HttpTimeouts#writeTimeout()}.
+ *
+ * <p>A started server keeps the JVM alive until {@link #close()} is done, even when {@code main}
+ * has returned: one non-daemon platform thread (the keeper) waits for that. It ends only after
+ * {@code close()} has returned and, when a handler called {@code close()}, after that handler's
+ * connection has sent its response (see {@link #close()}). Every other server thread is a
+ * daemon.
  *
  * <p>The server's only shared mutable state is the count of open connections and the set of
  * connections that {@link #close()} needs; everything else belongs to one connection's thread.
@@ -57,6 +62,7 @@ public final class HttpServer implements AutoCloseable {
     private final AtomicLong connectionIds = new AtomicLong();
     private final Thread acceptor;
     private final Thread guard;
+    private final Thread keeper;
     private final AtomicBoolean closing = new AtomicBoolean();
     private final CountDownLatch closed = new CountDownLatch(1);
     private volatile long shutdownDeadline; // System.nanoTime() when close() aborts; 0 before close()
@@ -75,7 +81,8 @@ public final class HttpServer implements AutoCloseable {
             throw e;
         }
         int port = serverSocket.getLocalPort();
-        this.acceptor = Thread.ofPlatform().name("spola-http-acceptor-" + port).daemon(false).unstarted(this::accept);
+        this.acceptor = Thread.ofPlatform().name("spola-http-acceptor-" + port).daemon(true).unstarted(this::accept);
+        this.keeper = Thread.ofPlatform().name("spola-http-keeper-" + port).daemon(false).unstarted(this::keepJvmAlive);
         this.guard = Thread.ofVirtual().name("spola-http-write-guard-" + port).unstarted(this::guardWrites);
     }
 
@@ -98,8 +105,14 @@ public final class HttpServer implements AutoCloseable {
         Objects.requireNonNull(handler, "handler");
         Objects.requireNonNull(log, "log");
         var server = new HttpServer(options, handler, log);
-        server.guard.start();
-        server.acceptor.start();
+        try {
+            server.keeper.start();
+            server.guard.start();
+            server.acceptor.start();
+        } catch (RuntimeException | Error e) { // no thread left behind (the keeper would keep the JVM alive)
+            server.close();
+            throw e;
+        }
         if (log.isLoggable(Level.INFO)) {
             log.log(Level.INFO, "listening on " + server.serverSocket.getLocalSocketAddress());
         }
@@ -230,6 +243,12 @@ public final class HttpServer implements AutoCloseable {
      * returns at once, so that its response can go out (with {@code Connection: close}); a later
      * call from any other thread waits until the first call has returned. The first call never
      * waits for the caller's own connection, so a handler may call it too.
+     *
+     * <p>The JVM stays alive until the first call has returned and, if a handler made it, until
+     * that handler's connection has sent its response: the server's keeper thread (not a daemon)
+     * waits for it until the shutdown deadline, but at least {@link #ABORT_GRACE_MILLIS} after
+     * {@code close()} returned, and then aborts it. So {@code main} may return after
+     * {@code start()} and leave the stop to a handler (a {@code /shutdown} endpoint).
      */
     @Override
     public void close() {
@@ -253,7 +272,9 @@ public final class HttpServer implements AutoCloseable {
 
     private void shutdown() {
         long deadline = System.nanoTime() + options.timeouts().shutdownTimeout().toNanos();
-        shutdownDeadline = deadline | 1; // never 0
+        // 0 means "not closing" to readers of shutdownDeadline; nanoTime() may be 0, so force the low bit
+        // (one nanosecond later at most)
+        shutdownDeadline = deadline | 1;
         boolean interrupted = false;
         closeQuietly(serverSocket);
         acceptor.interrupt();
@@ -293,6 +314,40 @@ public final class HttpServer implements AutoCloseable {
         }
         if (interrupted) {
             Thread.currentThread().interrupt();
+        }
+    }
+
+    /**
+     * The keeper thread: the only non-daemon thread of the server. Waits until {@link #close()}
+     * is done, then for the connections that close() did not wait for (the one whose handler
+     * called it), until the shutdown deadline but at least {@link #ABORT_GRACE_MILLIS}; then
+     * aborts what is left and gives it {@link #ABORT_GRACE_MILLIS} more. Connections close()
+     * already aborted are not waited for again.
+     */
+    private void keepJvmAlive() {
+        awaitUninterruptibly(closed);
+        long deadline = shutdownDeadline;
+        long earliest = System.nanoTime() + ABORT_GRACE_MILLIS * 1_000_000L;
+        if (deadline - earliest < 0) {
+            deadline = earliest;
+        }
+        // the acceptor has ended, so every connection here has its thread
+        var left = connections.stream().filter(c -> !c.aborted()).toList();
+        for (var connection : left) {
+            joinUntil(connection.thread(), deadline);
+        }
+        var late = left.stream().filter(c -> c.thread().isAlive()).toList();
+        if (late.isEmpty()) {
+            return;
+        }
+        long busy = late.stream().filter(c -> !c.lingering()).count();
+        if (busy > 0) {
+            log.log(Level.WARNING, "shutdown timeout: aborting " + busy + " connection(s) that called close()");
+        }
+        late.forEach(Connection::abort);
+        long grace = System.nanoTime() + ABORT_GRACE_MILLIS * 1_000_000L;
+        for (var connection : late) {
+            joinUntil(connection.thread(), grace);
         }
     }
 

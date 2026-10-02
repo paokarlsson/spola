@@ -32,7 +32,7 @@ final class Connection implements Runnable {
      * <tr><td>ACTIVE</td><td>IDLE</td><td>connection thread</td><td>a response is done and the
      *     connection carries another request</td></tr>
      * <tr><td>ACTIVE or IDLE</td><td>LINGERING</td><td>connection thread</td><td>the last response
-     *     is done; it drops input before closing</td></tr>
+     *     went out with {@code Connection: close} (only then); it drops input before closing</td></tr>
      * <tr><td>IDLE</td><td>CLOSED</td><td>{@link #closeIfIdle()} (close())</td><td>graceful stop;
      *     the connection thread's next compare-and-set fails and it ends</td></tr>
      * <tr><td>any</td><td>CLOSED</td><td>{@link #abort()}</td><td>close() after the shutdown
@@ -77,6 +77,11 @@ final class Connection implements Runnable {
 
     Thread thread() {
         return thread;
+    }
+
+    /** Whether the connection was aborted (by close() after the deadline, a write timeout or a failure). */
+    boolean aborted() {
+        return aborted;
     }
 
     /** Whether the last response is done and the connection only drops input before closing. */
@@ -181,11 +186,7 @@ final class Connection implements Runnable {
                 });
         var request = new Request(head, body);
         boolean headRequest = head.method().equals("HEAD");
-        var outcome = handle(request, body);
-        if (!outcome.failed() && body.failure() == null && !streams(outcome.response(), headRequest)
-                && !awaitsContinue(head, body) && !body.skipRest()) {
-            outcome = new Outcome(bodyFailureResponse(request, body), true);
-        }
+        var outcome = skipUnreadBodyOrFail(handle(request, body), request, head, body);
         boolean close = shouldClose(head, body, outcome.failed());
         try {
             writer.send(outcome.response(), headRequest, head.version(), close);
@@ -200,6 +201,22 @@ final class Connection implements Runnable {
             return false;
         }
         return body.skipRest(); // after a streaming response: the body framing decides
+    }
+
+    /**
+     * Before a buffered response goes out, reads and drops what the handler left of the request
+     * body; if that fails, the body's error replaces the handler's response. Leaves the outcome
+     * as it is when the handler failed, the body already failed, the response streams, or the
+     * client waits for {@code 100 Continue} (see {@link #exchange}). {@link BodyStream#skipRest()}
+     * is idempotent: once the body has ended or failed, calling it again only reports that.
+     */
+    private Outcome skipUnreadBodyOrFail(Outcome outcome, Request request, RequestParser.Head head, BodyStream body) {
+        boolean skip = !outcome.failed() && body.failure() == null
+                && !streams(outcome.response(), head.method().equals("HEAD")) && !awaitsContinue(head, body);
+        if (skip && !body.skipRest()) {
+            return new Outcome(bodyFailureResponse(request, body), true);
+        }
+        return outcome;
     }
 
     /** Calls the handler; a failure (or a {@code null} response) becomes a 500 or the body's status. */
@@ -338,31 +355,42 @@ final class Connection implements Runnable {
         try {
             wire.flush();
             socket.shutdownOutput();
-            if (!state.compareAndSet(State.ACTIVE, State.LINGERING) && !state.compareAndSet(State.IDLE,
-                    State.LINGERING)) {
-                return;
-            }
-            long deadline = System.nanoTime() + LINGER_MILLIS * 1_000_000L;
-            long stop = server.shutdownDeadline(); // 0 while the server runs
-            if (stop != 0 && stop - deadline < 0) {
-                deadline = stop;
-            }
-            long dropped = 0;
-            var sink = new byte[8_192];
-            while (dropped < LINGER_BYTES) {
-                long left = (deadline - System.nanoTime()) / 1_000_000;
-                if (left <= 0) {
-                    return;
-                }
-                in.timeoutPerRead((int) left);
-                int n = in.read(sink, 0, sink.length);
-                if (n < 0) {
-                    return;
-                }
-                dropped += n;
+            if (enterLingering()) {
+                drainInput(lingerDeadline());
             }
         } catch (IOException e) {
             // the client is gone or the server closed the socket; either way we are done
+        }
+    }
+
+    /** ACTIVE or IDLE to LINGERING; false if close() or abort() has closed the connection already. */
+    private boolean enterLingering() {
+        var current = state.get();
+        return (current == State.ACTIVE || current == State.IDLE) && state.compareAndSet(current, State.LINGERING);
+    }
+
+    /** {@link #LINGER_MILLIS} from now, or the shutdown deadline if the server stops before that. */
+    private long lingerDeadline() {
+        long deadline = System.nanoTime() + LINGER_MILLIS * 1_000_000L;
+        long stop = server.shutdownDeadline(); // 0 while the server runs
+        return stop != 0 && stop - deadline < 0 ? stop : deadline;
+    }
+
+    /** Reads and drops input until end of stream, {@code deadline} or {@link #LINGER_BYTES}. */
+    private void drainInput(long deadline) throws IOException {
+        long dropped = 0;
+        var sink = new byte[8_192];
+        while (dropped < LINGER_BYTES) {
+            long left = (deadline - System.nanoTime()) / 1_000_000;
+            if (left <= 0) {
+                return;
+            }
+            in.timeoutPerRead((int) left);
+            int n = in.read(sink, 0, sink.length);
+            if (n < 0) {
+                return;
+            }
+            dropped += n;
         }
     }
 }

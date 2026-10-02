@@ -253,8 +253,8 @@
   ARCHITECTURE.md ("HTTP-server del 1").
 - Modulen `spola.http` (`modules/http/`, inga `requires` på ramverksmoduler, `requires static
   java.net.http` bara för testerna, ingen reflektion, inte `jdk.httpserver`): `HttpServer`
-  på `ServerSocket` med en virtuell tråd per anslutning, acceptor som plattformstråd (inte
-  daemon), `Handler`, `Request` (rå target, sökväg, query, `host()`, version, `Headers`,
+  på `ServerSocket` med en virtuell tråd per anslutning, acceptor som plattformstråd, en
+  plattformstråd (keeper) som inte är daemon och håller JVM:en igång tills `close()` är klart, `Handler`, `Request` (rå target, sökväg, query, `host()`, version, `Headers`,
   lat kropp), `Response` med sealed `ResponseBody` (`Empty`, `Bytes`, `Streaming`) och
   `BodyWriter`, `Headers` (oföränderliga, ordnade, skiftlägesokänsliga, validerade),
   `HttpLimits`, `HttpTimeouts`, `HttpServerOptions`, `RequestBodyException`, `HttpVersion`.
@@ -270,15 +270,17 @@
 - Mjukt stopp: lediga anslutningar stängs, pågående får `Connection: close`, resten avbryts
   efter `shutdownTimeout`; `close()` väntar på alla anslutningstrådar (högst 1 s efter
   avbrottet) och håller ingen monitor, så en handler och en shutdown hook kan anropa den
-  samtidigt. Oläst kropp läses före svaret, så en trasig kropp ger sin status i stället för
+  samtidigt. JVM:en lever tills `close()` är klart och, när en handler anropade `close()`,
+  tills den handlerns svar har gått ut (även när `main` redan returnerat). Oläst kropp läses före svaret, så en trasig kropp ger sin status i stället för
   handlerns svar.
 - `README.md` i modulen med Spring Boot/Tomcat-exempel, gränstabell mot Spring Boots
   egenskaper och tabell över vad som avvisas.
-- 171 tester i `spola.http` (cirka 12 s): `HttpClient` (GET, POST, strömmad POST, HEAD),
+- 172 tester i `spola.http` (cirka 16 s): `HttpClient` (GET, POST, strömmad POST, HEAD),
   keep-alive och pipelining, 71 felaktiga huvuden och 14 felaktiga chunked kroppar med status
   och RFC-avsnitt (kropparna med en handler som läser hela, en del av eller ingenting av kroppen), smuggelförsök, chunked åt båda hållen (byte för byte), 100-continue,
   tidsgränserna med korta värden, `maxConnections`, fel i handler och `BodyWriter`, svarets
-  validering och `Date`, mjukt stopp, 1 000 samtidiga klienter, loggar och felkroppar utan
+  validering och `Date`, mjukt stopp (även i en egen JVM där `main` returnerat och en handler
+  stoppar servern), 1 000 samtidiga klienter, loggar och felkroppar utan
   styrtecken, och källkodsreglerna.
 
 ## Återstår (enligt `uppdrag/PLAN.md`)

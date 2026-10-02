@@ -1,0 +1,12 @@
+fix(http): keep the JVM alive until close() finishes from a handler
+
+A non-daemon keeper thread now holds the JVM until close() has returned
+and the calling handler's own connection has sent its response, so a
+/shutdown endpoint works even after main has returned. A child-JVM test
+covers it. The duplicated body-skip and linger logic was also tidied up.
+
+Gauntlet-Run: 20261002-1523-http-server-karna
+Gauntlet-Round: 3/5
+Gauntlet-Verdict: PASS (0 blocker, 0 major, 4 minor upheld)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>

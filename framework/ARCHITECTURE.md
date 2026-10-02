@@ -1165,8 +1165,7 @@ absolute-form går före `Host` (RFC 9112 §3.2.2) och någon måste avgöra det
   protokollet: läs request-raden, läs huvudena, anropa handlern, skriv svaret, upprepa. En
   virtuell tråd som blockerar i en socketläsning frigör sin bärartråd, så modellen skalar till
   tiotusentals anslutningar utan återanrop eller tillståndsmaskiner. Acceptor-tråden är en
-  plattformstråd som inte är daemon, så att en startad server håller JVM:en igång (som Tomcat);
-  den blockerar bara i `accept` och i väntan på en ledig anslutningsplats, aldrig på en
+  plattformstråd (daemon); den blockerar bara i `accept` och i väntan på en ledig anslutningsplats, aldrig på en
   enskild klient. Handlern körs på anslutningens tråd och får blockera.
 - **Inga `requires` på andra ramverksmoduler.** Loggning via `System.Logger` (namnet
   `spola.http`), som `spola.util` formaterar när loggning är konfigurerad.
@@ -1325,6 +1324,17 @@ absolute-form går före `Host` (RFC 9112 §3.2.2) och någon måste avgöra det
   (`interrupt`). `close()` returnerar när alla anslutningstrådar är klara, eller senast
   `ABORT_GRACE_MILLIS` (1 s) efter avbrottet: en handler som varken gör I/O eller reagerar på
   avbrott loggas (`WARNING`) och lämnas, i stället för att hålla `close()` kvar för alltid.
+- **En keeper-tråd håller JVM:en igång.** En startad server håller JVM:en igång (som Tomcat)
+  med en egen plattformstråd som inte är daemon och bara väntar: först på att `close()` är
+  klart (spärren `closed`), sedan på de anslutningar som `close()` inte väntade på, alltså den
+  vars handler anropade `close()`. Den väntan räcker till shutdown-deadline, men minst
+  `ABORT_GRACE_MILLIS` efter att `close()` returnerat; det som då återstår avbryts och får
+  `ABORT_GRACE_MILLIS` till. Alla andra servertrådar är daemon. Tidigare var acceptor-tråden
+  den enda icke-daemon-tråden, och `close()` väntar in den först: när `main` redan returnerat
+  och en handler (en virtuell tråd, alltid daemon) anropade `close()`, avslutades JVM:en innan
+  pågående förfrågningar och handlerns eget svar hunnit ut (gauntlet-runda 2, BRK-1). Att låta
+  acceptor-tråden vänta på samma sak skulle kräva att `close()` slutade vänta in den; en egen
+  tråd håller de två uppgifterna isär. Testat i en egen JVM (`ReturningMainProbe`).
 - **`close()` utan monitor.** `close()` är inte `synchronized`. Ett `AtomicBoolean` (`closing`)
   avgör med compare-and-set vem som stoppar servern, och en `CountDownLatch` släpps när det
   första anropet är klart. Ett senare anrop från en anslutnings tråd (en handler) returnerar

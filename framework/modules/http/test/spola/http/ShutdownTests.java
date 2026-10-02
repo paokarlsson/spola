@@ -6,11 +6,17 @@ import static spola.test.Assertions.assertTrue;
 import static spola.test.Tests.suite;
 import static spola.test.Tests.test;
 
+import java.io.BufferedReader;
 import java.io.IOException;
+import java.io.InputStreamReader;
 import java.net.ConnectException;
 import java.net.Socket;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Path;
 import java.time.Duration;
+import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
 import spola.test.Suite;
 
@@ -27,6 +33,21 @@ final class ShutdownTests {
             return true;
         } catch (IOException e) {
             return false;
+        }
+    }
+
+    /** The next line of {@code lines} that starts with {@code prefix}, waiting at most 10 s. */
+    private static String awaitLine(BlockingQueue<String> lines, String prefix, StringBuffer output)
+            throws InterruptedException {
+        long deadline = System.nanoTime() + 10_000_000_000L;
+        while (true) {
+            var line = lines.poll(Math.max(1, deadline - System.nanoTime()), TimeUnit.NANOSECONDS);
+            if (line == null) {
+                throw new AssertionError("no line starting with \"" + prefix + "\" from the child JVM:\n" + output);
+            }
+            if (line.startsWith(prefix)) {
+                return line;
+            }
         }
     }
 
@@ -234,6 +255,48 @@ final class ShutdownTests {
                     } finally {
                         release.countDown();
                         server.close();
+                    }
+                }),
+                test("main returns after start() and a handler stops the server: the JVM waits for every response", () -> {
+                    // only the server keeps the child JVM alive; the handler of /shutdown calls close()
+                    // while /slow is in progress, and both responses must arrive before the JVM exits
+                    var classes = Path.of(ReturningMainProbe.class.getProtectionDomain().getCodeSource().getLocation().toURI());
+                    var java = Path.of(System.getProperty("java.home"), "bin", "java").toString();
+                    var process = new ProcessBuilder(java, "--module-path", classes.toString(),
+                            "--module", "spola.http/" + ReturningMainProbe.class.getName()).redirectErrorStream(true).start();
+                    process.getOutputStream().close();
+                    var lines = new LinkedBlockingQueue<String>();
+                    var output = new StringBuffer();
+                    var reader = Thread.ofVirtual().start(() -> {
+                        try (var in = new BufferedReader(new InputStreamReader(process.getInputStream(), StandardCharsets.UTF_8))) {
+                            for (var line = in.readLine(); line != null; line = in.readLine()) {
+                                output.append(line).append('\n');
+                                lines.add(line);
+                            }
+                        } catch (IOException e) {
+                            output.append("[reading failed: ").append(e).append("]\n");
+                        }
+                    });
+                    try {
+                        int port = Integer.parseInt(awaitLine(lines, "port ", output).substring("port ".length()));
+                        try (var slow = new Support.Client(port); var stop = new Support.Client(port)) {
+                            slow.send(Support.get("/slow"));
+                            awaitLine(lines, "entered /slow", output);
+                            stop.send(Support.get("/shutdown"));
+                            var done = slow.read();
+                            assertEquals("slow done", done.text(), output.toString());
+                            assertTrue(done.closes(), "Connection: close on the request in progress");
+                            var bye = stop.read();
+                            assertEquals("bye", bye.text(), output.toString());
+                            assertTrue(bye.closes(), "Connection: close on the handler's own response");
+                            assertTrue(stop.closedByServer());
+                        }
+                        assertTrue(process.waitFor(15, TimeUnit.SECONDS), "the child JVM exited:\n" + output);
+                        assertEquals(0, process.exitValue(), output.toString());
+                        assertTrue(reader.join(Duration.ofSeconds(5)), "the child's output ended");
+                        assertTrue(output.toString().contains("stopped listening"), output.toString());
+                    } finally {
+                        process.destroyForcibly();
                     }
                 }),
                 test("close() twice and close() of an unused server are fine", () -> {

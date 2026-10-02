@@ -132,8 +132,10 @@ Det som skiljer:
   som en shutdown hook gör det.
 - **Adressen är loopback som standard.** Spring Boot lyssnar på alla adresser; i Spola väljer
   man det uttryckligen (`withAddress(InetAddress.getByName("0.0.0.0"))`).
-- Acceptor-tråden är en plattformstråd som inte är daemon, så en startad server håller
-  JVM:en igång tills `close()`, som Tomcat.
+- En startad server håller JVM:en igång tills `close()` är klart, som Tomcat, även när `main`
+  har returnerat: en egen plattformstråd som inte är daemon väntar på det. Anropar en handler
+  `close()` (en `/shutdown`-endpoint) lever JVM:en tills också den handlerns svar har gått ut
+  (högst till `shutdownTimeout`, minst 1 s efter att `close()` returnerat).
 
 ## Gränser och tidsgränser mot Spring Boot
 
