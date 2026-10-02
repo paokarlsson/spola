@@ -3,3 +3,4 @@
 - 2026-10-02 00:00 · 20261001-2323-testkorare · PASS · 3 rounds · Testkörare: lambda-based test runner (spola.test) replacing JUnit · commits: 4b5cf15, 5bad320, 9fd3bb7
 - 2026-10-02 00:19 · 20261002-0000-di-karna · PASS · 1 rounds · DI-kärna: explicit dependency injection container (spola.di) · commits: 0f99e22
 - 2026-10-02 00:35 · 20261002-0019-config · PASS · 1 rounds · Config: type-safe configuration from files, env, args and profiles (spola.config) · commits: 886a8f6
+- 2026-10-02 08:24 · 20261002-0751-util-loggning-och-hjalpare · STALLED · 3 rounds · Util part 1: logging on System.Logger and Lombok helpers · commits: ba58f82, 588e977, 9b21e3d · reason: a new MAJOR was upheld every round (1→1→1); the remaining one is an Error from a bad exception's toString escaping Log when Logging.configure has not been called
