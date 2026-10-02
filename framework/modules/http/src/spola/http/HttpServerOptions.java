@@ -1,0 +1,82 @@
+package spola.http;
+
+import java.net.InetAddress;
+import java.util.Objects;
+
+/**
+ * Where and how {@link HttpServer} listens, as a value.
+ *
+ * <pre>{@code
+ * var options = HttpServerOptions.DEFAULT.withPort(8080)
+ *         .withLimits(HttpLimits.DEFAULT.withMaxBodySize(1 << 20));
+ * }</pre>
+ *
+ * @param address  the local address to bind; {@link #DEFAULT} binds the loopback address, so a
+ *                 server is not reachable from other machines unless you choose an address
+ *                 (for example {@code InetAddress.getByName("0.0.0.0")} for every IPv4 address)
+ * @param port     the port, from 0 to 65 535; 0 lets the operating system choose one, which
+ *                 {@link HttpServer#port()} then reports
+ * @param limits   the size and count limits
+ * @param timeouts the timeouts
+ */
+public record HttpServerOptions(InetAddress address, int port, HttpLimits limits, HttpTimeouts timeouts) {
+
+    /** Loopback address, port 8080, {@link HttpLimits#DEFAULT} and {@link HttpTimeouts#DEFAULT}. */
+    public static final HttpServerOptions DEFAULT = new HttpServerOptions(InetAddress.getLoopbackAddress(), 8080,
+            HttpLimits.DEFAULT, HttpTimeouts.DEFAULT);
+
+    /**
+     * Checks the options.
+     *
+     * @throws NullPointerException     if a component is {@code null}
+     * @throws IllegalArgumentException if the port is outside 0–65 535
+     */
+    public HttpServerOptions {
+        Objects.requireNonNull(address, "address");
+        Objects.requireNonNull(limits, "limits");
+        Objects.requireNonNull(timeouts, "timeouts");
+        if (port < 0 || port > 65_535) {
+            throw new IllegalArgumentException("port must be between 0 and 65535, was " + port);
+        }
+    }
+
+    /**
+     * A copy with another address.
+     *
+     * @param address the local address to bind
+     * @return the copy
+     */
+    public HttpServerOptions withAddress(InetAddress address) {
+        return new HttpServerOptions(address, port, limits, timeouts);
+    }
+
+    /**
+     * A copy with another port.
+     *
+     * @param port the port; 0 lets the operating system choose
+     * @return the copy
+     */
+    public HttpServerOptions withPort(int port) {
+        return new HttpServerOptions(address, port, limits, timeouts);
+    }
+
+    /**
+     * A copy with other limits.
+     *
+     * @param limits the size and count limits
+     * @return the copy
+     */
+    public HttpServerOptions withLimits(HttpLimits limits) {
+        return new HttpServerOptions(address, port, limits, timeouts);
+    }
+
+    /**
+     * A copy with other timeouts.
+     *
+     * @param timeouts the timeouts
+     * @return the copy
+     */
+    public HttpServerOptions withTimeouts(HttpTimeouts timeouts) {
+        return new HttpServerOptions(address, port, limits, timeouts);
+    }
+}

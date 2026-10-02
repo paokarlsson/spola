@@ -1,0 +1,33 @@
+/**
+ * Spola's HTTP/1.1 server, a replacement for the embedded Tomcat that Spring Boot starts.
+ *
+ * <p>{@link spola.http.HttpServer#start} binds a {@link java.net.ServerSocket} and serves every
+ * connection on its own virtual thread with blocking I/O: keep-alive, pipelining, strict
+ * parsing after RFC 9112 and RFC 9110, chunked transfer coding in both directions,
+ * {@code Expect: 100-continue}, limits ({@link spola.http.HttpLimits}) and timeouts
+ * ({@link spola.http.HttpTimeouts}) as values, protection against request smuggling and
+ * response splitting, and a graceful stop ({@link spola.http.HttpServer#close}).
+ *
+ * <ul>
+ *   <li>{@link spola.http.Handler}: {@code Response handle(Request request)}, called
+ *       concurrently from many connections.</li>
+ *   <li>{@link spola.http.Request}: method, request-target as sent, raw path and query, version,
+ *       {@link spola.http.Headers} and the body as a bounded {@link java.io.InputStream}.</li>
+ *   <li>{@link spola.http.Response}: status, headers and a {@link spola.http.ResponseBody}
+ *       (empty, bytes or streaming).</li>
+ * </ul>
+ *
+ * <p>The module requires no other Spola module, uses no reflection and logs through
+ * {@link java.lang.System.Logger} (logger name {@code spola.http}). It does not use
+ * {@code com.sun.net.httpserver}.
+ *
+ * <p>{@code requires static java.net.http} is for the module's tests only (they talk to the
+ * server with {@link java.net.http.HttpClient}); it is optional at run time and no main code
+ * uses it. Tests are compiled as part of the module, so they can only read what the module
+ * reads.
+ */
+module spola.http {
+    requires static java.net.http;
+
+    exports spola.http;
+}

@@ -17,6 +17,7 @@ framework/
   modules/codegen/README.md arbetsflödet för genererade builders/with-metoder, bredvid Lombok
   modules/demo/README.md    integrationsprogrammet: körning, Spring Boot-jämförelse, friktionsrapport
   modules/json/README.md    exempel för spola.json och spola.json.codec bredvid Jackson, avvikelser från Jacksons standard
+  modules/http/README.md    exempel för spola.http bredvid Spring Boot/Tomcat, gränserna mot Spring Boots egenskaper
   out/                      byggresultat (ignoreras av git)
     classes/<modulnamn>/    kompilerade klasser per modul
     <modulnamn>.jar         en jar per modul (utan tester)
@@ -1115,3 +1116,203 @@ vid fel) och `Messages` (säker återgivning av text utifrån).
 - **`JsonMappingException` har en paketprivat konstruktor**, så att varje sådan rapport kommer
   från en kodek och följer reglerna för säkra meddelanden. `JsonProblem` är ett publikt
   record så att uppdrag 08 och 09 kan använda och jämföra problemen.
+
+## HTTP-server del 1: HTTP/1.1 på virtual threads (`spola.http`)
+
+Uppdrag 07a. Rad 07 i `PLAN.md` (HTTP/1.1 på virtual threads, TLS, keep-alive, gränser mot
+missbruk) är delad av planeraren i två uppdrag: **07a** (detta: HTTP/1.1 över TCP,
+keep-alive, pipelining, chunked, `Expect: 100-continue`, gränser, tidsgränser, start och mjukt
+stopp) och **07b** (TLS ovanpå samma kärna, certifikat som testerna skapar själva). Skälet är
+att protokollkärnan och TLS var för sig är tillräckligt stora för ett eget uppdrag och båda är
+säkerhetskritiska. Routing och request/response-modellen för applikationer är uppdrag 08.
+
+### API (paket `spola.http`)
+
+| Typ | Roll |
+|---|---|
+| `HttpServer` | `start(options, handler)`, `port()`, `address()`, `close()` (mjukt stopp) |
+| `HttpServerOptions` | record: adress, port, `HttpLimits`, `HttpTimeouts`; `DEFAULT`, `withX` |
+| `HttpLimits` | record: `maxRequestLineLength`, `maxHeaderSectionSize`, `maxHeaderCount`, `maxBodySize`, `maxConnections` |
+| `HttpTimeouts` | record: `headerTimeout`, `idleTimeout`, `readTimeout`, `writeTimeout`, `shutdownTimeout` |
+| `Handler` | funktionellt gränssnitt `Response handle(Request) throws Exception` |
+| `Request` | metod, target som det stod, rå sökväg och query, `host()`, version, `Headers`, kropp (`body()`, `bytes()`) |
+| `Headers`, `Headers.Field` | oföränderliga, ordnade, skiftlägesokänsliga namn, flera värden; validerade |
+| `Response`, `ResponseBody` (`Empty`, `Bytes`, `Streaming`), `BodyWriter` | svaret; kroppen som sealed hierarki |
+| `RequestBodyException` | kroppen kunde inte läsas; `status()` |
+| `HttpVersion` | `HTTP_1_0`, `HTTP_1_1` |
+
+Interna klasser: `Connection` (en anslutning, dess tillstånd och livscykel), `ConnectionInput`
+(buffrad läsning med tidsgränser), `RequestParser` (request-rad, huvuden, ramning),
+`BodyStream` (kroppen: Content-Length eller chunked), `ResponseWriter` (huvud, ramning,
+strömmande kropp), `GuardedOutput` (skrivvakten), `Syntax` (teckenklasser och escaping),
+`LoggedThrowable` (undantag som är säkra att logga), `ProtocolException`.
+
+Avvikelser från namnen i uppdraget: tidsgränserna är ett eget record (`HttpTimeouts`) i
+`HttpServerOptions`, eftersom de är fem värden av samma slag som ändras tillsammans och har
+en egen `DEFAULT`; formen (värden i optionerna) är densamma. `Request.host()` finns eftersom
+absolute-form går före `Host` (RFC 9112 §3.2.2) och någon måste avgöra det.
+
+### Beslut
+
+- **Egen implementation på `ServerSocket`/`Socket`, inte `jdk.httpserver`.**
+  `com.sun.net.httpserver` är tillåten enligt REGLER §1, men dess gränser ställs via globala
+  systemegenskaper (`sun.net.httpserver.*`), dess parsning är tolerant och går inte att göra
+  strikt (ensamt LF, obs-fold, dubbla `Content-Length`), och den saknar tidsgräns för
+  långsamma klienter per förfrågan. En egen parser på JDK:ns socket-primitiver ger full
+  kontroll, gränser som värden och testbarhet mot RFC:erna. Modulen nämner inte
+  `com.sun.net.httpserver` någonstans i koden (testat).
+- **Blockerande I/O på en virtuell tråd per anslutning, inte NIO-selektorer.** Koden läser som
+  protokollet: läs request-raden, läs huvudena, anropa handlern, skriv svaret, upprepa. En
+  virtuell tråd som blockerar i en socketläsning frigör sin bärartråd, så modellen skalar till
+  tiotusentals anslutningar utan återanrop eller tillståndsmaskiner. Acceptor-tråden är en
+  plattformstråd som inte är daemon, så att en startad server håller JVM:en igång (som Tomcat);
+  den blockerar bara i `accept` och i väntan på en ledig anslutningsplats, aldrig på en
+  enskild klient. Handlern körs på anslutningens tråd och får blockera.
+- **Inga `requires` på andra ramverksmoduler.** Loggning via `System.Logger` (namnet
+  `spola.http`), som `spola.util` formaterar när loggning är konfigurerad.
+  `module-info.java` har `requires static java.net.http`: modulens tester kompileras som en
+  del av modulen (Build.java) och kan bara läsa det modulen läser, och kriterium 3 kräver ett
+  test med `java.net.http.HttpClient`. `static` gör beroendet valfritt vid körning; ingen
+  huvudklass använder paketet (testat). Alternativet, en mekanism i `Build.java` och
+  guardrails för JDK-moduler som bara tester läser, hade ändrat två andra moduler.
+- **Strikt CRLF.** Varje rad (request-raden, huvuden, chunk-rader, trailers) måste sluta med
+  CRLF. Ett ensamt LF eller ett ensamt CR ger 400. RFC 9112 §2.2 tillåter men kräver inte att
+  ett ensamt LF accepteras; olika tolkningar av radslut mellan en proxy och en server är en
+  känd smugglingsväg. Upp till 8 tomma rader före request-raden hoppas över (§2.2: minst en).
+- **Request-target.** Origin-form, absolute-form (`http`/`https`, ingen userinfo, värden går
+  före `Host`) och asterisk-form (bara `OPTIONS`). `CONNECT` ger 501. Utöver uppdragets krav
+  (styrtecken, blanktecken och byte över 0x7E ger 400) kontrolleras sökväg och query mot
+  RFC 3986 (`pchar`, `/`, `?`, korrekt `%XX`); `#`, `{`, `|`, `\` och liknande ger 400, som i
+  Tomcat utan `relaxedQueryChars`. Det stänger av target som tolkas olika av olika parsrar.
+  Version: `HTTP/1.1` eller `HTTP/1.0`; annan korrekt formad version ger 505, felformad 400
+  (namnet är skiftlägeskänsligt, §2.3).
+- **Fält.** Namnet är `token`; blanktecken före kolon ger 400 (§5.1); obs-fold och
+  blanktecken före första fältet ger 400 (§5.2, §2.2). I värdet är bara HTAB, SP, VCHAR och
+  obs-text tillåtna (RFC 9110 §5.5); NUL, CR, LF och övriga styrtecken (ESC, DEL) ger 400.
+  Inledande och avslutande blanktecken tas bort. Värden avkodas som ISO-8859-1, en byte per
+  tecken, så att obs-text bevaras utan tolkning. `Host`: HTTP/1.1 kräver exakt ett, HTTP/1.0
+  högst ett, och värdet måste vara `uri-host [":" port]`.
+- **Kroppens längd och smuggling (RFC 9112 §6).** `Transfer-Encoding` i HTTP/1.0 ger 400;
+  `Transfer-Encoding` och `Content-Length` i samma förfrågan ger 400; `Transfer-Encoding` där
+  `chunked` inte är sista kodningen ger 400 (§6.3, MUST); `chunked` sist men med andra
+  kodningar ger 501 (§6.1: ingen annan kodning är implementerad). Uppdraget angav 501 för allt
+  som inte är exakt `chunked`; där §6.3 kräver 400 följer Spola RFC:n, och anslutningen stängs
+  i båda fallen. Flera `Content-Length` (som fält eller lista) ger 400 även när värdena är
+  lika; värdet är bara decimala siffror och ryms i `long` (63 bitar). Utan `Content-Length`
+  och `Transfer-Encoding` har en förfrågan ingen kropp (§6.3 punkt 7). Chunk-storleken är
+  hexadecimal utan tecken, prefix eller blanktecken, med spillkontroll; tillägg tillåts enligt
+  grammatiken i §7.1.1 (med BWS) men läses inte; raden är högst 4 096 byte
+  (`BodyStream.MAX_CHUNK_LINE`, Tomcats `maxExtensionSize` är 8 192; ingen känd klient skickar
+  tillägg i närheten av det). Trailers läses med samma gränser som huvudena (egen budget) och
+  kastas. Varje fel i ramningen stänger anslutningen, så inget av det som följer kan tolkas
+  som en ny förfrågan.
+- **Kroppen läses lat**, på handlerns tråd, genom `BodyStream`. Följden för felaktiga chunked
+  kroppar: handlern anropas (huvudet var korrekt), men läsningen kastar `RequestBodyException`
+  och servern svarar med dess status (400/408/413/431) om handlern låter undantaget gå
+  vidare. Fångar handlern det och svarar själv skickas svaret, men anslutningen stängs ändå.
+  Det är priset för att `100 Continue` ska kunna vänta på handlern; tabelltestet visar för
+  dessa fall att handlern aldrig får kroppen, och för alla fel i huvudet att handlern aldrig
+  anropas.
+- **`Expect: 100-continue`** (RFC 9110 §10.1.1). `100 Continue` skickas när kroppen läses
+  första gången och svaret inte har börjat. Svarar handlern utan att läsa kroppen skickas inget
+  `100`, och anslutningen stängs efter svaret, eftersom klienten kan skicka kroppen eller låta
+  bli. `Content-Length` över `maxBodySize` ger 413 innan handlern anropas, alltså inget `100`.
+  En förväntan som inte är `100-continue` ger 417; i HTTP/1.0 ignoreras `Expect`.
+- **Standardgränserna** (`HttpLimits.DEFAULT`), jämförda med Tomcat och nginx:
+  - `maxRequestLineLength` 8 192 byte: som nginx `large_client_header_buffers` (8 KB per rad)
+    och Tomcats 8 KB för hela huvudet. Längre URL:er är i praktiken fel eller attacker; 414.
+  - `maxHeaderSectionSize` 16 384 byte: dubbelt Tomcats 8 KB, eftersom stora cookies och
+    JWT-token i `Authorization` är vanliga och Spola räknar request-raden för sig; nginx
+    tillåter 4 × 8 KB. 431.
+  - `maxHeaderCount` 100: som Tomcats `maxHeaderCount`. 431.
+  - `maxBodySize` 10 MiB: som Spring Boots `spring.servlet.multipart.max-request-size`; en
+    gräns för hela kroppen, läst eller oläst (Tomcats `maxSwallowSize` är 2 MB men gäller bara
+    det som sväljs). nginx har 1 MB (`client_max_body_size`). 413.
+  - `maxConnections` 10 000: Tomcat har 8 192 med NIO. Med virtuella trådar kostar en ledig
+    anslutning ungefär 20 KB (8 KiB läsbuffert, 8 KiB skrivbuffert, tråd och socket), alltså
+    cirka 200 MB vid gränsen; gränsen skyddar framför allt mot att filbeskrivarna tar slut.
+- **Standardtidsgränserna** (`HttpTimeouts.DEFAULT`):
+  - `headerTimeout` 10 s, total tid från första byte till sista huvudet (och längsta väntan
+    på första byten i en ny anslutning). Total, inte per läsning: en klient som skickar en byte
+    var nionde sekund kan annars hålla en anslutning i evighet (slowloris). Implementeras
+    genom att varje läsning får tidsgränsen kvar till en absolut deadline. Tomcat har 20–60 s
+    per läsning; nginx `client_header_timeout` 60 s. 10 s räcker för alla riktiga klienter,
+    även över långsamma mobilnät, eftersom huvudet är litet. Svar 408.
+  - `idleTimeout` 60 s mellan förfrågningar: som Tomcats `keepAliveTimeout` (standard lika
+    med `connectionTimeout`, 60 s) och nära nginx `keepalive_timeout` 75 s. Stängs utan svar.
+  - `readTimeout` 30 s utan framsteg när kroppen läses: en uppladdning som kommer långsamt men
+    stadigt tillåts (tidsgränsen gäller per läsning); en som står still stängs. nginx
+    `client_body_timeout` 60 s; Tomcat använder `connectionTimeout`. Svar 408.
+  - `writeTimeout` 30 s utan framsteg när svaret skrivs. nginx `send_timeout` 60 s; Tomcat har
+    ingen motsvarighet för blockerande skrivningar.
+  - `shutdownTimeout` 30 s: som Spring Boots `spring.lifecycle.timeout-per-shutdown-phase`.
+- **Skrivvakten.** En blockerande `Socket`-skrivning har ingen tidsgräns. Svarets ström
+  (`GuardedOutput`) skriver i bitar om högst 16 KiB och noterar när den pågående biten
+  började; en virtuell vakttråd per server går igenom anslutningarna var fjärdedel av
+  `writeTimeout` (mellan 5 ms och 1 s) och stänger socketen för en skrivning som stått still
+  längre än gränsen. Skrivningen kastar då och handlerns tråd blir fri. Varje bit startar om
+  klockan, så tidsgränsen mäter tid utan framsteg, inte hela svaret: en långsam men stadig
+  läsare klipps inte av (testat). Alternativet, en tråd eller en timer per skrivning, kostar
+  mer och ger samma upplösning.
+- **`maxConnections`: vänta med accept.** Acceptor-tråden tar en plats i en `Semaphore` innan
+  den anropar `accept`; vid gränsen tar den inte emot fler, och nya anslutningar väntar i
+  operativsystemets kö (backlog 1 024, begränsas av `somaxconn`) tills en anslutning stängs.
+  Klienten ser en lyckad TCP-anslutning som inte får svar förrän det finns plats, eller en
+  vägrad anslutning om kön är full. Som Tomcats `maxConnections` + `acceptCount`. Att i stället
+  ta emot och stänga direkt hade gett klienten ett fel som inte går att skilja från ett avbrott
+  och kostat en accept per försök.
+- **Svaret.** Servern sätter `Date` (IMF-fixdate, RFC 9110 §5.6.7, alltid två siffror för
+  dagen), `Content-Length` (tom kropp och byte-array) eller `Transfer-Encoding: chunked`
+  (strömmande till HTTP/1.1), och `Connection: close` när den stänger. **Reserverade huvuden:**
+  `Content-Length`, `Transfer-Encoding`, `Connection` och `Date` i en `Response` ger
+  `IllegalArgumentException` (skiftlägesokänsligt), eftersom ramningen och anslutningen måste
+  stämma med vad servern faktiskt gör; ett felaktigt `Content-Length` från en handler vore en
+  smugglingsväg åt andra hållet. Namn är `token` och värden får bara innehålla HTAB, SP, VCHAR
+  och obs-text utan inledande eller avslutande blanktecken; CR, LF och NUL kan därför aldrig nå
+  tråden (response splitting). Status 100–199 avvisas (`100 Continue` är serverns sak, ingen
+  upgrade), liksom status utanför 200–599. 204, 205 och 304 kräver tom kropp; 204 och 304
+  skickas utan `Content-Length`, 205 med `Content-Length: 0` (RFC 9110 §15.3.6). Inget
+  `Server`-huvud. `HEAD` går till handlern; servern skickar huvudena (med samma
+  `Content-Length` som för `GET` när kroppen är en byte-array) men ingen kropp, och anropar inte
+  en `BodyWriter`. Svaret skrivs alltid som `HTTP/1.1` (RFC 9110 §6.2), även till en
+  HTTP/1.0-klient.
+- **Strömmande svar.** `StreamingBody` buffrar 8 KiB; varje `flush()` och varje full buffert
+  blir en chunk (aldrig en tom chunk, som skulle avsluta kroppen). Huvudet skrivs med de första
+  byten, så en `BodyWriter` som kastar innan den skrivit något ger ett rent 500. Kastar den
+  efter det stängs socketen utan sista chunken: klienten ser ett avbrutet svar, aldrig ett som
+  ser komplett ut. Till HTTP/1.0 skickas kroppen rå och avgränsas av att anslutningen stängs.
+- **Fel.** Ett protokollfel ger ett kort svar i klartext (`Bad Request\n` och liknande) med
+  `Connection: close`; anslutningen stängs. Ett undantag eller `Error` från handlern ger 500
+  utan meddelande eller stackspår, loggas på `ERROR` och stänger anslutningen (kroppens
+  tillstånd är okänt). Loggningen använder `LoggedThrowable`: en kopia av undantagskedjan där
+  klassnamn och meddelanden är escapade (`Syntax.escape`: allt utanför utskrivbar ASCII blir
+  `\xHH` eller `\uHHHH`, `\` blir `\\`, högst 200 tecken) och stackspåret är kvar. Protokollfel
+  loggas på `DEBUG` med en fast beskrivning, aldrig indata. Ingen loggrad och ingen felkropp
+  innehåller alltså styrtecken från en förfrågan (testat med ESC, NUL, CR/LF och C1-tecken).
+- **Keep-alive och pipelining.** HTTP/1.1 håller anslutningen öppen om inte klienten skickar
+  `Connection: close` eller något gick fel; HTTP/1.0 stängs alltid (även med
+  `Connection: keep-alive`). Pipelinade förfrågningar besvaras i ordning, eftersom en tråd
+  läser och svarar en i taget från samma buffert. Läser handlern inte hela kroppen läser
+  servern resten (inom `maxBodySize` och `readTimeout`) innan nästa förfrågan; går det inte
+  stängs anslutningen.
+- **Stängning med efterläsning.** Efter ett svar med `Connection: close` stänger servern sin
+  skrivriktning (`shutdownOutput`) och läser och kastar det klienten fortfarande skickar, högst
+  2 s och 1 MiB, innan socketen stängs. Att stänga en socket med oläst indata får TCP att
+  skicka RST, vilket kan förstöra svaret innan klienten läst det (RFC 9112 §9.6); nginx gör
+  samma sak (`lingering_close`).
+- **Mjukt stopp.** Varje anslutning har ett tillstånd (`IDLE` i väntan på en förfrågan,
+  `ACTIVE` under en förfrågan, `LINGERING` efter sista svaret, `CLOSED`) i en
+  `AtomicReference`. `close()` sätter `closing`, stänger `ServerSocket` och väntar in
+  acceptor-tråden (därefter tillkommer inga anslutningar), stänger alla anslutningar i `IDLE`
+  och `LINGERING` (ett compare-and-set, så att en anslutning som just fått en förfrågan inte
+  stängs mitt i), och väntar på resten i högst `shutdownTimeout`. Anslutningar med en pågående
+  förfrågan ser `closing` och svarar med `Connection: close`. Det som återstår avbryts: socketen
+  stängs och tråden avbryts (`interrupt`). `close()` returnerar när alla anslutningstrådar är
+  klara. En anslutning som går från `ACTIVE` till `IDLE` läser `closing` efter bytet, och
+  `close()` sätter `closing` före genomgången, så antingen ser anslutningen flaggan eller
+  `close()` ser `IDLE`. En förfrågan som kommer i samma ögonblick som en ledig anslutning
+  stängs kan gå förlorad; klienten ser en stängd keep-alive-anslutning, vilket RFC 9112 §9.3.1
+  låter klienter hantera genom att försöka igen.
+- **Delat tillstånd.** Servern delar bara räkningen av anslutningar (`Semaphore`), mängden
+  anslutningar för mjukt stopp och vakten (`ConcurrentHashMap.newKeySet()`), och flaggan
+  `closing`. Inget cachat datum, ingen pool. Allt annat hör till en anslutnings tråd.

@@ -247,8 +247,39 @@
   `map`) kortas över 40 tecken. Gränserna för `JSON`-kodekens djup och för `BIG_INTEGER`/
   `BIG_DECIMAL` mot `maxNumberLength` är dokumenterade. 417 tester i `spola.json`.
 
+### Uppdrag 07a: HTTP-server del 1, HTTP/1.1 på virtual threads (`spola.http`)
+- Rad 07 i `PLAN.md` är delad i 07a (detta: HTTP/1.1 över TCP, keep-alive, pipelining,
+  chunked, `Expect: 100-continue`, gränser, tidsgränser, mjukt stopp) och 07b (TLS); se
+  ARCHITECTURE.md ("HTTP-server del 1").
+- Modulen `spola.http` (`modules/http/`, inga `requires` på ramverksmoduler, `requires static
+  java.net.http` bara för testerna, ingen reflektion, inte `jdk.httpserver`): `HttpServer`
+  på `ServerSocket` med en virtuell tråd per anslutning, acceptor som plattformstråd (inte
+  daemon), `Handler`, `Request` (rå target, sökväg, query, `host()`, version, `Headers`,
+  lat kropp), `Response` med sealed `ResponseBody` (`Empty`, `Bytes`, `Streaming`) och
+  `BodyWriter`, `Headers` (oföränderliga, ordnade, skiftlägesokänsliga, validerade),
+  `HttpLimits`, `HttpTimeouts`, `HttpServerOptions`, `RequestBodyException`, `HttpVersion`.
+- Strikt parsning: CRLF överallt, token, obs-fold, styrtecken, `Host`, version (505),
+  target-former och RFC 3986-tecken, `Content-Length`/`Transfer-Encoding` mot smuggling,
+  chunked med tillägg (rad högst 4 096 byte) och trailers. 414/431/413 vid gränserna.
+- Tidsgränser: `headerTimeout` total (deadline per läsning), `idleTimeout`, `readTimeout`
+  utan framsteg, `writeTimeout` via en vakttråd som stänger socketen, `shutdownTimeout`.
+- `maxConnections`: acceptor väntar på en plats (Semaphore) innan `accept`; nya anslutningar
+  väntar i backlog (1 024).
+- Fel: 500 utan detaljer, `Error` dödar inte servern, avbruten anslutning när ett strömmande
+  svar redan börjat; loggning via `System.Logger` (`spola.http`) med escapade undantag.
+- Mjukt stopp: lediga anslutningar stängs, pågående får `Connection: close`, resten avbryts
+  efter `shutdownTimeout`; `close()` väntar på alla anslutningstrådar.
+- `README.md` i modulen med Spring Boot/Tomcat-exempel, gränstabell mot Spring Boots
+  egenskaper och tabell över vad som avvisas.
+- 138 tester i `spola.http` (cirka 5 s): `HttpClient` (GET, POST, strömmad POST, HEAD),
+  keep-alive och pipelining, 71 felaktiga huvuden och 14 felaktiga chunked kroppar med status
+  och RFC-avsnitt, smuggelförsök, chunked åt båda hållen (byte för byte), 100-continue,
+  tidsgränserna med korta värden, `maxConnections`, fel i handler och `BodyWriter`, svarets
+  validering och `Date`, mjukt stopp, 1 000 samtidiga klienter, loggar och felkroppar utan
+  styrtecken, och källkodsreglerna.
+
 ## Återstår (enligt `uppdrag/PLAN.md`)
-- 07–20 enligt planen.
+- 07b (TLS ovanpå `spola.http`) och 08–20 enligt planen.
 - **Kvar från friktionsrapporten i 05c** (`modules/demo/README.md`, avsnitt "Friktion"):
   - **DI:** den typade formen av `to(...)` går inte att blanda `Class` och `Key` i; ett enda
     kvalificerat beroende gör att alla måste skrivas `Key.of(...)` (punkt 3).
@@ -265,6 +296,18 @@
     `LoggingSettings` efter bindningen, inte i `ConfigException` (punkt 7).
 
 ## Kända problem och begränsningar
+- **HTTP (spola.http):** felaktiga chunked kroppar upptäcks först när handlern läser kroppen
+  (kroppen läses lat för `100 Continue`), så handlern anropas för dem; den får aldrig kroppen
+  och servern svarar med kroppens status. `Transfer-Encoding` där `chunked` inte är sist ger
+  400 (RFC 9112 §6.3) i stället för uppdragets 501. En ny anslutning får vänta
+  `headerTimeout` på första byten och sedan `headerTimeout` till för huvudet. En handler som
+  varken gör I/O eller reagerar på avbrott håller `close()` kvar efter `shutdownTimeout`
+  (`close()` väntar på alla trådar). En förfrågan som kommer just när `close()` stänger en
+  ledig anslutning går förlorad (klienten ser en stängd anslutning). Efterläsningen efter
+  `Connection: close` håller anslutningen (och en plats i `maxConnections`) upp till 2 s om
+  klienten inte stänger. Chunk-tilläggens radgräns (4 096 byte) och backlog (1 024) är fasta.
+  Ingen TLS (07b), ingen routing eller procentavkodning (08), ingen HTTP/2, ingen komprimering.
+  Kroppen kan bara läsas på handlerns tråd medan handlern eller dess `BodyWriter` kör.
 - **JSON (spola.json):** indenterad utskrift växer med kvadraten på djupet (indraget), så
   `writePretty` på ett mycket djupt träd (tusentals nivåer) ger mycket stor utdata; kompakt
   utskrift är linjär. Ett parsat träd tar upp till ungefär 25 gånger indatans storlek i minne

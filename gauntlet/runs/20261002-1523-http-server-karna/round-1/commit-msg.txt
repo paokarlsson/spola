@@ -1,0 +1,13 @@
+feat(http): add spola.http HTTP/1.1 server on virtual threads
+
+New standalone module with a strict RFC 9112 request parser, keep-alive,
+pipelining, chunked in both directions, lazy 100-continue, request
+smuggling and response splitting defences, limits and timeouts as values,
+and graceful shutdown. Two majors remain open: malformed chunked bodies
+can still yield the handler's response, and concurrent close() deadlocks.
+
+Gauntlet-Run: 20261002-1523-http-server-karna
+Gauntlet-Round: 1/5
+Gauntlet-Verdict: FAIL (0 blocker, 2 major, 6 minor upheld)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
