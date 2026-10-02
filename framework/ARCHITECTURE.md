@@ -16,7 +16,7 @@ framework/
   modules/util/README.md    exempel för spola.util bredvid motsvarande Lombok- och Spring Boot-kod
   modules/codegen/README.md arbetsflödet för genererade builders/with-metoder, bredvid Lombok
   modules/demo/README.md    integrationsprogrammet: körning, Spring Boot-jämförelse, friktionsrapport
-  modules/json/README.md    exempel för spola.json bredvid Jackson, avvikelser från Jacksons standard
+  modules/json/README.md    exempel för spola.json och spola.json.codec bredvid Jackson, avvikelser från Jacksons standard
   out/                      byggresultat (ignoreras av git)
     classes/<modulnamn>/    kompilerade klasser per modul
     <modulnamn>.jar         en jar per modul (utan tester)
@@ -975,3 +975,138 @@ Interna klasser: `Parser`, `Input` (text och strikt UTF-8), `TextWriter`, `Equal
   utan kopiering. `optional(namn)` är tom när medlemmen saknas eller är `null`, eftersom de
   två betyder samma sak för en valfri medlem i de flesta API:er; `contains` och `members()`
   skiljer dem åt. Namn som inte är identifierare skrivs `["a.b"]` i sökvägen, escapade.
+
+## JSON del 2: explicit mappning mellan Java och JSON (`spola.json.codec`)
+
+Uppdrag 06b. Kodekar som värden, byggda av method references och lambdas, mappar records,
+enums, samlingar, `Optional`, `java.time`, egna värdetyper och sealed hierarkier till och
+från trädmodellen. Avkodningen samlar alla problem med JSON-sökväg.
+
+### API (paket `spola.json.codec`)
+
+| Typ | Roll |
+|---|---|
+| `JsonCodec<T>` | abstrakt klass: `encode`, `decode`, `read(String)`, `read(byte[])`, `write`, `writePretty`, `map(to, from)`; statiska `object` (0–16 fält och den allmänna formen), `field`, `optionalField`, `sealed` |
+| `JsonCodecs` | inbyggda kodekar (`STRING` … `DURATION`, `JSON`) och kombinatorerna `list`, `set`, `map`, `optional`, `nullable`, `lazy`, `enumOf` |
+| `ObjectCodec<R>` | kodeken för objekt med namngivna medlemmar; `ignoringUnknown()` |
+| `Field<R, T>` | ett fält: namn, kodek, getter; `orElse(default)`; också nyckel i den allmänna formen |
+| `FieldValues<R>` | de avkodade värdena i den allmänna formen, `get(field)` |
+| `Constructors.Of1` … `Of16` | konstruktorformerna för `object` med 1–16 fält |
+| `Variant<T, S>`, `Variant.Tagged<T>` | en subtyp i en sealed hierarki (tagg + objektkodek) och väljarens resultat |
+| `JsonMappingException`, `JsonProblem` | felrapporten: `problems()` med sökväg och meddelande |
+
+Interna klasser: en per kodekslag (`ScalarCodec`, `MappedCodec`, `ListCodec`, `SetCodec`,
+`MapCodec`, `OptionalCodec`, `NullableCodec`, `LazyCodec`, `EnumCodec`, `SealedCodec`),
+`Decoding`/`Encoding` (tillståndet för ett anrop), `Path` (sökvägen som kedja, renderas bara
+vid fel) och `Messages` (säker återgivning av text utifrån).
+
+### Beslut
+
+- **Plats och beroende.** Ett exporterat paket i `spola.json`, inte en egen modul: mappningen
+  hör ihop med trädet och modulen har fortfarande inga `requires`. Beroendet går bara åt ena
+  hållet: ingen klass i paketet `spola.json` nämner `spola.json.codec` (ett test läser
+  källorna). `Paths` och `Text` i `spola.json` är paketprivata, så paketet har egna motsvarigheter
+  (`Path`, `Messages`) med samma format och samma escaping, i stället för att trädets publika
+  API vidgas. Modulens testingång (`spola.json.JsonTests`) tar med kodektesterna via
+  fullständigt namn; det är testkod, inte huvudkod.
+- **`JsonCodec` är en abstrakt klass med paketprivat konstruktor, inte ett interface.** Den
+  interna avkodningen tar en sökväg och ett problemtillstånd (`decodeAt(json, path,
+  decoding)`), som inte ska vara publikt API. En egen kodek byggs av de befintliga med
+  `map(to, from)`; den mängden räcker för egna värdetyper och håller felinsamling, sökvägar
+  och djupgräns i ramverket. Statiska fabriker för objekt och hierarkier ligger på
+  `JsonCodec` (som uppdraget skisserar: `JsonCodec.object`, `JsonCodec.sealed`), skalärer och
+  kombinatorer på `JsonCodecs`, så att `import static spola.json.codec.JsonCodecs.*` ger allt
+  man kombinerar med och `JsonCodecs.map(c)` (en `Map`) inte krockar med instansmetoden
+  `c.map(to, from)`.
+- **Ingen reflektion behövs.** Allt en kodek vet kommer från argumenten: konstruktorn är en
+  method reference (`Person::new`) vars parametertyper kompilatorn kontrollerar mot fältens
+  typer (`Constructors.OfN`), getters är method references, enums ges som `E.values()`, och
+  sealed hierarkier väljs med en `switch` i applikationens kod. Den allmänna formen använder
+  fälten som typade nycklar: `FieldValues.get(Field<R, T>)` gör en okontrollerad
+  språk-cast till `T` av värdet på fältets index, vilket är säkert eftersom värdet avkodades
+  av just det fältets kodek. Ingen `Class` används: inte `isInstance`, `cast`,
+  `getRecordComponents`, `getEnumConstants` eller `getPermittedSubclasses` (ett test läser
+  källorna).
+- **Felinsamling.** Ett `Decoding`-objekt per `decode`-anrop. En kodek som hittar ett fel
+  rapporterar det och returnerar `null`; anroparen ser att något gick fel på att antalet
+  rapporterade problem ökade, aldrig på returvärdet (`null` är ett giltigt värde för
+  `nullable`). Därför kan ett objekt avkoda alla sina medlemmar, rapportera alla fel och låta
+  bli att anropa konstruktorn om något fält misslyckades. Ordningen är dokumentordning:
+  medlemmarna gås igenom i den ordning de står i objektet; saknade medlemmar rapporteras efter
+  objektets övriga medlemmar (de har ingen plats i dokumentet), i fältordning. Undantag
+  används inte för felen vid avkodning, så 10 000 felaktiga element kostar inga stackspår.
+- **Gränsen på 100 problem.** De första 100 sparas (sökvägen renderas först då), resten
+  räknas, och ett sista problem på `$` säger hur många som utelämnades. Avkodningen fortsätter
+  ändå genom hela dokumentet för att kunna räkna; dokumentets storlek är redan begränsad av
+  parserns gränser. `getMessage()` är en rad (radbrytning vore ett rått styrtecken) med
+  antalet och så många problem som får plats inom 2 000 tecken, sedan `... (N more)`.
+- **Säkra meddelanden.** Allt i sökvägar och meddelanden är utskrivbar ASCII; tecken utanför
+  skrivs `\uXXXX` (som i `JsonParseException`). Ett värde ur dokumentet citeras med högst 40
+  tecken plus längden. Ett medlemsnamn i en sökväg kortas på samma sätt
+  (`["nnnn..."... (10000 characters)]`): annars kunde 100 problem under en lång nyckel bli
+  hundratals megabyte. Ett undantagsmeddelande från applikationskod (konstruktor, `map`)
+  återges med högst 200 tecken, eftersom det är text som applikationen skrivit för att
+  förklara felet (`quantity must be between 1 and 999`) och 40 tecken skulle klippa vanliga
+  meddelanden; det escapas på samma sätt. Undantagsklassens namn tas inte med (det är en
+  implementationsdetalj som inte hör hemma i ett svar till en klient). Meddelanden från `DateTimeParseException`
+  används inte alls, eftersom de citerar indata oescapat.
+- **Okända medlemmar avvisas som standard**, ett problem per medlem, med de kända namnen i
+  meddelandet. Spring Boot sätter `FAIL_ON_UNKNOWN_PROPERTIES=false`; här vore det en väg för
+  mass assignment (en klient sätter `admin`) och för stavfel som passerar tyst. `ignoringUnknown()`
+  ger en ny kodek som hoppar över dem, uttryckligen och per kodek.
+- **Ingen tvångsomvandling.** Varje skalärkodek tar exakt en JSON-typ. Heltal kräver ett
+  exakt heltalsvärde inom typens intervall (`JsonNumber.intValueExact` m.fl.), så `1.0` och
+  `1e2` är `int` men inte `1.5`. `DOUBLE` avvisar tal som skulle bli oändliga och tal skilda
+  från noll som skulle bli 0 (`1e-400`): båda ligger utanför typens intervall. Övrig
+  avrundning till närmaste `double` är typens natur och accepteras. `BIG_INTEGER` har
+  `JsonNumber`s gräns (10 000 siffror) och `BIG_DECIMAL` kräver skala inom ±10 000, så att ett
+  billigt `1e1000000000` inte blir dyrt när applikationen räknar med det (`toBigInteger`,
+  `toPlainString`). Gränserna gäller i båda riktningarna så att allt som kodas också går att
+  avkoda. `UUID` kräver formen 8-4-4-4-12 (`UUID.fromString` tar också `1-2-3-4-5`).
+- **`java.time` som ISO-8601-strängar** med typernas egna `parse` och `toString` (som Spring
+  Boot med `WRITE_DATES_AS_TIMESTAMPS=false`). `LocalDate.parse` är strikt
+  (`ResolverStyle.STRICT`), så `2026-02-30` avvisas. `Instant` kräver en zon eller ett
+  offset; `2026-10-02T11:18:00+02:00` accepteras och blir `09:18Z`.
+- **`optionalField` utelämnas när tom** (som `@JsonInclude(NON_ABSENT)`): en saknad medlem
+  och `null` betyder båda "inget värde" för ett valfritt fält, och den som läser behöver inte
+  skilja dem åt. `optional(c)` är kombinatorn för andra platser (listelement) och skriver
+  `null`. `orElse(v)` gäller bara en saknad medlem; `null` avkodas av kodeken och är ett fel
+  om den inte är `nullable`. Värdet skrivs alltid vid kodning (att utelämna värden som är lika
+  med standardvärdet vore tyst och beroende av `equals`).
+- **Kodning stannar vid första felet.** Ett värde som inte går att skriva (`null` utan
+  `nullable`, `NaN`, en sträng med ensamt surrogat, ett undantag från en getter eller från
+  `from`) är ett programmeringsfel, inte indata att rapportera tillbaka, så det kastas direkt
+  som `JsonMappingException` med ett problem och sökvägen. `NullPointerException` djupt inne
+  i ramverket förekommer inte; varje kodek kontrollerar `null` först.
+- **Sealed hierarkier via `switch`, inte `Class`-tokens.** `JsonCodec.sealed(namn, väljare,
+  varianter...)`: väljaren är en `switch` över den sealed typen som returnerar
+  `VARIANT.tag(värde)`. `Variant<T, S extends T>.tag(S)` gör att en `Circle` bara kan märkas
+  av en variant för `Circle`, och utan `default` kontrollerar kompilatorn att alla tillåtna
+  subtyper har en gren: en ny subtyp utan gren är ett kompileringsfel. `Tagged` fångar värdet
+  i en lambda som kodar det med variantens kodek, så ingen cast behövs. Varianternas kodekar
+  måste vara `ObjectCodec`, eftersom diskriminatorn läggs in som första medlem och
+  kollisioner med fältnamn ska kunna upptäckas när kodeken skapas. Vid läsning slås
+  diskriminatorn upp var som helst i objektet och hoppas över av variantens kodek (den är
+  inte en okänd medlem). En variant som väljaren returnerar men som inte finns i listan (jämförs
+  på identitet) är ett programmeringsfel och ger `JsonMappingException` vid kodning med
+  sökvägen och de kända taggarna, liksom en väljare som returnerar `null` eller kastar.
+- **Djup.** Objekt och arrayer räknas vid både avkodning och kodning, och över
+  `JsonLimits.DEFAULT.maxDepth()` (512) blir det ett problem i stället för ett steg till ned.
+  Samma räkning som parserns: allt som parsern accepterar med standardgränserna kan avkodas,
+  och rekursionen i kodekarna är begränsad till 512 behållare. Det räcker med god marginal för
+  standardstacken (1 MiB); testerna kör 100 000 nivåer på en plattformstråd, en virtuell
+  tråd och en tråd med 512 KiB stack. `lazy` räknar dessutom hur många lata kodekar som gås
+  igenom utan ett objekt eller en array emellan; över 64 är det en kodek som löser upp till
+  sig själv (`lazy(() -> SAMMA)`), och det ger `IllegalStateException` i stället för
+  `StackOverflowError`.
+- **`lazy` hämtar kodeken en gång**, under ett `ReentrantLock` (som inte låser fast en virtuell
+  tråd vid en bärartråd) och läser den sedan ur ett `volatile`-fält.
+- **Mängder:** `set(c)` behåller arrayens ordning och avvisar dubbletter (enligt elementens
+  `equals`) i stället för att tyst ta bort dem. **Mappar:** `map(c)` är bara för
+  `Map<String, V>` och behåller medlemsordningen; andra nyckeltyper är utanför uppdraget.
+- **Samlingar är oföränderliga.** `list`, `set` och `map` returnerar oföränderliga vyer av
+  samlingar som inte delas med något annat; de får innehålla `null` när elementkodeken är
+  `nullable` (vilket `List.copyOf` inte tillåter).
+- **`JsonMappingException` har en paketprivat konstruktor**, så att varje sådan rapport kommer
+  från en kodek och följer reglerna för säkra meddelanden. `JsonProblem` är ett publikt
+  record så att uppdrag 08 och 09 kan använda och jämföra problemen.

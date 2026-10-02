@@ -213,8 +213,38 @@
   avkodaren mot JDK:ns avkodare (alla tvåbytessekvenser, tre- och fyrbytesstarter, alla
   kodpunkter). Bygget tar ungefär 30–45 s.
 
+### Uppdrag 06b: JSON del 2, explicit mappning mellan Java och JSON (`spola.json.codec`)
+- Nytt exporterat paket `spola.json.codec` i `spola.json` (fortfarande inga `requires`, ingen
+  reflektion; trädmodellen beror inte på paketet). Se ARCHITECTURE.md ("JSON del 2").
+- `JsonCodec<T>` med `encode`, `decode`, `read(String)`, `read(byte[])`, `write`,
+  `writePretty` och `map(to, from)` för egna värdetyper (undantag från `to` blir problem).
+- Inbyggda kodekar på `JsonCodecs`: `STRING`, `BOOLEAN`, `INT`, `LONG`, `DOUBLE`,
+  `BIG_DECIMAL`, `BIG_INTEGER`, `UUID`, `INSTANT`, `LOCAL_DATE`, `LOCAL_TIME`,
+  `LOCAL_DATE_TIME`, `OFFSET_DATE_TIME`, `DURATION`, `JSON`; ingen tvångsomvandling, tal
+  exakt inom typens intervall, skydd mot exponent-DoS, `java.time` som ISO-8601.
+- Kombinatorer: `list`, `set` (dubbletter är fel), `map`, `optional`, `nullable`, `lazy`,
+  `enumOf` (med `name()` eller eget namn).
+- Objekt: `JsonCodec.object(Konstruktor::new, field(...), ...)` med 0–16 fält och en allmän
+  form med fälten som nycklar; `optionalField` (utelämnas när tom), `orElse`, okända
+  medlemmar avvisas (`ignoringUnknown()`), dubbla namn är fel när kodeken skapas.
+- Sealed hierarkier: `JsonCodec.sealed("type", x -> switch (x) {...}, VARIANTER...)` med
+  `Variant`; diskriminatorn först, saknad/okänd/fel typ ger problem som listar taggarna.
+- Felrapport: `JsonMappingException` med alla `JsonProblem` (sökväg + meddelande) i
+  dokumentordning, högst 100 plus en sammanfattning, `getMessage()` på en rad om högst 2 000
+  tecken, allt utskrivbar ASCII med värden avkortade.
+- Djup: över 512 nivåer blir det ett problem i båda riktningarna, aldrig
+  `StackOverflowError`.
+- `README.md` i modulen utökad med mappningsavsnittet, Jackson-jämförelsen och
+  avvikelsetabellen.
+- 128 nya tester (415 i `spola.json`): rundresa för en graf med alla kodekar och kombinatorer
+  och rekursion via `lazy`, 41 avvisade och 18 accepterade skalärfall, felinsamling på flera
+  nivåer, gränsen på 100, säkra meddelanden, objektvarianterna, 16 och 22 fält, sealed
+  hierarkier, `map` och `null`, 100 000 nivåer på plattformstråd, virtuell tråd och 512 KiB
+  stack, 1 000 virtuella trådar, och källkodsreglerna (ingen reflektion, inget beroende från
+  trädet).
+
 ## Återstår (enligt `uppdrag/PLAN.md`)
-- 06b (mappning mellan records och JSON) och 07–20 enligt planen.
+- 07–20 enligt planen.
 - **Kvar från friktionsrapporten i 05c** (`modules/demo/README.md`, avsnitt "Friktion"):
   - **DI:** den typade formen av `to(...)` går inte att blanda `Class` och `Key` i; ett enda
     kvalificerat beroende gör att alla måste skrivas `Key.of(...)` (punkt 3).
@@ -238,6 +268,16 @@
   `bigIntegerValueExact` vägrar heltal med fler än 10 000 siffror. Kolumner räknas i
   kodpunkter, inte i grafem eller visningsbredd. C1-styrtecken (U+0080–U+009F) escapas inte av
   skrivaren (bara de tecken uppdraget anger).
+- **JSON-mappning (spola.json.codec):** kodekar kan inte implementeras utanför paketet; egna
+  typer byggs med `map(to, from)` över en befintlig kodek. Djupgränsen är fast (512, som
+  `JsonLimits.DEFAULT`) och kan inte ställas per anrop. Rekursionen är begränsad till 512
+  behållare men varje nivå tar några stackramar per kodek i kedjan; en tråd med mycket liten
+  stack (under ungefär 512 KiB för en nod med en lista) kan fortfarande få `StackOverflowError`
+  vid 512 nivåer. Avkodningen går igenom hela dokumentet även efter 100 problem (för att
+  räkna). Ett `Error` (inte `RuntimeException`) från applikationskod (konstruktor, `map`,
+  getter) släpps igenom. Ingen generering av kodekar från records (kan bli ett senare
+  uppdrag med `spola.codegen`), inga namnstrategier, inga mappar med andra nycklar än
+  `String`.
 - **Codegen (spola.codegen):** generatorn läser bara syntaxträdet, så en medlemstyp som ärvs
   från en supertyp till recordet (eller en typ runt det) kvalificeras inte; den genererade
   filen kompilerar då inte förrän typen skrivs kvalificerad i recordet. Genererade filer känns

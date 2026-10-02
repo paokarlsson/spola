@@ -25,6 +25,8 @@ public final class JsonTests {
                 WriterTests.tests(),
                 AccessTests.tests(),
                 ConcurrencyTests.tests(),
-                Utf8Tests.tests());
+                Utf8Tests.tests(),
+                // the mapping package; the tree model's main code does not depend on it
+                spola.json.codec.CodecTests.tests());
     }
 }

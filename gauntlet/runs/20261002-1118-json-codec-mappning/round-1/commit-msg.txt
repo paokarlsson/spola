@@ -1,0 +1,11 @@
+feat(json): add spola.json.codec for explicit record/JSON mapping
+
+Add codecs as values built from method references: built-in scalar and
+java.time codecs, list/set/map/optional/nullable/lazy combinators, record
+codecs with 1-16 fields plus a general form, and sealed hierarchies chosen
+by an exhaustive switch. Decoding collects every problem with its JSON
+path (capped at 100); no reflection is used.
+
+Gauntlet-Run: 20261002-1118-json-codec-mappning
+Gauntlet-Round: 1/5
+Gauntlet-Verdict: FAIL (0 blocker, 1 major, 6 minor upheld)

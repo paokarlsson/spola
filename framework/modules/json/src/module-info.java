@@ -16,6 +16,11 @@
  *   <li>{@link spola.json.JsonParseException}: every rejected input, with line, column and
  *       offset; {@link spola.json.JsonAccessException}: a reader on the tree found a missing
  *       member or another type, with the path.</li>
+ *   <li>{@link spola.json.codec.JsonCodec} (package {@code spola.json.codec}): explicit
+ *       mapping between Java values (records, enums, collections, {@code java.time}, value
+ *       types, sealed hierarchies) and the tree, with codecs built from method references and
+ *       lambdas, and {@link spola.json.codec.JsonMappingException} listing every problem of a
+ *       document with its path. The tree model does not depend on this package.</li>
  * </ul>
  *
  * <p>The module has no dependencies besides {@code java.base}, uses no reflection and keeps no
@@ -23,4 +28,5 @@
  */
 module spola.json {
     exports spola.json;
+    exports spola.json.codec;
 }
