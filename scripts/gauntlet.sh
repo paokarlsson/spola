@@ -10,6 +10,7 @@
 #   scripts/gauntlet.sh status          state of the latest iteration + the log
 #
 # Hard stop: Ctrl+C. Starting again resumes an unfinished iteration automatically.
+# A usage limit ("hit your … limit · resets …") is not a failure: the loop waits for the reset and resumes.
 # Inside the devcontainer (firewalled) permission prompts are skipped.
 set -uo pipefail
 cd "$(dirname "$0")/.."
@@ -22,6 +23,29 @@ latest_run() {
   local runs=() d
   for d in gauntlet/runs/*/; do [[ -f "$d/state.md" ]] && runs+=("${d%/}"); done
   (( ${#runs[@]} )) && printf '%s\n' "${runs[@]}" | sort | tail -1
+}
+# Sleep until the reset time in a message like "hit your session limit · resets 5:50pm (Europe/Stockholm)".
+# Falls back to 30 minutes when the time can't be parsed; the next attempt then finds out again.
+reset_epoch() {
+  local when tz now target
+  when=$(sed -E 's/.*resets[[:space:]]+//; s/[[:space:]]*\(.*//; s/,//g' <<<"$1")
+  tz=$(sed -nE 's/.*\(([^)]+)\).*/\1/p' <<<"$1")
+  now=$(date +%s)
+  if target=$(TZ="${tz:-${TZ:-}}" date -d "$when" +%s 2>/dev/null); then
+    (( target <= now )) && target=$((target + 86400))   # "1am" said at 23:00 means tomorrow
+    echo $((target + 120))                               # small margin past the reset
+  else
+    echo $((now + 1800))
+  fi
+}
+wait_for_reset() {
+  local target
+  target=$(reset_epoch "$1")
+  echo "Usage limit reached ($1). Waiting until $(date -d "@$target" '+%F %T'), then resuming..."
+  while (( $(date +%s) < target )); do
+    [[ -f gauntlet/STOP ]] && return   # the loop top handles the stop
+    sleep 60
+  done
 }
 run_status() { [[ -n "${1:-}" ]] && sed -n 's/^status:[[:space:]]*//p' "$1/state.md" | head -1; }
 
@@ -86,14 +110,22 @@ while :; do
   claude -p "$prompt" "${perm[@]}" 2>&1 | tee "$log"
   rc=${PIPESTATUS[0]}
 
+  # A usage limit is not a failed iteration: wait for the reset, then resume the same run.
+  limit=$(grep -o "hit your [a-z ]*limit.*resets [^·]*" "$log" | tail -1)
+  if [[ -n "$limit" ]]; then
+    iter=$((iter - 1))
+    wait_for_reset "$limit"
+    continue
+  fi
+
   after=$(latest_run); after_status=$(run_status "$after")
   echo "=== Iteration $iter done: ${after_status:-?} ($(basename "${after:-–}")), exit code $rc"
 
   case "$after_status" in
     COMPLETE) echo "The framework is declared complete."; exit 0 ;;
     STOPPED)  rm -f gauntlet/STOP; echo "Stopped on request. Run again to continue."; exit 0 ;;
-    PASS)
-      if [[ "$after" == "$before" ]]; then fails=$((fails + 1)); else fails=0; fi ;;
+    PASS)   # a resumed run that now passes counts; a PASS that was already there does not
+      if [[ "$after" == "$before" && "$before_status" == "PASS" ]]; then fails=$((fails + 1)); else fails=0; fi ;;
     *) fails=$((fails + 1)) ;;   # EXHAUSTED, STALLED, crash or unfinished
   esac
 
