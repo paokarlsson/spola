@@ -4,3 +4,4 @@
 - 2026-10-02 00:19 · 20261002-0000-di-karna · PASS · 1 rounds · DI-kärna: explicit dependency injection container (spola.di) · commits: 0f99e22
 - 2026-10-02 00:35 · 20261002-0019-config · PASS · 1 rounds · Config: type-safe configuration from files, env, args and profiles (spola.config) · commits: 886a8f6
 - 2026-10-02 08:24 · 20261002-0751-util-loggning-och-hjalpare · STALLED · 3 rounds · Util part 1: logging on System.Logger and Lombok helpers · commits: ba58f82, 588e977, 9b21e3d · reason: a new MAJOR was upheld every round (1→1→1); the remaining one is an Error from a bad exception's toString escaping Log when Logging.configure has not been called
+- 2026-10-02 08:36 · 20261002-0826-util-log-backend-fel · PASS · 1 rounds · Finish 05a: keep backend logging errors from escaping spola.util Log · commits: b2bb961
