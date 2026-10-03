@@ -10,3 +10,4 @@
 - 2026-10-02 11:18 · 20261002-1043-json-parser-och-skrivare · PASS · 1 rounds · JSON part 1: tree model, strict parser and writer (spola.json) · commits: 6d96cf9
 - 2026-10-02 12:02 · 20261002-1118-json-codec-mappning · PASS · 2 rounds · JSON part 2: explicit codec mapping between records and JSON · commits: 10f7936, fcaed2a
 - 2026-10-02 22:44 · 20261002-1523-http-server-karna · PASS · 3 rounds · HTTP server part 1: HTTP/1.1 on virtual threads with abuse limits · commits: ee0a922, 6f65214, f65c082
+- 2026-10-03 09:44 · 20261002-2244-http-tls · PASS · 2 rounds · HTTP server part 2: TLS (HTTPS) on top of spola.http · commits: 2bab4f1, 236fe7e
