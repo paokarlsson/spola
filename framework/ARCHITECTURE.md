@@ -19,6 +19,7 @@ framework/
   modules/json/README.md    exempel för spola.json och spola.json.codec bredvid Jackson, avvikelser från Jacksons standard
   modules/http/README.md    exempel för spola.http bredvid Spring Boot/Tomcat, gränserna mot Spring Boots egenskaper, HTTPS och `server.ssl.*`
   modules/web/README.md     exempel för spola.web bredvid Spring MVC, avvikelser från Spring MVC
+  modules/validation/README.md  exempel för spola.validation bredvid Jakarta Bean Validation, avvikelser från Jakarta
   out/                      byggresultat (ignoreras av git)
     classes/<modulnamn>/    kompilerade klasser per modul
     <modulnamn>.jar         en jar per modul (utan tester)
@@ -2015,3 +2016,129 @@ av alla `WebRequest` från samma förfrågan som `QueryState`) och `FormBody` (r
 - **Trådsäkerhet.** `ResponseCookie`, dess `Builder` och `FormData` är oföränderliga.
   `CookieState` synkroniserar som `QueryState`; inget tillstånd delas mellan förfrågningar
   (`CookieState` och `BodyState` skapas per förfrågan i `Router.handle`).
+
+## Validering del 1: komponerbara validatorer och felrapporter (`spola.validation`)
+
+Uppdrag 09a, första delen av rad 09 i `PLAN.md`. Validatorer som vanlig Java-kod i stället för
+Jakarta Bean Validation. Kopplingen till `spola.web` (400-svar med `errors`, `readJson`/
+`readForm` med validering, formulär till records) är 09b.
+
+### API (paket `spola.validation`)
+
+| Typ | Roll |
+|---|---|
+| `Validator<T>` | funktionellt gränssnitt `validate(T, Errors)`; `check` (hela rapporten), `require` (värdet eller `ValidationException`), `of(Constraint...)`, `lazy(Supplier)`, `builder()` |
+| `Validator.Builder<T>` | `field`, `optional`, `nested`, `each`, `eachNested`, `rule(test, code, message)`, `rule(name, test, code, message)`, `include`, `when`, `build()` |
+| `Errors` | insamlaren för en validering: `at`, `atIndex`, `atKey`, `reject`, `path` |
+| `Violation` | record `(path, code, message)`, inget värde |
+| `Validated<T>` | sealed: `Valid<T>(value)`, `Invalid<T>(violations, count)`; `MAX_VIOLATIONS = 100` |
+| `ValidationException` | `violations()`, `count()`, kort `getMessage()` (högst 2 000 tecken) |
+| `Constraint<T>` | oföränderlig klass: `of(code, test, message)`, `withMessage`, `withCode`, `code`, `message`, `accepts` |
+| `Constraints` | de inbyggda constraints, med fasta koder och engelska standardtexter |
+
+Interna klasser: `Path` (sökvägskedjan, renderas bara när en överträdelse behålls), `Text`
+(escaping och kortning), `Email` (definitionen bakom `email()`) och `LazyValidator`.
+
+### Beslut
+
+- **Fristående modul.** `spola.validation` har inga `requires` på andra Spola-moduler (REGLER
+  §4: varje modul ska kunna användas fristående). Validering behövs i webblagret, i
+  konfiguration och i vanlig affärslogik; ett beroende på `spola.json` eller `spola.web` skulle
+  tvinga in dem överallt. Kopplingen åt andra hållet görs i 09b, där `spola.web` får
+  `requires spola.validation`. `requires static java.compiler` finns bara för testet som
+  kompilerar källtexter i minnet (mönstret från `spola.web` och `java.net.http`); ingen
+  huvudkod använder den, och ett test kontrollerar det.
+- **`Validator`/`Errors` är kärnan och byggaren ligger ovanpå.** Kärnan är samma form som
+  Springs `org.springframework.validation.Validator` (`validate(target, errors)`): en lambda
+  som rapporterar till en insamlare. Allt annat är kombinationer av den: byggarens steg är
+  små `Validator<? super T>` som körs i ordning, `Validator.of` kör constraints på roten och
+  `lazy` skjuter upp uppslagningen. En validator som inte passar byggaren (en `Map`, en regel
+  över flera nivåer) skrivs därför direkt som lambda med `Errors.at/atIndex/atKey/reject`
+  och kan sedan nästlas med `nested`, `eachNested` eller `include`. `Errors` lever bara under
+  ett `check`/`require` och är inte trådsäker; används den efteråt ger `reject`
+  `IllegalStateException`.
+- **`Constraint` är en klass, inte ett funktionellt gränssnitt.** Byggaren har metoder som
+  tar constraints (`field`) och metoder som tar validatorer (`nested`). Om båda vore
+  funktionella gränssnitt skulle en lambda kunna passa båda, och överlagringar (även
+  framtida) skulle bli tvetydiga eller tyst välja fel. En klass med fabriken `of(code, test,
+  message)` gör också att varje constraint alltid har en kod och ett meddelande. Typparametern
+  ger kompileringsfel för fel typ: `field(name, getter, Constraint<? super V>...)` med
+  `Function<? super T, ? extends V>` kräver att `V` både är getterns typ och en subtyp av
+  constraintens typ, så `notBlank()` (`Constraint<CharSequence>`) på en `int` och `min(1)`
+  (`Constraint<Number>`) på en `String` kompilerar inte, medan `Constraint<Object>` passar
+  allt. Varargs-metoderna har `@SafeVarargs` (tillåtet enligt REGLER §2) och är `final`
+  (krav för `@SafeVarargs` på instansmetoder); de kopierar arrayen med en loop, eftersom
+  `-Xlint:varargs` varnar när arrayen skickas vidare.
+- **`null` som i Jakarta.** Varje constraint utom `notNull`, `notBlank` och `notEmpty`
+  godtar `null`, och predikatet i `Constraint.of` anropas aldrig med `null`, så egna
+  constraints slipper null-kontroller. `nested`, `eachNested` och `optional` hoppar över
+  `null` (och tomt `Optional`), `each` ger ett `null`-element till elementets constraints så
+  att `each(..., notNull())` fångar det, och `eachNested` hoppar över `null`-element (som
+  `@Valid`). En byggd validator godtar `null` som värde och kör inga steg för det; därför
+  anropas regel- och `when`-predikat aldrig med `null`. Krav på närvaro uttrycks alltid med
+  `notNull()` på fältet, aldrig implicit.
+- **Ordningen är deklarationsordning, djupet först.** Stegen körs i den ordning de lades
+  till, och ett nästlat värdes överträdelser kommer direkt efter fältets egna (ett `field`
+  på `lines` före `eachNested` på `lines` ger `$.lines` före `$.lines[0].sku`). Alla
+  constraints för ett fält körs; ingen avbryter de andra. Ordningen är alltså bestämd av koden
+  och testad, inte av hashning eller reflektion.
+- **Högst 100 överträdelser behålls, alla räknas.** Samma gräns som kodeken och
+  `Problem.MAX_ERRORS`. Gränsen kontrolleras i `reject` innan något skapas: efter 100 räknas
+  bara `count` upp, och sökvägen renderas inte, så en lista med en miljon fel kostar ingen
+  minnestillväxt. Valideringen fortsätter ändå, så `count` är exakt (mättat vid
+  `Integer.MAX_VALUE`). `Invalid` kräver `1 <= violations.size() <= 100` och att `count` är
+  lika med storleken om färre än 100 behölls. `ValidationException.getMessage()` är antalet
+  och högst de tre första som `path: message`, varje del escapad till utskrivbar ASCII och
+  kortad till 600 tecken, totalt högst 2 000 tecken (som `JsonMappingException.MAX_MESSAGE`).
+- **Värdet bärs inte.** `Violation` har bara `path`, `code` och `message`. Jakarta bär värdet
+  (`getInvalidValue`), men värden kan vara lösenord eller personuppgifter och ska inte kunna
+  hamna i en logg eller ett svar av misstag. Ett test kontrollerar komponenterna och att ett
+  avvisat lösenord inte finns i resultatet eller undantaget.
+- **Meddelanden är säkra att använda som de är.** `Errors.reject` escapar styrtecken (C0, DEL,
+  C1), U+2028/U+2029, bidi-tecken och ensamma surrogat som `\uXXXX` och kortar meddelanden över
+  500 tecken (följt av längden), men behåller bokstäver i alla skript, så att 09b kan lägga
+  `message` i ett problem-svar och en loggrad utan att tolka den. Koder måste vara utskrivbar
+  ASCII utan mellanslag (kontrolleras när constrainten eller regeln skapas, och i `reject`).
+- **Sökvägsnotationen är kodekens.** `$` är roten, `.namn` en medlem vars namn är en
+  identifierare (`[A-Za-z_$][A-Za-z0-9_$]*`), `["annat namn"]` andra namn escapade som en
+  JSON-sträng med allt utanför utskrivbar ASCII som `\uXXXX` (gemena hexsiffror, som i
+  kodeken), `[2]` ett element. `Errors.at` är för namn som koden deklarerar och skrivs i sin
+  helhet; `atKey` är för namn från data och kortas efter 40 tecken, följt av längden. `Path`
+  är en kopia av `spola.json.codec.Path` (samma algoritm, icke-rekursiv rendering), eftersom
+  modulen inte får bero på `spola.json`. Testet `PathTests` anger för varje sökväg vilket
+  kodektest som ger samma text. 09b kan därför lägga en `JsonMappingException` och en
+  valideringsrapport i samma `errors`-lista.
+- **Tid mot en uttrycklig `Supplier`.** `past(now)` och de andra tar en `Supplier<C>` för
+  `C extends Comparable<? super C>`, till exempel `() -> LocalDate.now(clock)`. Det finns
+  ingen dold systemklocka (Jakartas `ClockProvider`), så tester blir deterministiska och typen
+  kontrolleras vid kompilering. Leverantören frågas en gång per kontrollerat värde (inte för
+  `null`); returnerar den `null` blir det `NullPointerException`.
+- **Tal jämförs exakt.** `Byte`/`Short`/`Integer`/`Long`/`BigInteger`/`BigDecimal` som de är;
+  `Double`/`Float` via `BigDecimal` av sin kortaste decimaltext (`Double.toString`, så `0.1`
+  är `0.1`), och NaN/oändligt är aldrig giltiga; andra `Number` via `new
+  BigDecimal(toString())`, ogiltigt om texten inte är ett tal. `digits` räknar som Hibernate
+  (på värdet utan avslutande nollor).
+- **`email()` är avsiktligt enkel och bestämd.** Exakt ett `@`; en lokal del på 1–64 tecken
+  i RFC 5322 `dot-atom` (`atext` och punkter, ingen punkt först, sist eller dubbel); en domän
+  på 1–253 tecken med LDH-etiketter på 1–63 tecken, utan bindestreck först eller sist; inga
+  citerade lokala delar, inga IP-literaler, bara ASCII. `a@b` godtas som i Hibernate
+  Validator. Implementerad med loopar (linjär tid, ingen regex), och text längre än 318
+  tecken avvisas utan genomsökning.
+- **Undantag från användarkod släpps igenom.** Getters, predikat och egna validatorer kan
+  kasta; undantaget (och `Error`) går oförändrat ut ur `check`/`require`, och ingen halv
+  rapport returneras. Att slå in det skulle dölja buggar och kunna läcka värden via
+  meddelandet.
+- **Trådsäkerhet.** Byggda validatorer och constraints är oföränderliga (stegen kopieras i
+  `build()`, constraints i `List.copyOf`) och kan delas som `static final`. Varje `check`
+  skapar en egen `Errors`. `lazy` sparar den levererade validatorn i ett `volatile`-fält; två
+  trådar kan båda fråga leverantören första gången, vilket är ofarligt när den returnerar ett
+  `static final`-fält.
+- **Ingen cykeldetektering.** Objektgrafer som innehåller sig själva ligger utanför (som i
+  uppdraget); valideringen går då tills stacken tar slut och `StackOverflowError` släpps
+  igenom. Rekursion sker på Java-stacken, så mycket djupa strukturer har samma gräns.
+- **Vad 09b bygger vidare på.** `Violation.path()` och `Violation.message()` går direkt in i
+  `Problem.FieldError(path, message)`, och `Validated.Invalid.violations()` håller högst 100,
+  samma som `Problem.withErrors`. `code` finns för klienter och senare översättning.
+  `ValidationException` kan mappas till 400 med `errors` med en `ExceptionMapper`, och
+  `readJson(codec, validator)` kan köra `validator.check` efter avkodningen. `count()` kan
+  användas för en sammanfattning när fler än 100 rapporterats.

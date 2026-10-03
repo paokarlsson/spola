@@ -1,0 +1,13 @@
+feat(validation): add spola.validation with composable validators
+
+New standalone module replacing Jakarta Bean Validation: validators built
+as plain Java from getters and Constraint values, no annotations or
+reflection. Violations carry path, code and message (never the rejected
+value), use the JSON codec's path notation, and are capped at 100 while
+all are counted. Includes 27 built-in constraints, README and docs.
+
+Gauntlet-Run: 20261003-1131-validation-karna
+Gauntlet-Round: 1/5
+Gauntlet-Verdict: PASS (0 blocker, 0 major, 7 minor upheld)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>

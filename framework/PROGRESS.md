@@ -433,8 +433,37 @@
   1 KiB, exakt `max + 1` lästa byte, egna gränser, `maxBodySize`, läs en gång, mappers, 200
   samtidiga klienter med formulär och cookies, och loggrader/problem-detaljer utan styrtecken.
 
+### Uppdrag 09a: validering del 1, komponerbara validatorer och felrapporter (`spola.validation`)
+- Rad 09 i `PLAN.md` är delad i **09a** (detta: den fristående modulen `spola.validation`) och
+  **09b** (webbintegration: 400-svar med `errors`, `readJson`/`readForm` med validering,
+  formulär till records). 09b återstår.
+- Ny modul `spola.validation` (`modules/validation/`), utan `requires` på andra Spola-moduler;
+  bara `requires static java.compiler` för kompileringsfelstestet. Tillagd i `MODULES` i
+  `Build.java` med testingången `spola.validation.ValidationTests`. Inga andra moduler ändrade.
+- `Validator<T>` (funktionellt gränssnitt: `validate(value, errors)`, `check`, `require`,
+  `of(constraints...)`, `lazy(supplier)`, `builder()`), `Validator.Builder` (`field`,
+  `optional`, `nested`, `each`, `eachNested`, `rule` på objektet och på ett fält, `include`,
+  `when`, `build`), `Errors` (`at`, `atIndex`, `atKey`, `reject`, `path`), `Violation(path,
+  code, message)` utan värde, `Validated` (sealed: `Valid`, `Invalid(violations, count)`),
+  `ValidationException`, `Constraint` (klass: `of`, `withMessage`, `withCode`, `code`,
+  `message`, `accepts`) och `Constraints` (27 inbyggda med fasta koder och engelska texter).
+- Sökvägar i `spola.json.codec`s notation, renderade med samma algoritm (deklarerade namn i
+  sin helhet, `atKey` kortad efter 40 tecken med längden). Högst 100 överträdelser behålls,
+  alla räknas; sökvägen renderas bara för de behållna. `getMessage()` är högst 2 000 tecken,
+  utskrivbar ASCII. Meddelanden i `Violation` behåller bokstäver men escapar styrtecken,
+  radavgränsare, bidi-tecken och ensamma surrogat, och kortas efter 500 tecken.
+- `README.md` i `modules/validation/`: `CreateOrder`-exemplet bredvid Spring Boot (testkällan
+  `OrderValidation.java`, kontrollerad av ett test), byggarens steg, tabell från Jakarta till
+  Spola och avvikelsetabell.
+- 251 tester i `spola.validation` (cirka 1 s): 147 tabellfall för constraints, 16 giltiga och
+  27 ogiltiga e-postadresser, sökvägar mot kodekens fall, README-exemplet, gränsen med 10 000
+  element och en miljon överträdelser, egna validatorer och constraints, kompileringsfel via
+  `javax.tools`, undantag från användarkod, 200 virtuella trådar och escaping.
+
 ## Återstår (enligt `uppdrag/PLAN.md`)
-- 09–20 enligt planen (rad 08 är klar med 08a, 08b och 08c).
+- **09b:** validering i webblagret (400-svar med `errors` från `Violation`, `readJson`/`readForm`
+  med validering, formulär till records). Rad 09 är delad i 09a (klar) och 09b.
+- 10–20 enligt planen (rad 08 är klar med 08a, 08b och 08c).
 - **Kvar från friktionsrapporten i 05c** (`modules/demo/README.md`, avsnitt "Friktion"):
   - **DI:** den typade formen av `to(...)` går inte att blanda `Class` och `Key` i; ett enda
     kvalificerat beroende gör att alla måste skrivas `Key.of(...)` (punkt 3).
@@ -451,6 +480,12 @@
     `LoggingSettings` efter bindningen, inte i `ConfigException` (punkt 7).
 
 ## Kända problem och begränsningar
+- **Validering (spola.validation, 09a):** ingen cykeldetektering; en objektgraf som innehåller
+  sig själv valideras tills stacken tar slut (`StackOverflowError` släpps igenom). Djupa
+  strukturer valideras rekursivt på Java-stacken. Ingen i18n och ingen interpolering av
+  meddelanden. `email()` godtar inte internationaliserade adresser. `matches` kör användarens
+  mönster på hela värdet utan tidsgräns. `Errors` som används efter sin validering ger
+  `IllegalStateException` (bästa försök, inte trådsäkert).
 - **Web (spola.web, 08c):** inget `Expires` skrivs (beslut i uppdraget). JDK:ns
   `java.net.CookieManager` tolkar ett `Set-Cookie` med `Max-Age` men utan `Expires` som RFC
   2965 och skickar tillbaka `$Version="1"; namn="värde";$Path=...`; värdet kommer då med
