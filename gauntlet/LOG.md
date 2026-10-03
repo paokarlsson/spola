@@ -17,3 +17,4 @@
 - 2026-10-03 12:05 · 20261003-1131-validation-karna · PASS · 1 rounds · Validation part 1: composable validators and violation reports · commits: 61de226
 - 2026-10-03 12:36 · 20261003-1205-validation-webb · PASS · 1 rounds · Validation part 2: validation and form binding in spola.web · commits: c190458
 - 2026-10-03 13:16 · 20261003-1237-security-losenord-och-autentisering · PASS · 2 rounds · Security part 1: PBKDF2 password hashing and authentication · commits: 3e18d5f, ae72594
+- 2026-10-03 14:03 · 20261003-1316-security-filter-basic-och-atkomstregler · PASS · 1 rounds · Säkerhet del 2: säkerhetsfilter, HTTP Basic och åtkomstregler (spola.security.web) · commits: 39729fd · note: closed by hand after Ctrl+C in step 3d; BRK-1 (case-sensitive method matcher, fail-open) left as MINOR, review
