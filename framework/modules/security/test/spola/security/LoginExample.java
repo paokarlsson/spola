@@ -18,7 +18,7 @@ public final class LoginExample {
     public static Authenticator authenticator(PasswordHasher hasher, InMemoryUserStore users) {
         users.add(new User("ada", hasher.hash("correct horse battery staple"), Set.of("USER", "ADMIN"), true));
         users.add(new User("bob", hasher.hash("hunter2hunter2"), Set.of("USER"), false));
-        return Authenticator.of(users, hasher, users::updatePassword);
+        return Authenticator.of(users, hasher, users.upgrader(hasher));
     }
 
     /**

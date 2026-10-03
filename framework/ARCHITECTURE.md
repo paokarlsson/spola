@@ -2286,7 +2286,7 @@ människa.
 | `Pbkdf2PasswordHasher` | `defaults()`, `of(iterations, saltBytes, hashBytes)`, PHC-format, gränserna som konstanter |
 | `User` | record `(username, passwordHash, roles, enabled)`, `toString()` utan hash |
 | `UserStore` | funktionellt gränssnitt `Optional<User> find(String)` |
-| `InMemoryUserStore` | trådsäker: `add`, `find`, `updatePassword` |
+| `InMemoryUserStore` | trådsäker: `add`, `find`, `updatePassword`, `upgrader(hasher)` |
 | `Authenticator` | `of(store, hasher)`, `of(store, hasher, upgrade)`, `authenticate(username, password)` |
 | `PasswordUpgrade` | funktionellt gränssnitt `upgrade(username, newHash)` |
 | `AuthResult` | sealed: `Authenticated(Identity)`, `Failed(Failure)` |
@@ -2361,13 +2361,27 @@ Intern klass: `Names` (regler för användarnamn och roller, escaping i `toStrin
   att förstå varför inloggningen nekas.
 - **Uppgradering som inte stoppar inloggningen.** När lösenordet stämt, kontot är aktivt och
   `needsRehash` är `true` anropas `PasswordUpgrade` med en ny hash av samma lösenord (Springs
-  `UserDetailsPasswordService`). `InMemoryUserStore.updatePassword` har samma form, så
-  `store::updatePassword` räcker. Användaren har bevisat sitt lösenord; att den nya hashen inte
+  `UserDetailsPasswordService`). För `InMemoryUserStore` är det `store.upgrader(hasher)`.
+  Användaren har bevisat sitt lösenord; att den nya hashen inte
   kunde sparas (databasen nere, en konflikt) är ett driftproblem som ska synas i loggen men inte
   låsa ute användaren, och den gamla hashen fungerar fortfarande. Därför fångas ett
   `RuntimeException` från hashningen eller uppgraderingen och loggas på `WARNING` med bara
   klassnamnet. Ett `Error` fångas inte (det är inte ett fel i uppgraderingen utan i JVM:en
   eller i ett test). Utan `PasswordUpgrade` anropas varken `needsRehash` eller `hash`.
+- **Villkorad uppgradering.** Den nya hashen räknas fram efter att lösenordet verifierats, och
+  det tar lika lång tid som en hashning (cirka 125 ms med `defaults()`). Byts lösenordet under
+  tiden skulle en ovillkorad skrivning lägga en hash av det *gamla* lösenordet över det nya, så
+  att bytet tyst ångras och det gamla (kanske läckta) lösenordet fungerar igen. Därför byter
+  `InMemoryUserStore.upgrader(hasher)` hashen bara om den lagrade hashen fortfarande
+  `needsRehash`, kontrollerat och bytt i samma `computeIfPresent` (atomärt). Ett lösenordsbyte
+  via `updatePassword` med hasharens aktuella inställningar skrivs därför aldrig över;
+  `updatePassword` själv är ovillkorad eftersom den är till för lösenordsbyten. Signaturen
+  `upgrade(username, newHash)` ger inte den lästa hashen, så villkoret är "behöver fortfarande
+  uppgraderas" och inte en exakt jämförelse; ett lösenordsbyte som sparas med gamla
+  inställningar kan fortfarande skrivas över, vilket Javadoc för `upgrader` säger. Egna
+  lagringar måste göra samma villkorade, atomära uppdatering (Javadoc för `PasswordUpgrade`).
+  Ett test håller uppgraderingen med en spärr, byter lösenordet, släpper spärren och visar att
+  det nya lösenordet fungerar och det gamla inte.
 - **Resultat som värde.** `authenticate` ger det förseglade `AuthResult` i stället för att
   kasta som Springs `AuthenticationProvider`: ett misslyckat försök är ett vanligt utfall, och
   en `switch` över `Authenticated`/`Failed` är fullständig. Undantag är reserverade för datafel

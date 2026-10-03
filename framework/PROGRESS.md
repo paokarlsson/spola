@@ -522,8 +522,8 @@
   hash ger `IllegalArgumentException` utan strängen. Jämförelse med `MessageDigest.isEqual`.
 - `User` (record; användarnamn 1–256 tecken, roller 1–100 tecken utskrivbar ASCII utan
   mellanslag, oföränderlig sorterad kopia, `toString()` utan hash och med escapade styrtecken),
-  `UserStore`, `InMemoryUserStore` (`add`, `find`, `updatePassword`; trådsäker,
-  skiftlägeskänslig), `Identity` (`hasRole`), `AuthResult` (sealed: `Authenticated`,
+  `UserStore`, `InMemoryUserStore` (`add`, `find`, `updatePassword`, `upgrader(hasher)` som
+  bara byter en hash som fortfarande `needsRehash`, atomärt; trådsäker, skiftlägeskänslig), `Identity` (`hasRole`), `AuthResult` (sealed: `Authenticated`,
   `Failed`), `Failure` (`BAD_CREDENTIALS`, `DISABLED`), `PasswordUpgrade` och `Authenticator`
   (dummyhash för okända och ogiltiga användarnamn och `null`-lösenord, `DISABLED` bara efter rätt
   lösenord, uppgradering vid `needsRehash` där ett `RuntimeException` loggas med klassnamnet och
@@ -532,7 +532,7 @@
   bredvid Spring Security (`PasswordEncoder`-böna, `InMemoryUserDetailsManager`,
   `DaoAuthenticationProvider` med `UserDetailsPasswordService`), jämförelsetabell och
   avvikelsetabell.
-- 101 tester i `spola.security` (cirka 1 s): RFC 7914-vektorerna, 60 slumpade fall mot
+- 103 tester i `spola.security` (cirka 1 s): RFC 7914-vektorerna, 60 slumpade fall mot
   `SecretKeyFactory`, hasharen, 44 felaktiga lagrade hashar, `User`/`Identity`/
   `InMemoryUserStore`, `Authenticator` med räknande hasher, 200 virtuella trådar, markörer för
   lösenord och hashar i `toString()` och undantag, README och källregler.
@@ -568,7 +568,11 @@
   snabbare än andra; det avslöjar inget om användaren. En hash med andra inställningar än
   hasharens (inom tolkningsgränserna, t.ex. 1 iteration) verifieras med sina egna inställningar;
   den som kan skriva i användarlagringen kan alltså sänka kostnaden för sin egen rad.
-  Konstanttid gäller jämförelsen av hashar, inte uppslagningen i `UserStore`.
+  Konstanttid gäller jämförelsen av hashar, inte uppslagningen i `UserStore`. Uppgraderingen
+  via `InMemoryUserStore.upgrader` är villkorad på `needsRehash` (signaturen ger inte den lästa
+  hashen): ett lösenordsbyte som sparas med *gamla* inställningar medan en uppgradering pågår
+  kan fortfarande skrivas över; lösenordsbyten ska hashas med autentiserarens hasher. Egna
+  `PasswordUpgrade` måste själva vara villkorade och atomära.
 - **Validering i webben (spola.web, 09b):** formulär är platta; nästlade namn
   (`address.city`, `items[0].qty`) binds inte till nästlade objekt (skicka JSON). Ingen
   generering av binders från records (allt skrivs i bindern). Ingen i18n av meddelanden eller

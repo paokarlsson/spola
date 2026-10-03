@@ -1,0 +1,13 @@
+fix(security): make hash upgrade conditional to keep password changes
+
+InMemoryUserStore.upgrader(hasher) replaces a stored hash only while it
+still needs a rehash, in one atomic step, so a login that is upgrading can
+no longer undo a password change made at the same time. The docs and the
+README example use the new wiring, and a test pins the race. Also cleans
+up invisible characters in Names and the iteration digit limit.
+
+Gauntlet-Run: 20261003-1237-security-losenord-och-autentisering
+Gauntlet-Round: 2/5
+Gauntlet-Verdict: PASS (0 blocker, 0 major, 4 minor upheld)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>

@@ -36,7 +36,7 @@ final class SecretTests {
                     var store = new InMemoryUserStore();
                     var user = new User("ada", hash, Set.of("USER"), true);
                     store.add(user);
-                    var authenticator = Authenticator.of(store, hasher, store::updatePassword);
+                    var authenticator = Authenticator.of(store, hasher, store.upgrader(hasher));
                     var hashSalt = hash.split("\\$")[3];
                     var hashValue = hash.split("\\$")[4];
                     List<Object> objects = List.of(user, new Identity("ada", Set.of("USER")),
@@ -116,6 +116,7 @@ final class SecretTests {
         store.add(new User("ada", "$pbkdf2-sha256$i=0$" + HASH_MARKER + "AAAAAAAAAAAA$" + hash, Set.of(), true));
         calls.add(() -> store.add(new User("ada", marker, Set.of(), true)));
         calls.add(() -> store.updatePassword("nobody", marker));
+        calls.add(() -> store.upgrader(hasher).upgrade("ada", marker));
         // Criterion 7: the authenticator.
         calls.add(() -> Authenticator.of(store, hasher).authenticate("ada", password));
         calls.add(() -> Authenticator.of(username -> null, hasher).authenticate("ada", password));

@@ -14,6 +14,10 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import spola.security.Support.CountingHasher;
 import spola.security.Support.RecordingLogger;
 import spola.test.Suite;
@@ -118,9 +122,10 @@ final class AuthenticatorTests {
                     var old = Pbkdf2PasswordHasher.of(20_000, 16, 32).hash(PASSWORD);
                     store.add(new User("ada", old, Set.of("USER"), true));
                     var upgrades = Collections.synchronizedList(new ArrayList<Upgrade>());
+                    var upgrader = store.upgrader(hasher);
                     var authenticator = Authenticator.of(store, hasher, (username, newHash) -> {
                         upgrades.add(new Upgrade(username, newHash));
-                        store.updatePassword(username, newHash);
+                        upgrader.upgrade(username, newHash);
                     });
                     var expected = new AuthResult.Authenticated(new Identity("ada", Set.of("USER")));
                     assertEquals(expected, authenticator.authenticate("ada", PASSWORD));
@@ -134,6 +139,66 @@ final class AuthenticatorTests {
                     assertEquals(expected, authenticator.authenticate("ada", PASSWORD));
                     assertEquals(expected, authenticator.authenticate("ada", PASSWORD));
                     assertEquals(1, upgrades.size());
+                }),
+                test("a password change during an upgrade is not undone (InMemoryUserStore.upgrader)", () -> {
+                    var hasher = fast();
+                    var store = new InMemoryUserStore();
+                    store.add(new User("ada", Pbkdf2PasswordHasher.of(20_000, 16, 32).hash("old-password"), Set.of("USER"), true));
+                    var upgrader = store.upgrader(hasher);
+                    var reached = new CountDownLatch(1);
+                    var release = new CountDownLatch(1);
+                    var upgradeCalls = new AtomicInteger();
+                    var authenticator = Authenticator.of(store, hasher, (username, newHash) -> {
+                        upgradeCalls.incrementAndGet();
+                        reached.countDown();
+                        try {
+                            release.await();
+                        } catch (InterruptedException e) {
+                            throw new IllegalStateException(e);
+                        }
+                        upgrader.upgrade(username, newHash);
+                    });
+                    var oldLogin = new AtomicReference<AuthResult>();
+                    var login = Thread.ofVirtual().start(() -> oldLogin.set(authenticator.authenticate("ada", "old-password")));
+                    assertTrue(reached.await(30, TimeUnit.SECONDS), "the upgrade was not reached");
+                    // The login has verified the old password and holds a new hash of it; now the password changes.
+                    var changed = hasher.hash("new-password");
+                    store.updatePassword("ada", changed);
+                    release.countDown();
+                    login.join();
+                    assertEquals(new AuthResult.Authenticated(new Identity("ada", Set.of("USER"))), oldLogin.get());
+                    assertEquals(1, upgradeCalls.get());
+                    assertEquals(changed, store.find("ada").orElseThrow().passwordHash());
+                    assertTrue(authenticator.authenticate("ada", "new-password") instanceof AuthResult.Authenticated);
+                    assertEquals(BAD, authenticator.authenticate("ada", "old-password"));
+                    assertEquals(1, upgradeCalls.get());
+                }),
+                test("InMemoryUserStore.upgrader replaces only a hash that needs a rehash, atomically", () -> {
+                    var hasher = fast();
+                    var store = new InMemoryUserStore();
+                    var old = Pbkdf2PasswordHasher.of(20_000, 16, 32).hash(PASSWORD);
+                    var current = hasher.hash(PASSWORD);
+                    store.add(new User("ada", old, Set.of("USER"), false));
+                    store.add(new User("bob", current, Set.of(), true));
+                    var malformed = "$pbkdf2-sha256$i=0$SECRETMARKERhashAAAAAA$" + "A".repeat(43);
+                    store.add(new User("eve", malformed, Set.of(), true));
+                    var upgrader = store.upgrader(hasher);
+                    var fresh = hasher.hash(PASSWORD);
+                    upgrader.upgrade("ada", fresh);
+                    assertEquals(new User("ada", fresh, Set.of("USER"), false), store.find("ada").orElseThrow());
+                    upgrader.upgrade("ada", hasher.hash(PASSWORD));
+                    assertEquals(fresh, store.find("ada").orElseThrow().passwordHash());
+                    upgrader.upgrade("bob", hasher.hash(PASSWORD));
+                    assertEquals(current, store.find("bob").orElseThrow().passwordHash());
+                    upgrader.upgrade("nobody", fresh);
+                    assertTrue(store.find("nobody").isEmpty());
+                    var e = assertThrows(IllegalArgumentException.class, () -> upgrader.upgrade("eve", fresh));
+                    assertFalse(e.getMessage().contains("SECRETMARKER"));
+                    assertEquals(malformed, store.find("eve").orElseThrow().passwordHash());
+                    assertThrows(NullPointerException.class, () -> store.upgrader(null));
+                    assertThrows(NullPointerException.class, () -> upgrader.upgrade(null, fresh));
+                    assertThrows(NullPointerException.class, () -> upgrader.upgrade("ada", null));
+                    assertEquals(fresh, store.find("ada").orElseThrow().passwordHash());
                 }),
                 test("no upgrade for a wrong password, a disabled account or without PasswordUpgrade", () -> {
                     var hasher = new CountingHasher(fast());
@@ -209,7 +274,7 @@ final class AuthenticatorTests {
                     assertThrows(NullPointerException.class, () -> Authenticator.of(store, hasher, null));
                     assertEquals("Authenticator[hasher=Pbkdf2PasswordHasher[iterations=10000, saltBytes=16, hashBytes=32],"
                             + " upgrade=false]", Authenticator.of(store, hasher).toString());
-                    var upgrading = Authenticator.of(store, hasher, store::updatePassword);
+                    var upgrading = Authenticator.of(store, hasher, store.upgrader(hasher));
                     assertTrue(upgrading.toString().endsWith("upgrade=true]"));
                 }));
     }

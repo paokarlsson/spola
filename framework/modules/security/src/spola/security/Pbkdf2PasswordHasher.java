@@ -62,6 +62,9 @@ public final class Pbkdf2PasswordHasher implements PasswordHasher {
     public static final int MIN_ITERATIONS = 10_000;
     /** The most iterations {@link #of} accepts, and the most a stored hash may have. */
     public static final int MAX_ITERATIONS = 10_000_000;
+
+    /** The number of decimal digits in {@link #MAX_ITERATIONS}. */
+    private static final int MAX_ITERATION_DIGITS = Integer.toString(MAX_ITERATIONS).length();
     /** The shortest salt {@link #of} accepts, in bytes. */
     public static final int MIN_SALT_BYTES = 16;
     /** The longest salt {@link #of} accepts, and the longest a stored hash may have, in bytes. */
@@ -274,8 +277,8 @@ public final class Pbkdf2PasswordHasher implements PasswordHasher {
                 throw malformed(problem);
             }
             var digits = parameter.substring(2);
-            // At most 8 digits (10 000 000) before parsing, so nothing can overflow.
-            if (digits.isEmpty() || digits.length() > 8 || digits.charAt(0) == '0') {
+            // No more digits than MAX_ITERATIONS has, so the int below cannot overflow.
+            if (digits.isEmpty() || digits.length() > MAX_ITERATION_DIGITS || digits.charAt(0) == '0') {
                 throw malformed(problem);
             }
             int value = 0;

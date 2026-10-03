@@ -59,14 +59,22 @@ final class Names {
                 out.append(c).append(text.charAt(++i));
             } else if (c == '\\') {
                 out.append("\\\\");
-            } else if (Character.isISOControl(c) || Character.isSurrogate(c) || c == ' ' || c == ' '
-                    || c == '؜' || c == '‎' || c == '‏' || (c >= '‪' && c <= '‮')
-                    || (c >= '⁦' && c <= '⁩') || c == '﻿') {
+            } else if (Character.isISOControl(c) || Character.isSurrogate(c) || breaksOrReorders(c)) {
                 out.append(String.format("\\u%04x", (int) c));
             } else {
                 out.append(c);
             }
         }
         return out.toString();
+    }
+
+    /**
+     * Line and paragraph separators, the Arabic letter mark, the left-to-right and right-to-left
+     * marks, the bidirectional embeddings and overrides (U+202A to U+202E), the bidirectional
+     * isolates (U+2066 to U+2069) and the byte order mark.
+     */
+    private static boolean breaksOrReorders(char c) {
+        return c == '\u2028' || c == '\u2029' || c == '\u061c' || c == '\u200e' || c == '\u200f'
+                || (c >= '\u202a' && c <= '\u202e') || (c >= '\u2066' && c <= '\u2069') || c == '\ufeff';
     }
 }

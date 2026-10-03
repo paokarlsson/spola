@@ -19,7 +19,8 @@ Filterkedjan, HTTP Basic, formulärinloggning och 401/403 kommer i del 2 (10b).
   utfyllnad. Tolkningen är strikt; en felaktig lagrad hash ger `IllegalArgumentException` vars
   meddelande inte innehåller strängen.
 - `User(username, passwordHash, roles, enabled)`, `UserStore` (`find`) och `InMemoryUserStore`
-  (`add`, `find`, `updatePassword`). Användarnamn jämförs exakt (skiftlägeskänsligt).
+  (`add`, `find`, `updatePassword` för lösenordsbyten och `upgrader(hasher)` för villkorad
+  uppgradering). Användarnamn jämförs exakt (skiftlägeskänsligt).
 - `Authenticator.of(store, hasher[, upgrade])` och `authenticate(username, password)`, som ger
   `AuthResult.Authenticated(Identity)` eller `AuthResult.Failed(Failure)` med `BAD_CREDENTIALS`
   eller `DISABLED`.
@@ -101,7 +102,7 @@ public final class LoginExample {
     public static Authenticator authenticator(PasswordHasher hasher, InMemoryUserStore users) {
         users.add(new User("ada", hasher.hash("correct horse battery staple"), Set.of("USER", "ADMIN"), true));
         users.add(new User("bob", hasher.hash("hunter2hunter2"), Set.of("USER"), false));
-        return Authenticator.of(users, hasher, users::updatePassword);
+        return Authenticator.of(users, hasher, users.upgrader(hasher));
     }
 
     /**
@@ -124,10 +125,13 @@ public final class LoginExample {
 }
 ```
 
-I produktion skickas `Pbkdf2PasswordHasher.defaults()` in som `hasher`. `users::updatePassword`
+I produktion skickas `Pbkdf2PasswordHasher.defaults()` in som `hasher`. `users.upgrader(hasher)`
 är uppgraderingen: en användare vars hash har andra inställningar (till exempel 20 000
-iterationer) får en ny hash med de aktuella inställningarna vid nästa lyckade inloggning. En
-databas blir en `UserStore`-lambda och en `PasswordUpgrade`-lambda.
+iterationer) får en ny hash med de aktuella inställningarna vid nästa lyckade inloggning.
+Uppgraderingen byter bara en hash som fortfarande behöver det (`needsRehash`), i ett atomärt
+steg, så ett lösenordsbyte (`users.updatePassword`) som hinner emellan skrivs aldrig över med en
+hash av det gamla lösenordet. En databas blir en `UserStore`-lambda och en
+`PasswordUpgrade`-lambda som gör samma villkorade uppdatering.
 
 ## Spring Security och Spola
 
@@ -138,8 +142,8 @@ databas blir en `UserStore`-lambda och en `PasswordUpgrade`-lambda.
 | `new Pbkdf2PasswordEncoder(secret, saltLength, iterations, algorithm)` | `Pbkdf2PasswordHasher.of(iterations, saltBytes, hashBytes)` |
 | `UserDetails` / `User.withUsername(...)...build()` | `record User(username, passwordHash, roles, enabled)` |
 | `UserDetailsService.loadUserByUsername` (kastar `UsernameNotFoundException`) | `UserStore.find` (ger `Optional`) |
-| `InMemoryUserDetailsManager` | `InMemoryUserStore` (`add`, `find`, `updatePassword`) |
-| `UserDetailsPasswordService.updatePassword(user, newPassword)` | `PasswordUpgrade.upgrade(username, newHash)`, t.ex. `store::updatePassword` |
+| `InMemoryUserDetailsManager` | `InMemoryUserStore` (`add`, `find`, `updatePassword`, `upgrader`) |
+| `UserDetailsPasswordService.updatePassword(user, newPassword)` | `PasswordUpgrade.upgrade(username, newHash)`, t.ex. `store.upgrader(hasher)` |
 | `DaoAuthenticationProvider` + `authenticate(token)` | `Authenticator.of(store, hasher, upgrade)` + `authenticate(username, password)` |
 | `Authentication` med `getName()` och `getAuthorities()` | `Identity(name, roles)` med `hasRole` |
 | `BadCredentialsException`, `DisabledException` | `AuthResult.Failed(Failure.BAD_CREDENTIALS)`, `AuthResult.Failed(Failure.DISABLED)` |
@@ -157,4 +161,5 @@ databas blir en `UserStore`-lambda och en `PasswordUpgrade`-lambda.
 | Roller utan `ROLE_`-prefix | `hasRole("ADMIN")` jämför med exakt det som står i `User`. |
 | Resultat som värde (`AuthResult`) i stället för undantag | Ett misslyckat försök är ett vanligt utfall; `switch` över det förseglade `AuthResult` är fullständig. |
 | Ingen låsning och ingen hastighetsbegränsning | Utanför del 1; görs utanför modulen eller i ett senare uppdrag. |
+| Uppgraderingen är villkorad: den byter bara en hash som fortfarande `needsRehash` | Annars kan en inloggning med det gamla lösenordet, vars nya hash räknas fram medan lösenordet byts, skriva över bytet så att det gamla lösenordet fungerar igen. |
 | Ett fel i uppgraderingen stoppar inte inloggningen | Lösenordet var rätt; undantaget loggas på `WARNING` (bara klassnamnet) och den gamla hashen ligger kvar. |

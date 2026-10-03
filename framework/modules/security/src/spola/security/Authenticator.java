@@ -43,10 +43,12 @@ public final class Authenticator {
 
     private final UserStore store;
     private final PasswordHasher hasher;
+    /** {@code null} only from {@link #of(UserStore, PasswordHasher)}: no upgrade. */
     private final PasswordUpgrade upgrade;
     private final System.Logger log;
     private final String dummyHash;
 
+    /** {@code upgrade} may be {@code null} (no upgrade); the public factories decide that. */
     private Authenticator(UserStore store, PasswordHasher hasher, PasswordUpgrade upgrade, System.Logger log) {
         this.store = Objects.requireNonNull(store, "store");
         this.hasher = Objects.requireNonNull(hasher, "hasher");
@@ -73,8 +75,9 @@ public final class Authenticator {
      *
      * @param store   where users are looked up
      * @param hasher  how passwords are checked and new hashes made
-     * @param upgrade where new hashes are stored, such as {@code store::updatePassword} for an
-     *                {@link InMemoryUserStore}
+     * @param upgrade where new hashes are stored, such as {@link InMemoryUserStore#upgrader}
+     *                {@code (hasher)}; it must only replace a hash that still needs a rehash (see
+     *                {@link PasswordUpgrade})
      * @return the authenticator
      * @throws NullPointerException if an argument is {@code null}
      */
@@ -82,7 +85,10 @@ public final class Authenticator {
         return of(store, hasher, upgrade, System.getLogger("spola.security"));
     }
 
-    /** As {@link #of(UserStore, PasswordHasher, PasswordUpgrade)}, logging to {@code log} (for tests). */
+    /**
+     * As {@link #of(UserStore, PasswordHasher, PasswordUpgrade)}, logging to {@code log} (for
+     * tests). Like it, {@code upgrade} may not be {@code null}.
+     */
     static Authenticator of(UserStore store, PasswordHasher hasher, PasswordUpgrade upgrade, System.Logger log) {
         return new Authenticator(store, hasher, Objects.requireNonNull(upgrade, "upgrade"), log);
     }
