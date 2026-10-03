@@ -13,7 +13,10 @@ JSON-kroppar in och ut med en uttrycklig `JsonCodec` (`request.readJson(codec)`,
 `Responses.json(...)`), strikt tolkning av `Content-Type` och `Accept` (`MediaType`,
 `AcceptHeader`) och innehållsförhandling (`request.negotiate(...)`) kom i 08b. Cookies in
 (`request.cookie(...)`), cookies ut (`ResponseCookie`, `Responses.withCookie`) och
-formulärkroppar (`request.readForm()`, `FormData`) kom i 08c.
+formulärkroppar (`request.readForm()`, `FormData`) kom i 08c. Validering med
+`spola.validation` (`request.readJson(codec, validator)`) och formulärbindning till records
+(`FormBinder`, `request.readForm(binder, validator)`, `request.bindQuery(binder, validator)`)
+med fel per fält i `errors` kom i 09b.
 
 | Spring MVC | Spola |
 |---|---|
@@ -40,6 +43,12 @@ formulärkroppar (`request.readForm()`, `FormData`) kom i 08c.
 | `ResponseCookie.from(name, value)...build()` + `HttpHeaders.SET_COOKIE` | `Responses.withCookie(response, ResponseCookie.of(name, value)...build())` |
 | `@RequestParam` för ett formulärfält, `@ModelAttribute` | `request.readForm()` och `form.required("age", Param.INT)` |
 | `server.tomcat.max-http-form-post-size` (2 MB) | `RouterBuilder.maxFormSize(int)` (2 MiB), `readForm(maxBytes)` |
+| `@Valid @RequestBody CreateOrder order` (Jakarta-annoteringar) | `request.readJson(CREATE_ORDER, CREATE_ORDER_RULES)` med en `Validator<CreateOrder>` |
+| `@Valid @ModelAttribute SignupForm form` + `BindingResult` | `request.readForm(SIGNUP, SIGNUP_RULES)` med en `FormBinder<Signup>` |
+| `@ModelAttribute` på en `GET` (query till objekt) | `request.bindQuery(SEARCH)` eller `bindQuery(SEARCH, SEARCH_RULES)` |
+| `MethodArgumentNotValidException` → 400 | `WebException.invalid(...)`: 400 med `errors` (`path`, `message`, `code`) |
+| `FieldError.getCode()` | `Problem.FieldError.code()` (`Optional<String>`) |
+| `@ExceptionHandler(ConstraintViolationException.class)` | `onException(ValidationException.class, (e, r) -> WebException.invalid(e).toResponse(r))` |
 
 ## Ett komplett exempel
 
@@ -556,6 +565,276 @@ kör det genom en riktig server, också med `HttpClient` och en `CookieManager`.
   tar bort en cookie (`Max-Age=0`). `Responses.withCookie` lägger till ett eget
   `Set-Cookie`-fält per cookie.
 
+## Validering av JSON och formulär
+
+`spola.web` kräver `spola.validation` transitivt, så en handler kan validera det som kommer in
+och få ett giltigt värde tillbaka, eller låta ramverket svara 400 med ett fel per fält. Det
+finns inget `BindingResult`: en handler får aldrig ett ogiltigt värde.
+
+### JSON: `@Valid @RequestBody`
+
+#### Spring Boot
+
+```java
+public record OrderLine(
+        @NotBlank @Pattern(regexp = "[A-Z]{3}-[0-9]{4}") String sku,
+        @Min(1) @Max(99) int quantity) {
+}
+
+public record CreateOrder(
+        @NotBlank @Size(max = 100) String customer,
+        @NotBlank @Email String email,
+        @Size(min = 1, max = 50) List<@Valid OrderLine> lines) {
+}
+
+@RestController
+class OrderController {
+    private final Map<Long, CreateOrder> orders = new ConcurrentHashMap<>();
+    private final AtomicLong ids = new AtomicLong();
+
+    @PostMapping("/orders") // MethodArgumentNotValidException (400) om ordern är ogiltig
+    ResponseEntity<CreateOrder> create(@Valid @RequestBody CreateOrder order) {
+        long id = ids.incrementAndGet();
+        orders.put(id, order);
+        return ResponseEntity.created(URI.create("/orders/" + id)).body(order);
+    }
+}
+```
+
+#### Spola
+
+```java
+import static spola.json.codec.JsonCodec.field;
+import static spola.json.codec.JsonCodecs.INT;
+import static spola.json.codec.JsonCodecs.STRING;
+import static spola.json.codec.JsonCodecs.list;
+import static spola.validation.Constraints.email;
+import static spola.validation.Constraints.matches;
+import static spola.validation.Constraints.maxLength;
+import static spola.validation.Constraints.notBlank;
+import static spola.validation.Constraints.range;
+import static spola.validation.Constraints.size;
+
+import java.io.IOException;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.regex.Pattern;
+import spola.http.HttpServer;
+import spola.http.HttpServerOptions;
+import spola.http.Response;
+import spola.json.codec.JsonCodec;
+import spola.validation.Validator;
+import spola.web.Responses;
+import spola.web.Router;
+import spola.web.WebRequest;
+
+final class OrderApi {
+
+    record OrderLine(String sku, int quantity) {
+    }
+
+    record CreateOrder(String customer, String email, List<OrderLine> lines) {
+    }
+
+    static final JsonCodec<OrderLine> ORDER_LINE = JsonCodec.object(OrderLine::new,
+            field("sku", STRING, OrderLine::sku),
+            field("quantity", INT, OrderLine::quantity));
+
+    static final JsonCodec<CreateOrder> CREATE_ORDER = JsonCodec.object(CreateOrder::new,
+            field("customer", STRING, CreateOrder::customer),
+            field("email", STRING, CreateOrder::email),
+            field("lines", list(ORDER_LINE), CreateOrder::lines));
+
+    static final Validator<OrderLine> ORDER_LINE_RULES = Validator.<OrderLine>builder()
+            .field("sku", OrderLine::sku, notBlank(), matches(Pattern.compile("[A-Z]{3}-[0-9]{4}")))
+            .field("quantity", OrderLine::quantity, range(1, 99))
+            .build();
+
+    static final Validator<CreateOrder> CREATE_ORDER_RULES = Validator.<CreateOrder>builder()
+            .field("customer", CreateOrder::customer, notBlank(), maxLength(100))
+            .field("email", CreateOrder::email, notBlank(), email())
+            .field("lines", CreateOrder::lines, size(1, 50))
+            .eachNested("lines", CreateOrder::lines, ORDER_LINE_RULES)
+            .build();
+
+    private final Map<Long, CreateOrder> orders = new ConcurrentHashMap<>();
+    private final AtomicLong ids = new AtomicLong();
+
+    Response create(WebRequest request) throws IOException {
+        CreateOrder order = request.readJson(CREATE_ORDER, CREATE_ORDER_RULES); // valid, or 400
+        long id = ids.incrementAndGet();
+        orders.put(id, order);
+        return Responses.created(request, "/orders/" + id, CREATE_ORDER, order);
+    }
+
+    Router router() {
+        return Router.builder()
+                .post("/orders", this::create)
+                .build();
+    }
+
+    public static void main(String[] args) throws Exception {
+        var server = HttpServer.start(HttpServerOptions.DEFAULT.withPort(8080), new OrderApi().router());
+        Runtime.getRuntime().addShutdownHook(new Thread(server::close));
+    }
+}
+```
+
+Exemplet ovan är `modules/web/test/spola/web/OrderApi.java` (utan paketraden), och testerna
+kör det genom en riktig server med `HttpClient`.
+
+- Kontrollerna i `readJson(codec)` görs först och oförändrade: 415, 400 för en tom kropp, 413,
+  400 för ogiltig JSON och 400 med `errors` för ett mappningsfel (`Request body has N
+  problems.`). Validatorn anropas bara för ett värde som gick att läsa, tolka och mappa.
+- En ogiltig order ger 400 med detaljen `The request has 5 validation errors.` och en
+  `errors`-lista i valideringens ordning, med `code` för varje fel:
+
+  ```json
+  {"type":"about:blank","title":"Bad Request","status":400,"detail":"The request has 2 validation errors.",
+   "instance":"/orders","errors":[{"path":"$.customer","message":"must not be blank","code":"notBlank"},
+   {"path":"$.lines[0].quantity","message":"must be between 1 and 99","code":"range"}]}
+  ```
+
+  Högst 100 fel listas; med fler läggs ` The first 100 are listed.` till detaljen. Ett
+  mappningsfel har ingen `code`, så svaren från 08b är oförändrade.
+- `readJson(codec, limits, validator)` använder egna `JsonLimits`. Ett undantag från
+  validatorn släpps igenom oförändrat till routerns mappers (eller 500).
+
+### Formulär: `@Valid @ModelAttribute` och `BindingResult`
+
+#### Spring Boot
+
+```java
+public class SignupForm {
+    @NotBlank @Email private String email;
+    @Size(min = 12, max = 128) private String password;
+    @Min(13) @Max(150) private Integer age;
+    @Size(max = 5) private List<String> interests = new ArrayList<>();
+    @AssertTrue(message = "must be accepted") private boolean terms;
+    // getters och setters för alla fält (Spring binder via JavaBeans-egenskaper)
+}
+
+@Controller
+class SignupController {
+    private final Map<String, SignupForm> users = new ConcurrentHashMap<>();
+
+    @PostMapping(path = "/signup", consumes = MediaType.APPLICATION_FORM_URLENCODED_VALUE)
+    ResponseEntity<String> signup(@Valid @ModelAttribute SignupForm form, BindingResult result) {
+        if (result.hasErrors()) { // fel vid typomvandling och validering i samma lista
+            return ResponseEntity.badRequest().body(result.getFieldErrors().toString());
+        }
+        users.put(form.getEmail(), form);
+        return ResponseEntity.status(HttpStatus.CREATED).body("Welcome, " + form.getEmail() + ".");
+    }
+}
+```
+
+#### Spola
+
+```java
+import static spola.validation.Constraints.email;
+import static spola.validation.Constraints.length;
+import static spola.validation.Constraints.notBlank;
+import static spola.validation.Constraints.range;
+import static spola.validation.Constraints.size;
+
+import java.io.IOException;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import java.util.concurrent.ConcurrentHashMap;
+import spola.http.HttpServer;
+import spola.http.HttpServerOptions;
+import spola.http.Response;
+import spola.validation.Validator;
+import spola.web.FormBinder;
+import spola.web.Param;
+import spola.web.Router;
+import spola.web.WebRequest;
+
+final class SignupApp {
+
+    record Signup(String email, String password, Optional<Integer> age, List<String> interests, boolean terms) {
+    }
+
+    // <form method="post" action="/signup"> with email, password, age, interests (checkboxes) and terms
+    static final FormBinder<Signup> SIGNUP = f -> new Signup(
+            f.required("email", Param.STRING),
+            f.required("password", Param.STRING),
+            f.optional("age", Param.INT),
+            f.all("interests", Param.STRING),
+            f.flag("terms"));
+
+    static final Validator<Signup> SIGNUP_RULES = Validator.<Signup>builder()
+            .field("email", Signup::email, notBlank(), email())
+            .field("password", Signup::password, length(12, 128))
+            .optional("age", Signup::age, range(13, 150))
+            .field("interests", Signup::interests, size(0, 5))
+            .rule("terms", Signup::terms, "accepted", "must be accepted")
+            .build();
+
+    private final Map<String, Signup> users = new ConcurrentHashMap<>();
+
+    Response signup(WebRequest request) throws IOException {
+        Signup signup = request.readForm(SIGNUP, SIGNUP_RULES); // valid, or 400 with every error
+        users.put(signup.email(), signup);
+        return Response.text(201, "Welcome, " + signup.email() + ".");
+    }
+
+    Router router() {
+        return Router.builder()
+                .post("/signup", this::signup)
+                .build();
+    }
+
+    public static void main(String[] args) throws Exception {
+        var server = HttpServer.start(HttpServerOptions.DEFAULT.withPort(8080), new SignupApp().router());
+        Runtime.getRuntime().addShutdownHook(new Thread(server::close));
+    }
+}
+```
+
+Exemplet ovan är `modules/web/test/spola/web/SignupApp.java` (utan paketraden), och testerna
+kör det genom en riktig server med `HttpClient`.
+
+- `FormBinder<T>` är ett funktionellt gränssnitt (`bind(FormFields)`). `FormFields` läser
+  fälten och **samlar alla fel** i stället för att kasta vid det första:
+  `required(name, param)` (saknas: felet `required`, `is required`), `optional(name, param)`,
+  `all(name, param)` (fel per element på `$.namn[i]`) och `flag(name)` för kryssrutor (`on`,
+  `true`, `1` ger `true`; `false`, `0`, ett saknat eller tomt fält ger `false`).
+- Ett värde som inte går att omvandla ger felet `type` med meddelandet `expected int` (typens
+  namn), aldrig värdet. Fler än ett värde för `required`, `optional` eller `flag` ger felet
+  `single` (`must have a single value`). Ett tomt värde (`age=`) räknas som saknat för alla
+  `Param` utom `Param.STRING`, där `""` är ett värde som valideringen får bedöma. Okända fält
+  (CSRF-token, knappar) ignoreras.
+- Bindningsfel ger 400 med detaljen `Request body has N problems.` och `errors` i den ordning
+  bindern läser fälten; validatorn anropas då inte. Valideringsfel ger samma 400 som för JSON
+  (`The request has N validation errors.`). `readForm(binder)` läser kroppen exakt som
+  `readForm()`: samma 415, 413, 400 och läs-en-gång-regel.
+- Om bindern kastar efter att fel har samlats (oftast en record-konstruktor som får `null`)
+  blir svaret 400 med de insamlade felen. Utan insamlade fel släpps undantaget igenom
+  oförändrat.
+- `request.bindQuery(binder, validator)` binder queryn på samma sätt (detaljen `Query has N
+  problems.`) och rör aldrig kroppen. `binder.bind(formData)` binder utan en förfrågan, till
+  exempel i ett test.
+
+### `ValidationException` från egen kod
+
+`Validator.require` i en tjänst kastar `ValidationException`. Routern gör inte om den till 400
+av sig själv: ett ogiltigt värde som tjänsten själv har byggt är en bugg och ger 500, som
+Springs `ConstraintViolationException`. Där undantaget betyder att klienten skickat fel
+registreras mappern uttryckligen, på en rad:
+
+```java
+Router.builder()
+        .onException(ValidationException.class, (e, r) -> WebException.invalid(e).toResponse(r))
+```
+
+`WebException.invalid(e)` ger exakt samma 400 som `readJson(codec, validator)` för samma
+överträdelser.
+
 ## Mönster och matchning
 
 - Ett mönster börjar med `/`. Segment: literal (`orders`), variabel (`{id}`, ett helt
@@ -587,7 +866,7 @@ kör det genom en riktig server, också med `HttpClient` och en `CookieManager`.
 | Gammalt `HttpURLConnection`-standardhuvud | `text/html, image/gif, image/jpeg, *; q=.2, */*; q=.2` godtas (Spring tolkar `*` som `*/*`) | Ger 400: ett ensamt `*` är ingen mediatyp i RFC 9110, och `Accept` tolkas strikt. Huvudet skickas bara av `HttpURLConnection` före JDK 23 när anroparen inte sätter `Accept`; sätt det uttryckligen. |
 | `charset` i `Accept` | `application/json;charset=UTF-8` godtar `application/json` | Samma för JSON: `charset=utf-8` (oavsett skiftläge, även citerat) godtar en JSON-typ utan `charset`. En annan `charset` utesluter. För andra typer krävs samma `charset` i den erbjudna typen. |
 | `charset` i `Content-Type` | Jackson läser UTF-16/UTF-32 och flera andra kodningar | Bara UTF-8 (RFC 8259 §8.1): en annan `charset` ger 415. `charset` jämförs utan hänsyn till skiftläge, citerat `"utf-8"` godtas. Svar har `application/json` utan `charset`. |
-| Felformat för kroppsfel | `MethodArgumentNotValidException`/`HttpMessageNotReadableException` med Boots egna fält | Problem-svar med `errors`: `[{"path": "$.items[3].qty", "message": "..."}]` i dokumentordning, högst 100, och en detalj med antalet. Samma format används för validering (uppdrag 09). |
+| Felformat för kroppsfel | `MethodArgumentNotValidException`/`HttpMessageNotReadableException` med Boots egna fält | Problem-svar med `errors`: `[{"path": "$.items[3].qty", "message": "..."}]` i dokumentordning, högst 100, och en detalj med antalet. Valideringsfel och bindningsfel har samma format med `code` sist (`"code": "notBlank"`). |
 | Förhandling av felsvar | `ProblemDetail` skrivs som `application/problem+json` eller `application/json` (eller XML med Jackson XML) efter `Accept`; Boots `/error` ger HTML till webbläsare | Problem-svar förhandlas inte: alltid `application/problem+json`, även med `Accept: text/html`. |
 | `produces`/`consumes` | En del av routingen: fel `Content-Type` eller `Accept` ger 415/406 innan handlern väljs, och två metoder kan dela sökväg med olika `produces` | Inte en del av routingen. Handlern förhandlar själv (`readJson` ger 415, `Responses.json` och `negotiate` ger 406), och en sökväg har en handler per metod. |
 | Komprimerade kroppar | Beror på servern | `Content-Encoding` annat än `identity` ger 415 från `readJson`. |
@@ -598,3 +877,9 @@ kör det genom en riktig server, också med `HttpClient` och en `CookieManager`.
 | Formulär och query | `@RequestParam` läser både queryn och formuläret som "request parameters" | Slås inte ihop: handlern väljer uttryckligen `request.query(...)` eller `request.readForm()`. |
 | Tom formulärkropp | Inga parametrar | Samma: ett tomt `FormData` (ett HTML-formulär utan fält är giltigt). Det skiljer sig från `readJson`, där en tom kropp ger 400. |
 | Fel `Content-Type` på formulär | `@RequestParam` hittar inga formulärfält och ger 400 för ett obligatoriskt fält; `consumes` ger 415 | `readForm` ger 415 med `Accept: application/x-www-form-urlencoded` för ett saknat eller annat `Content-Type`, en annan `charset` än UTF-8 och `Content-Encoding`. |
+| Inget `BindingResult` | `@Valid` med ett `BindingResult` ger handlern ett ogiltigt objekt och felen; utan det kastas `MethodArgumentNotValidException` | Inget `BindingResult`: handlern får aldrig ett ogiltigt värde. `readJson`/`readForm`/`bindQuery` med en validator ger värdet eller 400 med `errors`. |
+| Mappningsfel före valideringsfel | `HttpMessageNotReadableException` kommer före valideringen; för `@ModelAttribute` hamnar typfel och valideringsfel i samma `BindingResult` | Mappnings- och bindningsfel besvaras först och validatorn anropas inte. Valideringsfel kommer bara för ett värde som gick att mappa eller binda, så de två listorna blandas aldrig. |
+| Värden i felsvar | `FieldError.getRejectedValue()` bär det avvisade värdet, och Boots standardsvar kan visa det | Värden ekas aldrig: inte i `errors`, inte i detaljen och inte i loggen. Ett typfel säger `expected int`, inte vad som skickades (fältet kan vara ett lösenord). |
+| Tomma formulärfält | `age=` blir `null` för en `Integer` (tom text omvandlas till `null`, med `StringTrimmerEditor` även blanktecken), men ett bindningsfel för en `int` | Ett tomt värde räknas som saknat för alla `Param` utom `STRING`: `optional` ger tomt, `required` ger felet `required`. För `STRING` är `""` ett värde (`notBlank()` fångar det). |
+| Flera värden för ett fält | `a=1&a=2` till en `String` blir `"1,2"`, till en `Integer` det första värdet | Fler än ett värde för `required`, `optional` och `flag` ger felet `single`. Bara `all` tar emot flera värden. |
+| `ValidationException` från egen kod | `ConstraintViolationException` från en `@Validated`-tjänst ger 500 utan en egen `@ExceptionHandler` | Samma: 500 utan mapper. 400 kräver en uttrycklig rad, `onException(ValidationException.class, (e, r) -> WebException.invalid(e).toResponse(r))`. |

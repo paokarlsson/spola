@@ -436,7 +436,7 @@
 ### Uppdrag 09a: validering del 1, komponerbara validatorer och felrapporter (`spola.validation`)
 - Rad 09 i `PLAN.md` är delad i **09a** (detta: den fristående modulen `spola.validation`) och
   **09b** (webbintegration: 400-svar med `errors`, `readJson`/`readForm` med validering,
-  formulär till records). 09b återstår.
+  formulär till records). 09b är klar (se nästa avsnitt).
 - Ny modul `spola.validation` (`modules/validation/`), utan `requires` på andra Spola-moduler;
   bara `requires static java.compiler` för kompileringsfelstestet. Tillagd i `MODULES` i
   `Build.java` med testingången `spola.validation.ValidationTests`. Inga andra moduler ändrade.
@@ -460,10 +460,47 @@
   element och en miljon överträdelser, egna validatorer och constraints, kompileringsfel via
   `javax.tools`, undantag från användarkod, 200 virtuella trådar och escaping.
 
+### Uppdrag 09b: validering del 2, validering och formulärbindning i webblagret (`spola.web` + `spola.validation`) — rad 09 i `PLAN.md` klar
+- Med 09a och 09b är **rad 09 i `PLAN.md` (validering) klar**.
+- `spola.web` har `requires transitive spola.validation` (inga andra nya `requires`);
+  `spola.validation` är oförändrad och fristående. Ingen bryggmodul.
+- `Problem.FieldError(path, message, Optional<String> code)`: den gamla konstruktorn ger tom
+  `code`, `toJson()` skriver `code` sist och bara när den finns (mappningsfelen från
+  `readJson` är byte för byte som förut), en kod är 1–100 tecken utskrivbar ASCII utan
+  mellanslag.
+- `WebException.invalid(Validated.Invalid<?>)` och `invalid(ValidationException)`: 400,
+  `The request has N validation errors.` (singular för 1, ` The first 100 are listed.` över
+  100) och `errors` med `path`, `message` och `code`.
+- `WebRequest.readJson(codec, validator)` och `readJson(codec, limits, validator)`: alla
+  kontroller från `readJson` först, sedan `validator.check`; validatorn anropas aldrig efter
+  ett läs-, parsnings- eller mappningsfel, och dess undantag släpps igenom oförändrade.
+- `FormBinder<T>` (`bind(FormFields)`, standardmetoden `bind(FormData)`) och `FormFields`
+  (`required`, `optional`, `all`, `flag`) som samlar alla fel med koderna `required`, `type`
+  och `single`, sökvägar i kodekens notation (privat kopia av renderingen), tomt värde som
+  saknat utom för `Param.STRING`, inga ekade värden, högst 100 fel (alla räknas) och
+  undantagsregeln för bindern. `WebRequest.readForm(binder)`, `readForm(binder, validator)`,
+  `bindQuery(binder)` och `bindQuery(binder, validator)` (detaljen `Request body has N
+  problems.` respektive `Query has N problems.`).
+- `ValidationException` från tjänstekod mappas inte automatiskt (500); README visar mappern på
+  en rad.
+- `README.md` i `modules/web/`: JSON-exemplet (`OrderApi.java`, `@Valid @RequestBody`) och
+  formulärexemplet (`SignupApp.java`, `@Valid @ModelAttribute` + `BindingResult`) bredvid
+  Spring Boot, kontrollerade av ett test; sex nya rader i jämförelsetabellen och sex nya
+  avvikelserader.
+- 730 tester i `spola.web` (cirka 2,5 s; 139 nya): `FieldError` och `WebException.invalid`,
+  `readJson` med validator genom server och `HttpClient` (giltigt värde, fem fel i fält och
+  nästlad lista, åtta fall med samma svar som utan validator och validatorn oanropad, 250 fel,
+  undantag till mapper och 500, egna gränser, inget ekat lösenord, `ValidationException` med
+  och utan README-mappern), en tabell med 52 bindningsfall, gränsen 1 000/101/100 fel,
+  undantagsregeln, `FormFields` efter bindningen, 26 sökvägsfall mot `Errors.at`/`atIndex`,
+  `readForm`/`bindQuery` med binder och validator genom server, och 200 samtidiga klienter med
+  delade `static final` binder, kodek och validator.
+- Ett befintligt test ändrades: `SourceRulesTests` fäster `spola.web`s exakta `requires`, och
+  den förväntade listan fick `transitive spola.validation` (annars kan bygget inte vara grönt).
+  Övriga befintliga testfiler är oförändrade utom registreringen i `WebTests`.
+
 ## Återstår (enligt `uppdrag/PLAN.md`)
-- **09b:** validering i webblagret (400-svar med `errors` från `Violation`, `readJson`/`readForm`
-  med validering, formulär till records). Rad 09 är delad i 09a (klar) och 09b.
-- 10–20 enligt planen (rad 08 är klar med 08a, 08b och 08c).
+- 10–20 enligt planen (rad 08 är klar med 08a–08c, rad 09 med 09a och 09b).
 - **Kvar från friktionsrapporten i 05c** (`modules/demo/README.md`, avsnitt "Friktion"):
   - **DI:** den typade formen av `to(...)` går inte att blanda `Class` och `Key` i; ett enda
     kvalificerat beroende gör att alla måste skrivas `Key.of(...)` (punkt 3).
@@ -480,6 +517,17 @@
     `LoggingSettings` efter bindningen, inte i `ConfigException` (punkt 7).
 
 ## Kända problem och begränsningar
+- **Validering i webben (spola.web, 09b):** formulär är platta; nästlade namn
+  (`address.city`, `items[0].qty`) binds inte till nästlade objekt (skicka JSON). Ingen
+  generering av binders från records (allt skrivs i bindern). Ingen i18n av meddelanden eller
+  koder. `FormFields` är inte trådsäker och kontrollen efter bindningen är bästa försök. Ett
+  undantag som bindern kastar efter insamlade fel kastas bort (också en `WebException` med
+  annan status, och ett `IllegalStateException` från en `Param` som returnerar `null`); ett
+  `Error` släpps alltid igenom. En `Violation` med en kod över 100 tecken (eller med
+  mellanslag, om den byggts för hand) ger `IllegalArgumentException` i `WebException.invalid`,
+  alltså 500. `flag` godtar bara `on`, `true`, `1`, `false` och `0` (skiftlägeskänsligt); ett
+  tomt värde ger `false`. Validering av sökvägs-, cookie- och huvudparametrar sker bara genom
+  `Param`. Ingen multipart.
 - **Validering (spola.validation, 09a):** ingen cykeldetektering; en objektgraf som innehåller
   sig själv valideras tills stacken tar slut (`StackOverflowError` släpps igenom). Djupa
   strukturer valideras rekursivt på Java-stacken. Ingen i18n och ingen interpolering av

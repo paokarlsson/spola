@@ -137,6 +137,28 @@ public final class Param<T> {
         return value;
     }
 
+    /**
+     * Converts {@code text} for {@link FormFields}, which reports a failure itself (without the
+     * value).
+     *
+     * @param text the decoded value
+     * @return the value, or {@code null} if the parser threw a {@link RuntimeException}
+     * @throws IllegalStateException if the parser returned {@code null}
+     */
+    T convertOrNull(String text) {
+        T value;
+        try {
+            value = parser.apply(text);
+        } catch (RuntimeException e) {
+            return null;
+        }
+        if (value == null) {
+            throw new IllegalStateException("the conversion to " + Text.escape(typeName, Text.MAX_QUOTED)
+                    + " returned null");
+        }
+        return value;
+    }
+
     /** {@code text} if it is {@code -?[0-9]+}; otherwise an exception. */
     private static String integer(String text) {
         int start = text.startsWith("-") ? 1 : 0;

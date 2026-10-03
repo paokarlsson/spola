@@ -49,32 +49,75 @@ public record Problem(String type, String title, int status, Optional<String> de
     public static final int MAX_ERRORS = 100;
 
     /**
-     * One entry of the {@code errors} extension member: where in the request something is wrong
-     * and what. This is Spola's common format for errors in request content: {@code readJson}
-     * uses it for mapping problems ({@code $.items[3].qty}), and validation is to use it too.
+     * One entry of the {@code errors} extension member: where in the request something is wrong,
+     * what, and optionally a machine-readable code. This is Spola's common format for errors in
+     * request content: {@code readJson} uses it for mapping problems ({@code $.items[3].qty},
+     * without a code), validation for violations ({@code Violation.code()}, see
+     * {@link WebException#invalid(spola.validation.Validated.Invalid)}) and form binding for
+     * binding errors (the codes {@code required}, {@code type} and {@code single}, see
+     * {@link FormFields}).
      *
      * @param path    where the problem is, such as {@code $.items[3].qty}
      * @param message what is wrong, such as {@code expected int but found string}
+     * @param code    a stable, machine-readable key such as {@code notBlank}, or empty: 1 to
+     *                {@value #MAX_CODE} characters of printable ASCII without spaces
      */
-    public record FieldError(String path, String message) {
+    public record FieldError(String path, String message, Optional<String> code) {
+
+        /** The longest code, in characters. */
+        public static final int MAX_CODE = 100;
 
         /**
          * Checks the components.
          *
-         * @throws NullPointerException if {@code path} or {@code message} is {@code null}
+         * @throws NullPointerException     if a component is {@code null}
+         * @throws IllegalArgumentException if the code is empty, longer than {@value #MAX_CODE}
+         *                                  characters, or holds a character outside printable
+         *                                  ASCII or a space
          */
         public FieldError {
             Objects.requireNonNull(path, "path");
             Objects.requireNonNull(message, "message");
+            Objects.requireNonNull(code, "code");
+            code.ifPresent(FieldError::checkCode);
         }
 
         /**
-         * The entry as JSON.
+         * An entry without a code, as for a mapping problem of {@code readJson}.
          *
-         * @return {@code {"path": ..., "message": ...}}
+         * @param path    where the problem is
+         * @param message what is wrong
+         * @throws NullPointerException if {@code path} or {@code message} is {@code null}
+         */
+        public FieldError(String path, String message) {
+            this(path, message, Optional.empty());
+        }
+
+        /**
+         * The entry as JSON: {@code path}, {@code message} and, only when there is one,
+         * {@code code}, in that order.
+         *
+         * @return {@code {"path": ..., "message": ...}} or
+         *         {@code {"path": ..., "message": ..., "code": ...}}
          */
         public JsonObject toJson() {
-            return JsonObject.builder().put("path", path).put("message", message).build();
+            var builder = JsonObject.builder().put("path", path).put("message", message);
+            code.ifPresent(c -> builder.put("code", c));
+            return builder.build();
+        }
+
+        private static void checkCode(String code) {
+            if (code.isEmpty() || code.length() > MAX_CODE) {
+                throw new IllegalArgumentException("a code has 1 to " + MAX_CODE + " characters, not "
+                        + code.length());
+            }
+            for (int i = 0; i < code.length(); i++) {
+                char c = code.charAt(i);
+                if (c <= 0x20 || c >= 0x7F) {
+                    throw new IllegalArgumentException("a code must be printable ASCII without spaces; found "
+                            + Text.quote(code));
+                }
+            }
         }
     }
 
@@ -188,7 +231,8 @@ public record Problem(String type, String title, int status, Optional<String> de
 
     /**
      * A copy with the extension member {@code errors}: an array of
-     * {@code {"path": ..., "message": ...}} objects in the given order, at most
+     * {@code {"path": ..., "message": ...}} objects (with {@code "code"} last when the error has
+     * one, see {@link FieldError#toJson()}) in the given order, at most
      * {@value #MAX_ERRORS} (the first ones; the detail should say how many there were). Strings
      * are cut like every extension string.
      *

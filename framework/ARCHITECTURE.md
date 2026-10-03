@@ -2142,3 +2142,130 @@ Interna klasser: `Path` (sökvägskedjan, renderas bara när en överträdelse b
   `ValidationException` kan mappas till 400 med `errors` med en `ExceptionMapper`, och
   `readJson(codec, validator)` kan köra `validator.check` efter avkodningen. `count()` kan
   användas för en sammanfattning när fler än 100 rapporterats.
+
+## Validering del 2: validering och formulärbindning i webblagret (`spola.web` + `spola.validation`)
+
+Uppdrag 09b, andra och sista delen av rad 09 i `PLAN.md`. `spola.web` kan validera det som
+kommer in i en förfrågan och svara 400 med ett fel per fält, som Spring Boot gör med
+`@Valid @RequestBody`, `@Valid @ModelAttribute`, `BindingResult` och
+`MethodArgumentNotValidException`, utan annoteringar och utan reflektion.
+
+### API (paket `spola.web`)
+
+| Typ/metod | Roll |
+|---|---|
+| `Problem.FieldError(path, message, Optional<String> code)` | posten i `errors`; `FieldError(path, message)` ger tom `code`; `MAX_CODE = 100` |
+| `WebException.invalid(Validated.Invalid<?>)`, `invalid(ValidationException)` | 400 med `The request has N validation errors.` och `errors` med `code` |
+| `WebRequest.readJson(codec, validator)`, `readJson(codec, limits, validator)` | `@Valid @RequestBody` |
+| `FormBinder<T>` | funktionellt gränssnitt `bind(FormFields)`; standardmetoden `bind(FormData)` binder utan förfrågan |
+| `FormFields` | insamlaren för en bindning: `required`, `optional`, `all`, `flag` |
+| `WebRequest.readForm(binder)`, `readForm(binder, validator)` | `@Valid @ModelAttribute` på en formulärkropp |
+| `WebRequest.bindQuery(binder)`, `bindQuery(binder, validator)` | `@ModelAttribute` på queryn |
+
+Internt: `Param.convertOrNull` (omvandling utan undantag och utan värdet i något meddelande)
+och `FormFields.path` (sökvägsrenderingen).
+
+### Beslut
+
+- **Beroendets riktning: `spola.web` → `spola.validation`, ingen bryggmodul.** `spola.web` har
+  `requires transitive spola.validation`, transitivt eftersom `Validator`, `Validated` och
+  `ValidationException` finns i webbens publika API. `spola.validation` är oförändrad och
+  fristående (inga `requires` på Spola-moduler; den kan användas i konfiguration och
+  affärslogik utan webben). En separat modul `spola.web.validation` skulle bara bli en modul
+  till att lägga till i `module-info.java` utan att någon vinner något: valideringsmodulen är
+  liten och har inga beroenden, så den kostar inget för den som bara vill ha webben. Inga
+  andra `requires` har lagts till. `SourceRulesTests` fäster den nya listan (testets förväntade
+  `requires` uppdaterades; se nedan).
+- **`FieldError.code`.** `Problem.FieldError` fick komponenten `Optional<String> code`, och
+  den gamla konstruktorn `FieldError(path, message)` finns kvar och ger en tom `code`.
+  `toJson()` skriver `path`, `message` och sist `code`, och `code` bara när den finns, så
+  mappningsfelen från `readJson` (som inte har någon kod) ger exakt samma JSON som i 08b. En
+  kod är 1–100 tecken utskrivbar ASCII utan mellanslag (samma regel som `spola.validation`
+  plus en längdgräns); annars `IllegalArgumentException`. Valideringsfel får
+  `Violation.code()`, bindningsfel koderna `required`, `type` och `single`. En `Violation`
+  med en kod som inte uppfyller regeln (bara möjligt med en egen kod på över 100 tecken eller
+  en `Violation` byggd för hand) ger `IllegalArgumentException` i `WebException.invalid`,
+  alltså 500: det är ett programmeringsfel.
+- **Mappning och bindning före validering.** `readJson(codec, limits, validator)` kör först
+  hela `readJson(codec, limits)` med samma ordning och samma svar (415 → 400 tom kropp →
+  413/400 parsning → 400 mappning), och anropar sedan `validator.check(value)`. `Valid` ger
+  värdet, `Invalid` ger `WebException.invalid(invalid)`. Validatorn anropas aldrig för en
+  kropp som inte gick att läsa, tolka eller mappa, och för formulär och query bara när
+  bindningen lyckades. Som i Spring (där `HttpMessageNotReadableException` kommer före
+  valideringen) blandas de två listorna aldrig: ett svar har antingen mappnings-/bindningsfel
+  (`Request body has N problems.`, `Query has N problems.`) eller valideringsfel (`The request
+  has N validation errors.`). Det finns inget `BindingResult`; en handler får aldrig ett
+  ogiltigt värde. Ett undantag från validatorn släpps igenom oförändrat (samma instans) till
+  routerns mappers eller 500. Argumenten kontrolleras (`NullPointerException`) innan kroppen
+  läses.
+- **Valideringsfel blir 400 på ett enda sätt.** Båda `WebException.invalid` bygger samma
+  `WebException` av `violations` och `count`: status 400, standardtiteln, detaljen `The request
+  has N validation errors.` (`1 validation error.` i singular) och ` The first 100 are
+  listed.` när `count` är större än antalet listade. `errors` är överträdelserna i ordning
+  med `path`, `message` och `code` oförändrade. Ingen ny underklass: `WebException` med
+  `errors()` räcker, och en mapper för `WebException` fångar valideringsfelen också.
+- **`FormBinder`/`FormFields` samlar alla fel.** Bindningen är vanlig kod: en lambda som
+  läser fälten ur en `FormFields` och anropar en konstruktor, utan reflektion över
+  record-komponenter. `FormFields` kastar inte vid första felet utan registrerar felet och
+  ger en platshållare (`null`, `Optional.empty()`, `false` eller en kortare lista), så att
+  bindern går vidare och klienten får alla fel på en gång. Det är vad `BindingResult` ger i
+  Spring, och det som en användare av ett formulär förväntar sig (alla fält markerade, inte
+  ett i taget). När bindern har returnerat och fel finns kastas värdet bort och svaret blir
+  400. `FormFields` lever bara under ett bindningsanrop (som `Errors` i 09a), är inte
+  trådsäker och ger `IllegalStateException` om den används efteråt.
+- **Tomma värden räknas som saknade, utom för `Param.STRING`.** Ett HTML-formulär skickar
+  `age=` för ett tomt fält, och ett tomt valfritt tal ska inte ge fel (Spring omvandlar tom
+  text till `null` för `Integer`). Regeln jämför med `param == Param.STRING`: för den är `""`
+  ett värde, så att `notBlank()` i valideringen avgör. `required` ger då felet `required`,
+  `optional` tomt, `all` hoppar över elementet (senare element behåller sin position i
+  formuläret som index, så att sökvägen pekar på rätt värde) och `flag` ger `false` (en tom
+  kryssruta är inte ikryssad).
+- **Flera värden är ett fel.** Fler än ett värde för `required`, `optional` eller `flag` ger
+  felet `single` (`must have a single value`) i stället för att tyst ta det första. Det är ett
+  skydd mot parameter pollution (`role=user&role=admin`), där olika lager annars kan välja olika
+  värden. Bara `all` tar emot flera.
+- **Värden ekas aldrig.** Ett omvandlingsfel ger `type` med `expected <typeName>` (typens namn,
+  escapat och kortat som i `Param`), aldrig värdet, eftersom fältet kan vara ett lösenord.
+  `Param.convert` citerar värdet i sin detalj för sökvägs-, query- och cookieparametrar;
+  `FormFields` använder därför `Param.convertOrNull`, som kastar bort parserns undantag (och
+  dess meddelande) och bara säger att omvandlingen misslyckades. Valideringsfelen bär aldrig
+  värdet (`Violation` har inget). Bindnings- och valideringsfel är `WebException`s med 4xx och
+  loggas inte av routern. Tester skickar en markörsträng som lösenord och kontrollerar kropp,
+  huvuden och loggrader.
+- **Undantagsregeln för bindern.** Kastar bindern ett `RuntimeException` (oftast en
+  record-konstruktor som får `null` efter ett saknat `required`) och fel redan har samlats,
+  blir svaret 400 med de insamlade felen och undantaget kastas bort: det är en följd av felen,
+  inte en egen bugg. Har inga fel samlats släpps undantaget igenom oförändrat (samma instans),
+  så att en bugg i bindern blir 500 eller når en mapper. Ett `Error` släpps alltid igenom.
+  En parser i en egen `Param` som returnerar `null` är ett programmeringsfel
+  (`IllegalStateException`) och följer samma regel.
+- **Gränsen och ordningen.** Felen behålls i den ordning bindern anropar metoderna (inte
+  formulärets ordning), högst 100 (`Validated.MAX_VIOLATIONS`, samma som `Problem.MAX_ERRORS`),
+  och alla räknas (mättat vid `Integer.MAX_VALUE`). Gränsen kontrolleras innan sökvägen
+  renderas, så tusen fel kostar hundra strängar. Detaljen är `Request body has N problems.`
+  eller `Query has N problems.`, följd av ` The first 100 are listed.` när fler räknades.
+- **Den kopierade sökvägsrenderingen.** Sökvägarna skrivs i kodekens och valideringens
+  notation (`$.email`, `$["first name"]`, `$.interests[2]`), så att bindningsfel och
+  valideringsfel läses likadant och en klient kan koppla dem till samma fält. Namnen kommer
+  från koden och skrivs i sin helhet. Algoritmen för medlemsnamn och index i
+  `spola.validation.Path` är paketprivat där, och 09b får inte lägga till publikt API i andra
+  moduler, så `FormFields.path` är en privat kopia (identifierare
+  `[A-Za-z_$][A-Za-z0-9_$]*` som `.namn`, annars `["..."]` med `"` och `\` escapade och allt
+  utanför utskrivbar ASCII som `\uXXXX` med gemena hexsiffror). Ett test jämför de två för
+  identifierare, mellanslag, `"` och `\`, styrtecken, tecken utanför ASCII, namn längre än 40
+  tecken, tomt namn och index.
+- **`ValidationException` mappas inte automatiskt.** Utan mapper ger den 500, som andra
+  undantag. En `ValidationException` från tjänstekod betyder att tjänsten själv har byggt
+  eller fått ett ogiltigt värde från något annat än förfrågan (en databas, en annan tjänst),
+  och det är en bugg, inte klientens fel. Spring gör likadant för
+  `ConstraintViolationException` från en `@Validated`-tjänst. Den som vill ha 400 skriver en
+  rad: `onException(ValidationException.class, (e, r) -> WebException.invalid(e).toResponse(r))`,
+  som ger exakt samma svar som `readJson(codec, validator)`.
+- **Trådsäkerhet.** `FormBinder`s som bara anropar `FormFields` och en konstruktor är
+  tillståndslösa och kan delas som `static final`, liksom kodekar och validatorer; varje
+  bindning skapar en egen `FormFields`. Ett test med 200 samtidiga klienter kontrollerar att
+  varje klient får exakt sitt eget svar.
+- **Ett befintligt test ändrades.** `SourceRulesTests` fäster `spola.web`s exakta `requires`
+  och kan inte vara grönt med det nya beroendet; det enda som ändrades är den förväntade
+  listan (`transitive spola.validation` tillagd) och testets namn. Alla andra befintliga
+  testfiler är oförändrade utom registreringen av de nya sviterna i `WebTests`.

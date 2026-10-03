@@ -39,6 +39,11 @@ public final class WebTests {
                 ResponseCookieTests.tests(),
                 FormTests.tests(),
                 FormTests.readme(),
+                FieldErrorTests.tests(),
+                ValidatedJsonTests.tests(),
+                FormBinderTests.tests(),
+                ValidatedFormTests.tests(),
+                ValidationReadmeTests.tests(),
                 SourceRulesTests.tests())
                 .timeout(Duration.ofSeconds(60));
     }

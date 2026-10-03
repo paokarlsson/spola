@@ -1,0 +1,13 @@
+feat(web): add request validation and form binding to spola.web
+
+spola.web now requires spola.validation and can validate JSON bodies with
+readJson(codec, validator), answering 400 with per-field errors and codes.
+New FormBinder/FormFields bind forms and query parameters to records,
+collecting every error, without echoing values; readForm/bindQuery get
+validator variants and WebException.invalid builds the shared 400 problem.
+
+Gauntlet-Run: 20261003-1205-validation-webb
+Gauntlet-Round: 1/5
+Gauntlet-Verdict: PASS (0 blocker, 0 major, 5 minor upheld)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>

@@ -11,6 +11,8 @@ import spola.http.Headers;
 import spola.http.Request;
 import spola.json.JsonLimits;
 import spola.json.codec.JsonCodec;
+import spola.validation.Validated;
+import spola.validation.Validator;
 
 /**
  * The request a {@link WebHandler} and a {@link Filter} get: the underlying
@@ -35,9 +37,17 @@ import spola.json.codec.JsonCodec;
  * {@link #cookies()}.
  *
  * <p>The body can be read once: as JSON with {@link #readJson} (the counterpart of Spring's
- * {@code @RequestBody}), as a form with {@link #readForm()}, or as a stream with
+ * {@code @RequestBody}), as a form with {@link #readForm()} or bound with
+ * {@link #readForm(FormBinder)}, or as a stream with
  * {@link #body()} or {@link #bytes()}. Every request derived with {@link #withAttribute} shares
  * the body and that rule, and the parsed query and cookies.
+ *
+ * <p><b>Validation</b> (the counterpart of Spring's {@code @Valid}): {@code readJson},
+ * {@code readForm} and {@code bindQuery} take an optional {@link Validator}. Mapping (or
+ * binding) always comes first; the validator runs only on a value that was read, parsed and
+ * mapped (or bound) without error, and its violations give the 400 of
+ * {@link WebException#invalid(Validated.Invalid)}. A handler therefore never gets an invalid
+ * value, and there is no {@code BindingResult}.
  */
 public final class WebRequest {
 
@@ -416,6 +426,69 @@ public final class WebRequest {
     }
 
     /**
+     * Reads the body as JSON with the router's {@link JsonLimits}, decodes it with {@code codec}
+     * and validates the value: the counterpart of Spring's {@code @Valid @RequestBody}. See
+     * {@link #readJson(JsonCodec, JsonLimits, Validator)} for the rules.
+     *
+     * <pre>{@code
+     * CreateOrder order = request.readJson(CREATE_ORDER, CREATE_ORDER_RULES); // valid, or 400
+     * }</pre>
+     *
+     * @param codec     the codec
+     * @param validator the validator
+     * @param <T>       the decoded type
+     * @return the value, valid
+     * @throws WebException                     415, 413 or 400 as for
+     *                                          {@link #readJson(JsonCodec, JsonLimits)}, or the 400
+     *                                          of {@link WebException#invalid(Validated.Invalid)}
+     * @throws IllegalStateException            if the body was already read
+     * @throws spola.http.RequestBodyException if the body is larger than
+     *                                          {@code HttpLimits.maxBodySize}, malformed or stops
+     *                                          arriving (the server answers with its status)
+     * @throws IOException                      if the connection fails
+     */
+    public <T> T readJson(JsonCodec<T> codec, Validator<? super T> validator) throws IOException {
+        return readJson(codec, body.jsonLimits(), validator);
+    }
+
+    /**
+     * Reads the body as JSON with {@code limits}, decodes it with {@code codec} and validates the
+     * value with {@code validator}. Every check of {@link #readJson(JsonCodec, JsonLimits)} comes
+     * first, in its order and with its responses (415, 400 for an empty body, 413, 400 for
+     * invalid JSON, 400 with {@code errors} for a mapping problem). Only then is
+     * {@code validator.check(value)} called: a mapping problem is answered before any
+     * validation, and the validator is never called for a body that could not be read, parsed
+     * or mapped (as in Spring, where {@code HttpMessageNotReadableException} comes before
+     * validation).
+     *
+     * <p>A {@link Validated.Valid} result gives the value. A {@link Validated.Invalid} result
+     * is the {@link WebException} of {@link WebException#invalid(Validated.Invalid)}: 400,
+     * {@code The request has N validation errors.} and every violation (at most 100) in
+     * {@code errors} with {@code path}, {@code message} and {@code code}, without the rejected
+     * values. An exception from the validator passes unchanged (the same instance), so the
+     * router's mappers or its 500 handle it.
+     *
+     * @param codec     the codec
+     * @param limits    the parser's limits for this body
+     * @param validator the validator
+     * @param <T>       the decoded type
+     * @return the value, valid
+     * @throws WebException                     415, 413 or 400 as listed
+     * @throws IllegalStateException            if the body was already read
+     * @throws NullPointerException             if an argument is {@code null} (checked before
+     *                                          the body is read)
+     * @throws spola.http.RequestBodyException if the body is larger than
+     *                                          {@code HttpLimits.maxBodySize}, malformed or stops
+     *                                          arriving (passed on unchanged)
+     * @throws IOException                      if the connection fails
+     */
+    public <T> T readJson(JsonCodec<T> codec, JsonLimits limits, Validator<? super T> validator)
+            throws IOException {
+        Objects.requireNonNull(validator, "validator");
+        return validated(readJson(codec, limits), validator);
+    }
+
+    /**
      * Reads the body as an {@code application/x-www-form-urlencoded} form, at most the router's
      * {@link RouterBuilder#maxFormSize} bytes (2 MiB unless set). See {@link #readForm(int)}
      * for the rules.
@@ -478,6 +551,108 @@ public final class WebRequest {
         }
         body.claimForForm();
         return FormBody.read(headers(), http.body(), maxBytes);
+    }
+
+    /**
+     * Reads the body as a form exactly as {@link #readForm()} does (the same 415, 413 and 400,
+     * the router's {@link RouterBuilder#maxFormSize} and the read-once rule) and binds it with
+     * {@code binder}: the counterpart of Spring's {@code @ModelAttribute}. See
+     * {@link FormFields} for the binding rules (codes {@code required}, {@code type} and
+     * {@code single}, empty values, paths, order, the limit of 100, no echoed values).
+     *
+     * <p>Binding errors are a {@link WebException} 400 with {@link WebException#errors()} and
+     * the detail {@code Request body has N problems.}, followed by
+     * {@code  The first 100 are listed.} when more than 100 were counted. An exception the
+     * binder throws after errors were collected is discarded for that 400; without collected
+     * errors it passes unchanged.
+     *
+     * @param binder the binder
+     * @param <T>    the bound type
+     * @return the value
+     * @throws WebException                     415, 413 or 400 as for {@link #readForm(int)}, or
+     *                                          400 with the binding errors
+     * @throws IllegalStateException            if the body was already read
+     * @throws spola.http.RequestBodyException if the body is larger than
+     *                                          {@code HttpLimits.maxBodySize}, malformed or stops
+     *                                          arriving (the server answers with its status)
+     * @throws IOException                      if the connection fails
+     */
+    public <T> T readForm(FormBinder<T> binder) throws IOException {
+        Objects.requireNonNull(binder, "binder");
+        return FormFields.bind(binder, readForm().asMap(), FormFields.BODY);
+    }
+
+    /**
+     * Reads and binds the body as {@link #readForm(FormBinder)} does, then validates the value:
+     * the counterpart of Spring's {@code @Valid @ModelAttribute}, without a
+     * {@code BindingResult}. The validator runs only when binding succeeded (binding errors
+     * are answered first, and the validator is not called); its violations give the 400 of
+     * {@link WebException#invalid(Validated.Invalid)}. An exception from the validator passes
+     * unchanged.
+     *
+     * @param binder    the binder
+     * @param validator the validator
+     * @param <T>       the bound type
+     * @return the value, valid
+     * @throws WebException                     415, 413 or 400 as for
+     *                                          {@link #readForm(FormBinder)}, or the 400 of
+     *                                          {@link WebException#invalid(Validated.Invalid)}
+     * @throws IllegalStateException            if the body was already read
+     * @throws spola.http.RequestBodyException if the body is larger than
+     *                                          {@code HttpLimits.maxBodySize}, malformed or stops
+     *                                          arriving (the server answers with its status)
+     * @throws IOException                      if the connection fails
+     */
+    public <T> T readForm(FormBinder<T> binder, Validator<? super T> validator) throws IOException {
+        Objects.requireNonNull(binder, "binder");
+        Objects.requireNonNull(validator, "validator");
+        return validated(readForm(binder), validator);
+    }
+
+    /**
+     * Binds the query parameters ({@link #queryParams()}) with {@code binder}, as
+     * {@link #readForm(FormBinder)} binds a form: the counterpart of Spring's
+     * {@code @ModelAttribute} on a {@code GET}. The body is never touched. Binding errors are a
+     * {@link WebException} 400 with {@link WebException#errors()} and the detail
+     * {@code Query has N problems.}, followed by {@code  The first 100 are listed.} when more
+     * than 100 were counted.
+     *
+     * @param binder the binder
+     * @param <T>    the bound type
+     * @return the value
+     * @throws WebException 400 if the query is invalid (see the class documentation) or with the
+     *                      binding errors
+     */
+    public <T> T bindQuery(FormBinder<T> binder) {
+        Objects.requireNonNull(binder, "binder");
+        return FormFields.bind(binder, queryParams(), FormFields.QUERY);
+    }
+
+    /**
+     * Binds the query parameters as {@link #bindQuery(FormBinder)} does, then validates the
+     * value. The validator runs only when binding succeeded; its violations give the 400 of
+     * {@link WebException#invalid(Validated.Invalid)}. An exception from the validator passes
+     * unchanged. The body is never touched.
+     *
+     * @param binder    the binder
+     * @param validator the validator
+     * @param <T>       the bound type
+     * @return the value, valid
+     * @throws WebException 400 if the query is invalid, with the binding errors, or the 400 of
+     *                      {@link WebException#invalid(Validated.Invalid)}
+     */
+    public <T> T bindQuery(FormBinder<T> binder, Validator<? super T> validator) {
+        Objects.requireNonNull(binder, "binder");
+        Objects.requireNonNull(validator, "validator");
+        return validated(bindQuery(binder), validator);
+    }
+
+    /** {@code value} if {@code validator} accepts it; otherwise the 400 of {@link WebException#invalid}. */
+    private static <T> T validated(T value, Validator<? super T> validator) {
+        if (validator.check(value) instanceof Validated.Invalid<?> invalid) {
+            throw WebException.invalid(invalid);
+        }
+        return value;
     }
 
     /**

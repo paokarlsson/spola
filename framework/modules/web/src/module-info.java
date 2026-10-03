@@ -25,11 +25,20 @@
  *       {@link spola.web.ResponseCookie} with {@code Responses.withCookie} out
  *       ({@code ResponseCookie}), and {@code application/x-www-form-urlencoded} bodies with
  *       {@code WebRequest.readForm} and {@link spola.web.FormData}.</li>
+ *   <li>Validation and binding ({@code @Valid}, {@code @ModelAttribute},
+ *       {@code MethodArgumentNotValidException}): {@code WebRequest.readJson(codec, validator)},
+ *       {@code readForm(binder, validator)} and {@code bindQuery(binder, validator)} with a
+ *       {@code spola.validation.Validator} and a {@link spola.web.FormBinder} over
+ *       {@link spola.web.FormFields}; violations and binding errors are a 400 with
+ *       {@code errors} ({@link spola.web.WebException#invalid}).</li>
  * </ul>
  *
  * <p>{@code spola.http} is required transitively because the API uses its {@code Request},
  * {@code Response} and {@code Headers}; {@code spola.json} is required transitively because
- * {@link spola.web.Problem} carries extension members as a {@code JsonObject}. No other Spola
+ * {@link spola.web.Problem} carries extension members as a {@code JsonObject};
+ * {@code spola.validation} is required transitively because the API takes its
+ * {@code Validator} and {@code ValidationException} and uses its {@code Validated}. The
+ * dependency goes this way only: {@code spola.validation} stays standalone. No other Spola
  * module is required, no reflection is used, and the module logs through
  * {@link java.lang.System.Logger} (logger name {@code spola.web}).
  *
@@ -39,6 +48,7 @@
 module spola.web {
     requires transitive spola.http;
     requires transitive spola.json;
+    requires transitive spola.validation;
     requires static java.net.http;
 
     exports spola.web;
