@@ -499,8 +499,47 @@
   den förväntade listan fick `transitive spola.validation` (annars kan bygget inte vara grönt).
   Övriga befintliga testfiler är oförändrade utom registreringen i `WebTests`.
 
+### Uppdrag 10a: säkerhet del 1, lösenordshashning och autentisering (`spola.security`)
+- Rad 10 i `PLAN.md` är delad i **10a** (detta: den fristående modulen `spola.security`) och
+  **10b** (filterkedja i `spola.web`, `SecurityContext` per förfrågan, HTTP Basic,
+  formulärinloggning, auktoriseringsregler, 401/403). **Rad 10 fortsätter i 10b.**
+- **Säkerhetskritisk kod.** Modulen hashar lösenord och avgör inloggningar. Den är testad mot
+  RFC 7914 §11 och mot JDK:ns `SecretKeyFactory`, men **en människa bör granska den** innan
+  ramverket används på riktigt.
+- Ny modul `spola.security` (`modules/security/`), utan några `requires` alls (bara
+  `java.base`). Tillagd i `MODULES` i `Build.java` med testingången
+  `spola.security.SecurityTests`. Inga andra moduler ändrade. Loggar på `System.Logger`
+  `spola.security`.
+- `Pbkdf2.deriveSha256(password, salt, iterations, lengthBytes)`: PBKDF2-HMAC-SHA256 (RFC 8018
+  §5.2) på `javax.crypto.Mac`; kräver lösenord och salt på minst en byte, `iterations >= 1` och
+  `1 <= lengthBytes <= 1024`.
+- `PasswordHasher` (`hash`, `matches`, `needsRehash`) och `Pbkdf2PasswordHasher` (`defaults()`:
+  600 000 iterationer, 16 byte salt, 32 byte hash; `of(...)` inom 10 000–10 000 000, 16–64,
+  16–64). Lösenord: UTF-8 med `REPORT`, 1–1 024 tecken (kontrolleras före kodningen), ingen
+  normalisering, byte-arrayen nollställs. PHC-format `$pbkdf2-sha256$i=N$salt$hash` (Base64
+  utan utfyllnad) med strikt tolkning: högst 256 tecken, utskrivbar ASCII, fem delar, `i` utan
+  inledande nolla 1–10 000 000, kanonisk Base64, salt 8–64 och hash 16–64 byte. En felaktig
+  hash ger `IllegalArgumentException` utan strängen. Jämförelse med `MessageDigest.isEqual`.
+- `User` (record; användarnamn 1–256 tecken, roller 1–100 tecken utskrivbar ASCII utan
+  mellanslag, oföränderlig sorterad kopia, `toString()` utan hash och med escapade styrtecken),
+  `UserStore`, `InMemoryUserStore` (`add`, `find`, `updatePassword`; trådsäker,
+  skiftlägeskänslig), `Identity` (`hasRole`), `AuthResult` (sealed: `Authenticated`,
+  `Failed`), `Failure` (`BAD_CREDENTIALS`, `DISABLED`), `PasswordUpgrade` och `Authenticator`
+  (dummyhash för okända och ogiltiga användarnamn och `null`-lösenord, `DISABLED` bara efter rätt
+  lösenord, uppgradering vid `needsRehash` där ett `RuntimeException` loggas med klassnamnet och
+  inloggningen ändå lyckas).
+- `README.md` i `modules/security/`: exemplet (`LoginExample.java`, kontrollerat av ett test)
+  bredvid Spring Security (`PasswordEncoder`-böna, `InMemoryUserDetailsManager`,
+  `DaoAuthenticationProvider` med `UserDetailsPasswordService`), jämförelsetabell och
+  avvikelsetabell.
+- 101 tester i `spola.security` (cirka 1 s): RFC 7914-vektorerna, 60 slumpade fall mot
+  `SecretKeyFactory`, hasharen, 44 felaktiga lagrade hashar, `User`/`Identity`/
+  `InMemoryUserStore`, `Authenticator` med räknande hasher, 200 virtuella trådar, markörer för
+  lösenord och hashar i `toString()` och undantag, README och källregler.
+
 ## Återstår (enligt `uppdrag/PLAN.md`)
-- 10–20 enligt planen (rad 08 är klar med 08a–08c, rad 09 med 09a och 09b).
+- 10b (rad 10 fortsätter: filterkedja, HTTP Basic, formulärinloggning, auktorisering, 401/403)
+  och 11–20 enligt planen (rad 08 är klar med 08a–08c, rad 09 med 09a och 09b).
 - **Kvar från friktionsrapporten i 05c** (`modules/demo/README.md`, avsnitt "Friktion"):
   - **DI:** den typade formen av `to(...)` går inte att blanda `Class` och `Key` i; ett enda
     kvalificerat beroende gör att alla måste skrivas `Key.of(...)` (punkt 3).
@@ -517,6 +556,19 @@
     `LoggingSettings` efter bindningen, inte i `ConfigException` (punkt 7).
 
 ## Kända problem och begränsningar
+- **Säkerhet (spola.security, 10a):** säkerhetskritisk; bör granskas av en människa. Bara
+  PBKDF2-HMAC-SHA256 (ingen BCrypt, SCrypt, Argon2 eller delegerande hasher). Ingen låsning av
+  konton och ingen hastighetsbegränsning; varje försök kostar en PBKDF2-beräkning, så en
+  angripare kan belasta CPU:n (utanför 10a). Ingen normalisering av
+  lösenord (Unicode eller blanksteg) eller användarnamn. Ingen lösenordspolicy. Lösenordet
+  finns som `CharSequence` (oftast en `String`) hos anroparen och kan inte nollställas av
+  modulen; bara de kodade byten och PBKDF2:s interna kopior nollställs, och `Mac`-instansens
+  inre tillstånd (nyckelns ipad/opad) rensas inte (JDK:n har inget API för det). Ett lösenord
+  som `matches` vägrar (tomt, för långt, ensamt surrogat) ger `false` utan PBKDF2, alltså
+  snabbare än andra; det avslöjar inget om användaren. En hash med andra inställningar än
+  hasharens (inom tolkningsgränserna, t.ex. 1 iteration) verifieras med sina egna inställningar;
+  den som kan skriva i användarlagringen kan alltså sänka kostnaden för sin egen rad.
+  Konstanttid gäller jämförelsen av hashar, inte uppslagningen i `UserStore`.
 - **Validering i webben (spola.web, 09b):** formulär är platta; nästlade namn
   (`address.city`, `items[0].qty`) binds inte till nästlade objekt (skicka JSON). Ingen
   generering av binders från records (allt skrivs i bindern). Ingen i18n av meddelanden eller

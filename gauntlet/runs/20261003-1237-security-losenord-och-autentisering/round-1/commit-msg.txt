@@ -1,0 +1,13 @@
+feat(security): add spola.security with PBKDF2 hashing and authenticator
+
+New standalone module spola.security: PBKDF2-HMAC-SHA256 on Mac, tested
+against RFC 7914 vectors; a PHC-format password hasher with strict parsing;
+users, an in-memory user store, and an authenticator that checks a dummy
+hash for unknown users and upgrades old hashes. Judged FAIL: a hash
+upgrade can overwrite a concurrent password change (fixed in next round).
+
+Gauntlet-Run: 20261003-1237-security-losenord-och-autentisering
+Gauntlet-Round: 1/5
+Gauntlet-Verdict: FAIL (0 blocker, 1 major, 3 minor upheld)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>

@@ -2269,3 +2269,112 @@ och `FormFields.path` (sökvägsrenderingen).
   och kan inte vara grönt med det nya beroendet; det enda som ändrades är den förväntade
   listan (`transitive spola.validation` tillagd) och testets namn. Alla andra befintliga
   testfiler är oförändrade utom registreringen av de nya sviterna i `WebTests`.
+
+## Säkerhet del 1: lösenordshashning och autentisering (`spola.security`)
+
+Uppdrag 10a, första delen av rad 10 i `PLAN.md`. Lösenordshashning, användare och
+autentisering utan HTTP. Filterkedjan i `spola.web`, HTTP Basic, formulärinloggning,
+auktoriseringsregler och 401/403 är 10b. Koden är säkerhetskritisk och bör granskas av en
+människa.
+
+### API (paket `spola.security`)
+
+| Typ | Roll |
+|---|---|
+| `Pbkdf2` | `deriveSha256(password, salt, iterations, lengthBytes)`: PBKDF2-HMAC-SHA256 på `Mac` |
+| `PasswordHasher` | gränssnitt `hash`, `matches`, `needsRehash` (Springs `PasswordEncoder`) |
+| `Pbkdf2PasswordHasher` | `defaults()`, `of(iterations, saltBytes, hashBytes)`, PHC-format, gränserna som konstanter |
+| `User` | record `(username, passwordHash, roles, enabled)`, `toString()` utan hash |
+| `UserStore` | funktionellt gränssnitt `Optional<User> find(String)` |
+| `InMemoryUserStore` | trådsäker: `add`, `find`, `updatePassword` |
+| `Authenticator` | `of(store, hasher)`, `of(store, hasher, upgrade)`, `authenticate(username, password)` |
+| `PasswordUpgrade` | funktionellt gränssnitt `upgrade(username, newHash)` |
+| `AuthResult` | sealed: `Authenticated(Identity)`, `Failed(Failure)` |
+| `Failure` | `BAD_CREDENTIALS`, `DISABLED` |
+| `Identity` | record `(name, roles)` med `hasRole` |
+
+Intern klass: `Names` (regler för användarnamn och roller, escaping i `toString()`).
+
+### Beslut
+
+- **Fristående modul på `System.Logger`.** `spola.security` har inga `requires` alls. I 10b ska
+  `spola.web` och `spola.security` kopplas ihop, och riktningen bestäms då; 10a får därför inte
+  bero på `spola.web`, `spola.http` eller någon annan Spola-modul. Hashning och autentisering
+  behövs också utan HTTP (ett CLI, en batch, en annan protokollserver). Loggningen går direkt
+  till `System.Logger` med namnet `spola.security`, som i `spola.http` och `spola.web`, i
+  stället för via `spola.util`, så att modulen förblir fristående. Det enda som loggas är
+  `WARNING` när en uppgradering misslyckas, med undantagets klassnamn (escapat) och aldrig dess
+  meddelande, som kan innehålla hashen eller data från en databas. En paketprivat fabrik tar en
+  egen logger, så att testerna kan se loggraden utan `java.logging`.
+- **PBKDF2 på `Mac`, lösenordet som UTF-8.** JDK:ns `SecretKeyFactory`
+  (`PBKDF2WithHmacSHA256`) tar ett `char[]` och kodar det själv; hur är en detalj i
+  leverantören. `Pbkdf2` tar bytes, och `Pbkdf2PasswordHasher` gör dem på ett enda uttryckligt
+  sätt: UTF-8 med `CodingErrorAction.REPORT`, så att ett ensamt surrogat är ett fel och inte
+  ett tyst `?`. Implementationen följer RFC 8018 §5.2 rakt av: `Mac` initieras en gång per
+  anrop och varje block kostar `iterations` HMAC-anrop (`doFinal` skriver i en återanvänd
+  buffert). Den testas mot RFC 7914 §11:s två vektorer och mot `SecretKeyFactory` för 60
+  slumpade fall (ASCII, Latin-1, CJK, kombinerande tecken och surrogatpar; 1–3 000 iterationer;
+  1–100 byte, så både ett och flera block). Nyckeln ges till `Mac` som en egen privat
+  `SecretKey` som kan nollställas (`SecretKeySpec.destroy()` stöds inte); de kodade
+  lösenordsbyten och de mellanliggande blocken nollställs efter användning, och kodningen
+  skriver i en buffert på `3 * längd` byte, så den aldrig växer och lämnar kopior. Lösenordet
+  som `CharSequence` och `Mac`-instansens inre tillstånd kan modulen inte rensa. Bara
+  HMAC-SHA-256 stöds: det finns officiella vektorer för den, och fler algoritmer utan sådana
+  läggs inte till.
+- **Standardparametrar och två uppsättningar gränser.** `defaults()` är 600 000 iterationer,
+  16 byte salt och 32 byte hash (OWASP:s rekommendation för PBKDF2-HMAC-SHA256). Vid skapande
+  (`of`) gäller 10 000–10 000 000 iterationer, 16–64 byte salt och 16–64 byte hash: färre
+  iterationer eller kortare salt är för svagt för nya hashar. Vid tolkning gäller 1–10 000 000
+  iterationer och 8–64 byte salt: äldre hashar med färre iterationer eller kortare salt kan
+  verifieras och sedan uppgraderas, medan taket gör att en korrupt rad med miljarder
+  iterationer inte kan låsa en tråd. Lösenordet är 1–1 024 tecken; längden kontrolleras före
+  kodningen och före PBKDF2, så ett jättelikt lösenord inte kostar något. `Pbkdf2` själv gör
+  inga policybedömningar (från 1 iteration) men begränsar utdata till 1 024 byte.
+- **PHC-format med strikt, fail-closed tolkning.** `$pbkdf2-sha256$i=<n>$<salt>$<hash>` med
+  standard-Base64 utan utfyllnad. Strängen bär iterationer, saltet och (genom sin längd)
+  hashlängden, så en hash kan verifieras med sina egna inställningar och `needsRehash` kan
+  jämföra dem med hasharens. Tolkningen godtar exakt en stavning per värde: längden (högst 256
+  tecken) kontrolleras först, sedan utskrivbar ASCII, fem delar med tom första del, id exakt
+  `pbkdf2-sha256`, `i=` följt av högst åtta decimala siffror utan inledande nolla (så inget kan
+  spilla över) och högst 10 000 000, och kanonisk Base64 (avkodning och ny kodning ger samma
+  text; det fångar utfyllnad, `-_` och satta oanvända bitar, som JDK:ns avkodare annars
+  godtar). Ingen alternativ stavning betyder att två olika strängar aldrig är samma hash.
+- **En felaktig hash ger undantag, inte `false`.** En lagrad hash som inte går att tolka är ett
+  datafel (en trasig migrering, en annan algoritm, en korrupt rad), inte ett fel lösenord. Som
+  `false` skulle den se ut som ett misslyckat inloggningsförsök och kunna gå obemärkt förbi.
+  `matches` och `needsRehash` tolkar hashen först och kastar `IllegalArgumentException`
+  oavsett lösenord, med ett kort meddelande som bara säger vad som är fel, aldrig strängen
+  eller delar av den (den kan vara en hash från databasen), och utan orsak (JDK:ns
+  Base64-fel namnger tecknet). `Authenticator` släpper undantaget igenom.
+- **Okända användare kostar lika mycket.** När `Authenticator` skapas hashar den ett fast
+  dummylösenord med samma hasher. För en okänd användare anropas `matches` exakt en gång mot
+  dummyhashen, så arbetet blir detsamma som för en känd användare med fel lösenord (Springs
+  `userNotFoundEncodedPassword`). Ett användarnamn som är `null`, tomt eller längre än 256
+  tecken och ett `null`-lösenord ger `BAD_CREDENTIALS` utan undantag och utan uppslag i
+  lagringen, men dummyhashen kontrolleras ändå en gång (för `null`-lösenordet med
+  dummylösenordet, eftersom `matches` kräver ett lösenord). Uppslagningen i `UserStore` och
+  skillnaden mellan en träff och en miss där ligger utanför skyddet.
+- **`DISABLED` bara efter rätt lösenord.** Spring kontrollerar avstängda konton före
+  lösenordet, så den som prövar ett konto utan att kunna lösenordet får veta att det är
+  avstängt. Här kontrolleras lösenordet först; är det fel blir svaret `BAD_CREDENTIALS` oavsett
+  konto. Bara den som kan lösenordet får veta att kontot är avstängt, och det behöver hon för
+  att förstå varför inloggningen nekas.
+- **Uppgradering som inte stoppar inloggningen.** När lösenordet stämt, kontot är aktivt och
+  `needsRehash` är `true` anropas `PasswordUpgrade` med en ny hash av samma lösenord (Springs
+  `UserDetailsPasswordService`). `InMemoryUserStore.updatePassword` har samma form, så
+  `store::updatePassword` räcker. Användaren har bevisat sitt lösenord; att den nya hashen inte
+  kunde sparas (databasen nere, en konflikt) är ett driftproblem som ska synas i loggen men inte
+  låsa ute användaren, och den gamla hashen fungerar fortfarande. Därför fångas ett
+  `RuntimeException` från hashningen eller uppgraderingen och loggas på `WARNING` med bara
+  klassnamnet. Ett `Error` fångas inte (det är inte ett fel i uppgraderingen utan i JVM:en
+  eller i ett test). Utan `PasswordUpgrade` anropas varken `needsRehash` eller `hash`.
+- **Resultat som värde.** `authenticate` ger det förseglade `AuthResult` i stället för att
+  kasta som Springs `AuthenticationProvider`: ett misslyckat försök är ett vanligt utfall, och
+  en `switch` över `Authenticated`/`Failed` är fullständig. Undantag är reserverade för datafel
+  (lagringens undantag, en felaktig hash, en lagring som ger `null`).
+- **Användare och roller.** `User` och `Identity` gör en oföränderlig, sorterad kopia av rollerna
+  (förutsägbar `toString()`); en roll är 1–100 tecken utskrivbar ASCII utan mellanslag, så den
+  kan stå i en loggrad eller ett huvud utan escaping. Användarnamn har bara längdgränsen
+  1–256 tecken och jämförs exakt; `toString()` escapar styrtecken, radavgränsare,
+  bidi-tecken och ensamma surrogat så att ett namn inte kan förfalska en loggrad, och visar
+  aldrig hashen. `Identity` får namnet och rollerna från den `User` som lagringen gav.
