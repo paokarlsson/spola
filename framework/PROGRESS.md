@@ -283,8 +283,42 @@
   stoppar servern), 1 000 samtidiga klienter, loggar och felkroppar utan
   styrtecken, och källkodsreglerna.
 
+### Uppdrag 07b: HTTP-server del 2, TLS (HTTPS) ovanpå `spola.http`
+- TLS som valfritt värde: `HttpServerOptions.tls` (`Optional<TlsOptions>`, `withTls`,
+  `withoutTls`; `DEFAULT` utan TLS, den gamla konstruktorn finns kvar). `HttpTimeouts` fick
+  `handshakeTimeout` (standard 10 s; den gamla konstruktorn med fem värden finns kvar).
+- `TlsOptions` (record: `TlsIdentity`, `ClientAuth`, `Optional<TlsTrust>`, protokoll,
+  chiffersviter) med `pkcs12(path, password[, alias])`, `pem(chain, key)`, `of(SSLContext)`,
+  `withProtocols`, `withCipherSuites`, `withClientAuth`. `TlsIdentity`, `TlsTrust` (PKCS#12
+  eller PEM), `ClientAuth` (`NONE`/`WANT`/`NEED`), `TlsInfo`, `TlsMaterialException`.
+  `Request.scheme()` och `Request.tls()`.
+- Material läses och kontrolleras när `TlsOptions` skapas; lösenord kopieras och nollställs;
+  inga lösenord eller nyckelbytes i meddelanden, orsaker eller `toString()`. Strikt PEM-läsare
+  utan preview-API; okrypterad PKCS#8 (RSA, EC, Ed25519/Ed448); krypterade nycklar och PKCS#1
+  avvisas med konverteringskommando. Nyckeln kontrolleras mot certifikatet, kedjans ordning
+  kontrolleras.
+- Bara TLS 1.3 och 1.2; JDK:ns chiffersviter som standard, uttrycklig lista kontrolleras.
+  ALPN bara `http/1.1`. Handslaget på anslutningens virtuella tråd inom en total
+  `handshakeTimeout` från accept (vakttråden stänger vid deadline); anslutningar i handslag
+  räknas mot `maxConnections`. Misslyckade handslag loggas på `DEBUG`, escapat.
+- Över TLS: samma HTTP-semantik, `writeTimeout`, mjukt stopp med `close_notify` (ledig
+  anslutning: `shutdownInput`, tråden stänger själv), avbrott via TCP-socketen.
+- Modulen sätter inga system- eller säkerhetsegenskaper. README: HTTPS-avsnitt med PKCS#12,
+  PEM och mTLS bredvid Spring Boot, tabell `server.ssl.*` → `TlsOptions` med avvikelser,
+  omförhandlingsrisken och `jdk.tls.rejectClientInitiatedRenegotiation`.
+- Tester: 07a:s 172 oförändrade förväntningar (urvalet av protokolltester körs nu också över
+  TLS via en `Transport`-parameter), plus TLS-tester: `HttpClient` GET/POST mot PKCS#12,
+  PKCS#12 med alias, PEM RSA/EC/Ed25519 och `SSLContext` (värdnamnskontroll på, också ett
+  negativt namnfall), TLS 1.3/1.2 och avvisade TLS 1.1/1.0/SSLv3 (JSSE-klient och råa
+  ClientHello), ALPN, mTLS `NEED`/`WANT`/`NONE`, 31 fall felaktigt material, lösenordsarrayen,
+  options-kontroller, `handshakeTimeout` (ClientHello en byte i taget och tyst klient medan en
+  annan klient betjänas), misslyckade handslag och loggar, `maxConnections` under handslag,
+  `writeTimeout`, mjukt stopp och 200 samtidiga HTTPS-klienter. Certifikaten skapas av
+  testerna med `keytool` och `KeyStore`-API:t (`TestPki`). Totalt 281 tester i modulen,
+  cirka 30 s.
+
 ## Återstår (enligt `uppdrag/PLAN.md`)
-- 07b (TLS ovanpå `spola.http`) och 08–20 enligt planen.
+- 08–20 enligt planen.
 - **Kvar från friktionsrapporten i 05c** (`modules/demo/README.md`, avsnitt "Friktion"):
   - **DI:** den typade formen av `to(...)` går inte att blanda `Class` och `Key` i; ett enda
     kvalificerat beroende gör att alla måste skrivas `Key.of(...)` (punkt 3).
@@ -314,8 +348,17 @@
   ledig anslutning går förlorad (klienten ser en stängd anslutning). Efterläsningen efter
   `Connection: close` håller anslutningen (och en plats i `maxConnections`) upp till 2 s om
   klienten inte stänger. Chunk-tilläggens radgräns (4 096 byte) och backlog (1 024) är fasta.
-  Ingen TLS (07b), ingen routing eller procentavkodning (08), ingen HTTP/2, ingen komprimering.
+  Ingen routing eller procentavkodning (08), ingen HTTP/2, ingen komprimering.
   Kroppen kan bara läsas på handlerns tråd medan handlern eller dess `BodyWriter` kör.
+- **HTTPS (spola.http, 07b):** ingen omladdning av certifikat i drift, ingen SNI med flera
+  certifikat, ingen spärrkontroll (CRL/OCSP) av klientcertifikat utöver JDK:ns standard.
+  Krypterade PEM-nycklar, PKCS#1 och separata nyckellösenord i PKCS#12 stöds inte; JKS bara
+  via `TlsOptions.of(SSLContext)`. Klientinitierad omförhandling i TLS 1.2 styrs bara av JDK:ns
+  globala `jdk.tls.rejectClientInitiatedRenegotiation` (modulen sätter den inte). Vanlig HTTP
+  till TLS-porten får inget HTTP-svar, bara en stängd anslutning. `Request.tls()` kräver en
+  `getSession()` per förfrågan. Nyckelmaterialets text (`String` från filen) kan inte
+  nollställas. Väcks en blockerad läsning inte av `shutdownInput` (beror på plattformen)
+  stängs en ledig TLS-anslutning vid mjukt stopp först vid `shutdownTimeout`.
 - **JSON (spola.json):** indenterad utskrift växer med kvadraten på djupet (indraget), så
   `writePretty` på ett mycket djupt träd (tusentals nivåer) ger mycket stor utdata; kompakt
   utskrift är linjär. Ett parsat träd tar upp till ungefär 25 gånger indatans storlek i minne

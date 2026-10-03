@@ -15,11 +15,16 @@ final class ExpectTests {
     }
 
     static Suite tests() {
+        return tests(Transport.PLAIN);
+    }
+
+    /** The same tests over {@code t} (plain TCP or TLS). */
+    static Suite tests(Transport t) {
         return suite("Expect: 100-continue",
                 test("100 Continue is sent when the handler reads the body", () -> {
                     Handler handler = request -> Response.text(200, "got " + new String(request.bytes(),
                             StandardCharsets.US_ASCII));
-                    try (var server = Support.start(handler); var c = new Support.Client(server.port())) {
+                    try (var server = t.start(handler); var c = t.client(server.port())) {
                         c.send("POST / HTTP/1.1\r\nHost: a\r\nContent-Length: 5\r\nExpect: 100-continue\r\n\r\n");
                         // the client waits for 100 before it sends the body
                         assertEquals("HTTP/1.1 100 Continue", c.line());
@@ -34,8 +39,8 @@ final class ExpectTests {
                     }
                 }),
                 test("no 100 Continue when the handler answers without reading the body", () -> {
-                    try (var server = Support.start(request -> Response.text(401, "no"));
-                         var c = new Support.Client(server.port())) {
+                    try (var server = t.start(request -> Response.text(401, "no"));
+                         var c = t.client(server.port())) {
                         c.send("POST / HTTP/1.1\r\nHost: a\r\nContent-Length: 5\r\nExpect: 100-continue\r\n\r\n");
                         var reply = c.read();
                         assertEquals("HTTP/1.1 401 Unauthorized", reply.statusLine());
@@ -47,10 +52,10 @@ final class ExpectTests {
                 test("no 100 Continue when Content-Length is already over maxBodySize: 413 at once", () -> {
                     var calls = new java.util.concurrent.atomic.AtomicInteger();
                     var options = Support.options().withLimits(HttpLimits.DEFAULT.withMaxBodySize(100));
-                    try (var server = Support.start(options, request -> {
+                    try (var server = t.start(options, request -> {
                         calls.incrementAndGet();
                         return Response.status(204);
-                    }); var c = new Support.Client(server.port())) {
+                    }); var c = t.client(server.port())) {
                         c.send("POST / HTTP/1.1\r\nHost: a\r\nContent-Length: 101\r\nExpect: 100-continue\r\n\r\n");
                         var reply = c.read();
                         assertEquals("HTTP/1.1 413 Content Too Large", reply.statusLine());
@@ -61,14 +66,14 @@ final class ExpectTests {
                 }),
                 test("Expect is ignored in HTTP/1.0 and for a request without a body", () -> {
                     Handler handler = request -> Response.text(200, new String(request.bytes(), StandardCharsets.US_ASCII));
-                    try (var server = Support.start(handler)) {
-                        try (var c = new Support.Client(server.port())) {
+                    try (var server = t.start(handler)) {
+                        try (var c = t.client(server.port())) {
                             c.send("POST / HTTP/1.0\r\nContent-Length: 2\r\nExpect: 100-continue\r\n\r\nhi");
                             var reply = c.read();
                             assertEquals("HTTP/1.1 200 OK", reply.statusLine());
                             assertEquals("hi", reply.text());
                         }
-                        try (var c = new Support.Client(server.port())) {
+                        try (var c = t.client(server.port())) {
                             var reply = c.send(Support.get("/", "Expect: 100-continue")).read();
                             assertEquals("HTTP/1.1 200 OK", reply.statusLine());
                             assertEquals(200, c.send(Support.get("/")).read().status());

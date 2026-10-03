@@ -18,7 +18,7 @@ import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * An HTTP/1.1 server on a {@link ServerSocket}, with one virtual thread per connection and
- * blocking I/O.
+ * blocking I/O; HTTPS when the options have {@link HttpServerOptions#tls() TLS}.
  *
  * <pre>{@code
  * try (var server = HttpServer.start(HttpServerOptions.DEFAULT.withPort(8080),
@@ -30,7 +30,14 @@ import java.util.concurrent.atomic.AtomicLong;
  *
  * <p>One platform thread accepts connections. It takes a connection only when fewer than
  * {@link HttpLimits#maxConnections()} are open; otherwise new connections wait in the operating
- * system's backlog. A guard thread enforces {@link HttpTimeouts#writeTimeout()}.
+ * system's backlog. A guard thread enforces {@link HttpTimeouts#writeTimeout()} (and
+ * {@link HttpTimeouts#handshakeTimeout()}).
+ *
+ * <p>With TLS, the accepting thread only accepts: each connection's own virtual thread puts TLS
+ * over the socket and runs the handshake before it reads the first request, within
+ * {@link HttpTimeouts#handshakeTimeout()} from accept. A connection in its handshake counts
+ * against {@link HttpLimits#maxConnections()}. A failed handshake (wrong protocol, unknown
+ * certificate, plain HTTP, garbage) closes that connection and is logged at {@code DEBUG}.
  *
  * <p>A started server keeps the JVM alive until {@link #close()} is done, even when {@code main}
  * has returned: one non-daemon platform thread (the keeper) waits for that. It ends only after
@@ -57,6 +64,7 @@ public final class HttpServer implements AutoCloseable {
     private final Handler handler;
     private final System.Logger log;
     private final ServerSocket serverSocket;
+    private final TlsLayer tls; // null for plain HTTP
     private final Semaphore permits;
     private final Set<Connection> connections = ConcurrentHashMap.newKeySet();
     private final AtomicLong connectionIds = new AtomicLong();
@@ -72,6 +80,7 @@ public final class HttpServer implements AutoCloseable {
         this.options = options;
         this.handler = handler;
         this.log = log;
+        this.tls = options.tls().map(TlsLayer::of).orElse(null);
         this.permits = new Semaphore(options.limits().maxConnections());
         this.serverSocket = new ServerSocket();
         try {
@@ -114,7 +123,8 @@ public final class HttpServer implements AutoCloseable {
             throw e;
         }
         if (log.isLoggable(Level.INFO)) {
-            log.log(Level.INFO, "listening on " + server.serverSocket.getLocalSocketAddress());
+            log.log(Level.INFO, "listening on " + server.serverSocket.getLocalSocketAddress()
+                    + (server.tls != null ? " (HTTPS)" : ""));
         }
         return server;
     }
@@ -147,6 +157,11 @@ public final class HttpServer implements AutoCloseable {
 
     System.Logger log() {
         return log;
+    }
+
+    /** The TLS of this server, or null for plain HTTP. */
+    TlsLayer tls() {
+        return tls;
     }
 
     boolean closing() {
@@ -216,9 +231,15 @@ public final class HttpServer implements AutoCloseable {
         }
     }
 
+    /**
+     * The guard thread: closes the socket of a write without progress for longer than
+     * {@link HttpTimeouts#writeTimeout()} and of a TLS handshake that is still running at its
+     * deadline ({@link HttpTimeouts#handshakeTimeout()} after accept).
+     */
     private void guardWrites() {
         long timeout = options.timeouts().writeTimeout().toNanos();
-        long period = Math.clamp(timeout / 4 / 1_000_000, 5, 1_000);
+        long shortest = tls == null ? timeout : Math.min(timeout, options.timeouts().handshakeTimeout().toNanos());
+        long period = Math.clamp(shortest / 4 / 1_000_000, 5, 1_000);
         while (!guardStopped) {
             try {
                 Thread.sleep(period);
@@ -228,6 +249,7 @@ public final class HttpServer implements AutoCloseable {
             long now = System.nanoTime();
             for (var connection : connections) {
                 connection.checkWrite(now, timeout);
+                connection.checkHandshake(now);
             }
         }
     }

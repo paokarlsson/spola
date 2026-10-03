@@ -22,10 +22,15 @@ final class ConnectionTests {
     }
 
     static Suite tests() {
+        return tests(Transport.PLAIN);
+    }
+
+    /** The same tests over {@code t} (plain TCP or TLS). */
+    static Suite tests(Transport t) {
         return suite("connections",
                 test("keep-alive: three requests on one connection", () -> {
                     var calls = new AtomicInteger();
-                    try (var server = Support.start(counting(calls)); var c = new Support.Client(server.port())) {
+                    try (var server = t.start(counting(calls)); var c = t.client(server.port())) {
                         for (int i = 1; i <= 3; i++) {
                             var reply = c.send(Support.get("/r" + i)).read();
                             assertEquals(200, reply.status());
@@ -37,7 +42,7 @@ final class ConnectionTests {
                 }),
                 test("pipelining: two requests in one write give two responses in order", () -> {
                     var calls = new AtomicInteger();
-                    try (var server = Support.start(counting(calls)); var c = new Support.Client(server.port())) {
+                    try (var server = t.start(counting(calls)); var c = t.client(server.port())) {
                         c.send(Support.get("/first") + Support.get("/second"));
                         assertEquals("/first #1", c.read().text());
                         assertEquals("/second #2", c.read().text());
@@ -49,13 +54,13 @@ final class ConnectionTests {
                 }),
                 test("Connection: close from the client: the response says close and the server closes", () -> {
                     var calls = new AtomicInteger();
-                    try (var server = Support.start(counting(calls)); var c = new Support.Client(server.port())) {
+                    try (var server = t.start(counting(calls)); var c = t.client(server.port())) {
                         var reply = c.send(Support.get("/bye", "Connection: close")).read();
                         assertEquals(200, reply.status());
                         assertTrue(reply.closes(), "Connection: close in the response");
                         assertTrue(c.closedByServer(), "closed after the response");
                     }
-                    try (var server = Support.start(counting(calls)); var c = new Support.Client(server.port())) {
+                    try (var server = t.start(counting(calls)); var c = t.client(server.port())) {
                         // as one token in a list, any case
                         var reply = c.send(Support.get("/bye", "Connection: x-foo, CLOSE")).read();
                         assertTrue(reply.closes());
@@ -64,15 +69,15 @@ final class ConnectionTests {
                 }),
                 test("HTTP/1.0 is closed after the response, also with Connection: keep-alive", () -> {
                     var calls = new AtomicInteger();
-                    try (var server = Support.start(counting(calls))) {
-                        try (var c = new Support.Client(server.port())) {
+                    try (var server = t.start(counting(calls))) {
+                        try (var c = t.client(server.port())) {
                             var reply = c.send("GET /old HTTP/1.0\r\n\r\n").read();
                             assertEquals(200, reply.status());
                             assertEquals("/old #1", reply.text());
                             assertTrue(reply.closes());
                             assertTrue(c.closedByServer());
                         }
-                        try (var c = new Support.Client(server.port())) {
+                        try (var c = t.client(server.port())) {
                             var reply = c.send("GET /old HTTP/1.0\r\nConnection: keep-alive\r\nHost: a\r\n\r\n").read();
                             assertEquals(200, reply.status());
                             assertTrue(reply.closes());
@@ -82,7 +87,7 @@ final class ConnectionTests {
                 }),
                 test("a body the handler did not read is skipped; the next request works", () -> {
                     var calls = new AtomicInteger();
-                    try (var server = Support.start(counting(calls)); var c = new Support.Client(server.port())) {
+                    try (var server = t.start(counting(calls)); var c = t.client(server.port())) {
                         c.send("POST /ignored HTTP/1.1\r\nHost: a\r\nContent-Length: 11\r\n\r\nhello world");
                         assertEquals("/ignored #1", c.read().text());
                         assertEquals("/next #2", c.send(Support.get("/next")).read().text());
@@ -103,7 +108,7 @@ final class ConnectionTests {
                         var first = request.body().readNBytes(3);
                         return Response.text(200, new String(first, StandardCharsets.US_ASCII));
                     };
-                    try (var server = Support.start(handler); var c = new Support.Client(server.port())) {
+                    try (var server = t.start(handler); var c = t.client(server.port())) {
                         c.send("POST / HTTP/1.1\r\nHost: a\r\nContent-Length: 10\r\n\r\n0123456789" + Support.get("/"));
                         assertEquals("012", c.read().text());
                         assertEquals("", c.read().text()); // the GET, which has no body
@@ -111,7 +116,7 @@ final class ConnectionTests {
                 }),
                 test("empty lines before a request-line are skipped (RFC 9112 2.2)", () -> {
                     var calls = new AtomicInteger();
-                    try (var server = Support.start(counting(calls)); var c = new Support.Client(server.port())) {
+                    try (var server = t.start(counting(calls)); var c = t.client(server.port())) {
                         assertEquals(200, c.send("\r\n\r\n" + Support.get("/after-empty")).read().status());
                     }
                 }),
@@ -123,7 +128,7 @@ final class ConnectionTests {
                                 + "|" + request.headers().all("x-multi") + "|" + request.headers().first("X-ONE").orElse("-"));
                         return Response.status(204);
                     };
-                    try (var server = Support.start(handler); var c = new Support.Client(server.port())) {
+                    try (var server = t.start(handler); var c = t.client(server.port())) {
                         c.send("GET /a/b%20c?x=1&y HTTP/1.1\r\nHost: example.com:8080\r\nX-Multi: 1\r\nx-one:  v  \r\n"
                                 + "X-MULTI: 2\r\n\r\n");
                         assertEquals(204, c.read().status());

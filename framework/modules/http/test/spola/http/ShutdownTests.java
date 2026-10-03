@@ -53,46 +53,8 @@ final class ShutdownTests {
 
     static Suite tests() {
         return suite("graceful stop",
-                test("a request in progress finishes with Connection: close; idle connections are closed", () -> {
-                    var entered = new CountDownLatch(1);
-                    var release = new CountDownLatch(1);
-                    Handler handler = request -> {
-                        if (request.path().equals("/slow")) {
-                            entered.countDown();
-                            release.await();
-                            return Response.text(200, "slow done");
-                        }
-                        return Response.text(200, "quick");
-                    };
-                    var server = Support.start(handler);
-                    int port = server.port();
-                    try (var idle = new Support.Client(port); var busy = new Support.Client(port)) {
-                        assertEquals("quick", idle.send(Support.get("/")).read().text());
-                        busy.send(Support.get("/slow"));
-                        assertTrue(entered.await(5, TimeUnit.SECONDS));
-
-                        var closer = Thread.ofVirtual().start(server::close);
-                        // the idle keep-alive connection is closed at once
-                        assertTrue(idle.closedByServer(), "idle connection closed");
-                        // new connections are refused
-                        long deadline = System.nanoTime() + 2_000_000_000L;
-                        while (!refused(port) && System.nanoTime() < deadline) {
-                            Thread.sleep(10);
-                        }
-                        assertTrue(refused(port), "new connections are refused");
-                        // close() waits for the request in progress
-                        assertFalse(closer.join(Duration.ofMillis(300)), "close() returned before the request finished");
-                        release.countDown();
-                        var reply = busy.read();
-                        assertEquals("slow done", reply.text());
-                        assertTrue(reply.closes(), "Connection: close on the last response");
-                        assertTrue(busy.closedByServer());
-                        assertTrue(closer.join(Duration.ofSeconds(5)), "close() returned");
-                    } finally {
-                        release.countDown();
-                        server.close();
-                    }
-                }),
+                test("a request in progress finishes with Connection: close; idle connections are closed",
+                        () -> inProgressFinishes(Transport.PLAIN)),
                 test("a request that does not finish is aborted after shutdownTimeout and close() returns", () -> {
                     var entered = new CountDownLatch(1);
                     var interrupted = new CountDownLatch(1);
@@ -305,5 +267,50 @@ final class ShutdownTests {
                     server.close();
                     assertTrue(refused(server.port()));
                 }));
+    }
+
+    /**
+     * Over {@code t}: an idle connection is closed at once, new connections are refused, the
+     * request in progress gets its whole response with {@code Connection: close}, and close() returns.
+     */
+    static void inProgressFinishes(Transport t) throws Exception {
+        var entered = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        Handler handler = request -> {
+            if (request.path().equals("/slow")) {
+                entered.countDown();
+                release.await();
+                return Response.text(200, "slow done");
+            }
+            return Response.text(200, "quick");
+        };
+        var server = t.start(handler);
+        int port = server.port();
+        try (var idle = t.client(port); var busy = t.client(port)) {
+            assertEquals("quick", idle.send(Support.get("/")).read().text());
+            busy.send(Support.get("/slow"));
+            assertTrue(entered.await(5, TimeUnit.SECONDS));
+
+            var closer = Thread.ofVirtual().start(server::close);
+            // the idle keep-alive connection is closed at once
+            assertTrue(idle.closedByServer(), "idle connection closed");
+            // new connections are refused
+            long deadline = System.nanoTime() + 2_000_000_000L;
+            while (!refused(port) && System.nanoTime() < deadline) {
+                Thread.sleep(10);
+            }
+            assertTrue(refused(port), "new connections are refused");
+            // close() waits for the request in progress
+            assertFalse(closer.join(Duration.ofMillis(300)), "close() returned before the request finished");
+            release.countDown();
+            var reply = busy.read();
+            assertEquals("slow done", reply.text());
+            assertTrue(reply.closes(), "Connection: close on the last response");
+            assertTrue(busy.closedByServer());
+            assertTrue(closer.join(Duration.ofSeconds(5)), "close() returned");
+        } finally {
+            release.countDown();
+            server.close();
+        }
     }
 }

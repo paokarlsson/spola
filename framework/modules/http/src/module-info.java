@@ -8,6 +8,14 @@
  * ({@link spola.http.HttpTimeouts}) as values, protection against request smuggling and
  * response splitting, and a graceful stop ({@link spola.http.HttpServer#close}).
  *
+ * <p>HTTPS through {@link spola.http.HttpServerOptions#withTls}: {@link spola.http.TlsOptions}
+ * with a PKCS#12 keystore, PEM files or a ready {@code SSLContext}, TLS 1.3 and 1.2 only, ALPN
+ * {@code http/1.1}, optional client certificates ({@link spola.http.ClientAuth}), and a
+ * handshake on the connection's own thread within a total
+ * {@link spola.http.HttpTimeouts#handshakeTimeout()}. The handler sees the negotiated TLS in
+ * {@link spola.http.Request#tls()}. TLS itself is the JDK's {@code javax.net.ssl}; the module
+ * sets no system or security properties.
+ *
  * <ul>
  *   <li>{@link spola.http.Handler}: {@code Response handle(Request request)}, called
  *       concurrently from many connections.</li>

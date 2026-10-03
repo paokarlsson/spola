@@ -19,10 +19,12 @@ public final class Request {
 
     private final RequestParser.Head head;
     private final BodyStream body;
+    private final Optional<TlsInfo> tls;
 
-    Request(RequestParser.Head head, BodyStream body) {
+    Request(RequestParser.Head head, BodyStream body, Optional<TlsInfo> tls) {
         this.head = head;
         this.body = body;
+        this.tls = tls;
     }
 
     /**
@@ -72,6 +74,29 @@ public final class Request {
      */
     public String host() {
         return head.host();
+    }
+
+    /**
+     * The scheme of the connection the request came on: {@code "https"} over TLS, otherwise
+     * {@code "http"}. This is how the request arrived at this server; an absolute-form target with
+     * the other scheme ({@code GET http://a/ HTTP/1.1} over TLS) is not refused (RFC 9112 §3.2.2
+     * does not say to) and does not change it. Behind a proxy that ends TLS, this is
+     * {@code "http"}.
+     *
+     * @return {@code "https"} or {@code "http"}
+     */
+    public String scheme() {
+        return tls.isPresent() ? "https" : "http";
+    }
+
+    /**
+     * What the TLS handshake negotiated: protocol, cipher suite and the client's certificate chain
+     * (empty unless the client sent one, see {@link ClientAuth}).
+     *
+     * @return the TLS information, or empty for plain HTTP
+     */
+    public Optional<TlsInfo> tls() {
+        return tls;
     }
 
     /**

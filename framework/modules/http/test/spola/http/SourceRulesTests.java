@@ -51,6 +51,15 @@ final class SourceRulesTests {
                     assertEquals(java.util.Set.of(), HttpServer.class.getModule().getDescriptor().requires().stream()
                             .map(r -> r.name()).filter(n -> n.startsWith("spola.")).collect(java.util.stream.Collectors.toSet()));
                 }),
+                test("the main code sets no system or security properties and uses no internal JDK packages", () -> {
+                    for (var file : mainSources()) {
+                        var text = Files.readString(file).replaceAll("(?s)/\\*.*?\\*/", "").replaceAll("//[^\n]*", "");
+                        for (var forbidden : List.of("System.setProperty", "System.setProperties", "Security.setProperty",
+                                "System.clearProperty", "import sun.", "import jdk.internal", "import com.sun.", "sun.security.")) {
+                            assertFalse(text.contains(forbidden), file + " uses " + forbidden);
+                        }
+                    }
+                }),
                 test("no main class uses java.net.http (it is for the tests)", () -> {
                     for (var file : mainSources()) {
                         if (!file.endsWith("module-info.java")) {

@@ -28,7 +28,8 @@ public final class HttpTests {
                 ResponseTests.tests(),
                 ShutdownTests.tests(),
                 ConcurrencyTests.tests(),
-                SourceRulesTests.tests())
+                SourceRulesTests.tests(),
+                TlsTests.tests())
                 .timeout(Duration.ofSeconds(30));
     }
 }

@@ -202,8 +202,8 @@ final class MalformedRequestTests {
                     "RFC 9110 15.5.14"));
 
     /** Sends the request and checks status, Connection: close and the closed connection. */
-    private static void refused(Bad bad, AtomicInteger calls, AtomicInteger bodies) throws Exception {
-        refused(bad, request -> {
+    private static void refused(Transport t, Bad bad, AtomicInteger calls, AtomicInteger bodies) throws Exception {
+        refused(t, bad, request -> {
             calls.incrementAndGet();
             request.bytes();
             bodies.incrementAndGet();
@@ -211,8 +211,8 @@ final class MalformedRequestTests {
         });
     }
 
-    private static void refused(Bad bad, Handler handler) throws Exception {
-        try (var server = Support.start(handler); var c = new Support.Client(server.port())) {
+    private static void refused(Transport t, Bad bad, Handler handler) throws Exception {
+        try (var server = t.start(handler); var c = t.client(server.port())) {
             c.send(bad.request());
             var reply = c.read();
             assertEquals(bad.status(), reply.status(), "status for " + Support.visible(bad.request()));
@@ -237,25 +237,25 @@ final class MalformedRequestTests {
                 }),
                 parameterized("refused from the head; the handler is never called", HEAD_CASES, bad -> {
                     calls.set(0);
-                    refused(bad, calls, bodies);
+                    refused(Transport.PLAIN, bad, calls, bodies);
                     assertEquals(0, calls.get(), "handler calls");
                 }),
                 parameterized("refused in the chunked body; the handler never gets the body", BODY_CASES, bad -> {
                     calls.set(0);
                     bodies.set(0);
-                    refused(bad, calls, bodies);
+                    refused(Transport.PLAIN, bad, calls, bodies);
                     assertEquals(0, bodies.get(), "bodies the handler got");
                 }),
                 parameterized("refused in the chunked body when the handler never reads it", BODY_CASES, bad -> {
                     calls.set(0);
-                    refused(bad, request -> {
+                    refused(Transport.PLAIN, bad, request -> {
                         calls.incrementAndGet();
                         return Response.text(200, "handled");
                     });
                     assertEquals(1, calls.get(), "handler calls");
                 }),
                 parameterized("refused in the chunked body when the handler reads only part of it", BODY_CASES,
-                        bad -> refused(bad, request -> {
+                        bad -> refused(Transport.PLAIN, bad, request -> {
                             request.body().read(); // one byte; a body broken from the start throws here
                             return Response.text(200, "handled");
                         })),
@@ -278,52 +278,84 @@ final class MalformedRequestTests {
                                 .read().status());
                     }
                 }),
-                test("a smuggled request hidden in a body never reaches the handler", () -> {
-                    var paths = new CopyOnWriteArrayList<String>();
-                    Handler handler = request -> {
-                        paths.add(request.path());
-                        request.bytes();
-                        return Response.text(200, "ok");
-                    };
-                    var hidden = "GET /admin HTTP/1.1\r\nHost: a\r\n\r\n";
-                    var attempts = List.of(
-                            // CL.TE: a front end using Content-Length forwards all; we must not use chunked
-                            "POST /a HTTP/1.1\r\nHost: a\r\nContent-Length: " + (5 + hidden.length())
-                                    + "\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n" + hidden,
-                            // TE.CL: a front end using chunked forwards all; we must not use Content-Length
-                            "POST /a HTTP/1.1\r\nHost: a\r\nTransfer-Encoding: chunked\r\nContent-Length: 4\r\n\r\n"
-                                    + Integer.toHexString(hidden.length()) + "\r\n" + hidden + "\r\n0\r\n\r\n",
-                            // obfuscated Transfer-Encoding names and values
-                            "POST /a HTTP/1.1\r\nHost: a\r\nContent-Length: " + (5 + hidden.length())
-                                    + "\r\nTransfer-Encoding : chunked\r\n\r\n0\r\n\r\n" + hidden,
-                            "POST /a HTTP/1.1\r\nHost: a\r\nContent-Length: " + (5 + hidden.length())
-                                    + "\r\nTransfer-Encoding: x\r\n chunked\r\n\r\n0\r\n\r\n" + hidden,
-                            "POST /a HTTP/1.1\r\nHost: a\r\nContent-Length: " + (5 + hidden.length())
-                                    + "\r\nTransfer-Encoding: xchunked\r\n\r\n0\r\n\r\n" + hidden,
-                            // a bare LF that a lenient parser would take as a line end
-                            "POST /a HTTP/1.1\r\nHost: a\r\nX: y\nTransfer-Encoding: chunked\r\nContent-Length: "
-                                    + (5 + hidden.length()) + "\r\n\r\n0\r\n\r\n" + hidden,
-                            // two Content-Length values, the smaller one first
-                            "POST /a HTTP/1.1\r\nHost: a\r\nContent-Length: 0\r\nContent-Length: " + hidden.length()
-                                    + "\r\n\r\n" + hidden);
-                    try (var server = Support.start(handler)) {
-                        for (var attempt : attempts) {
-                            try (var c = new Support.Client(server.port())) {
-                                var reply = c.send(attempt).read();
-                                assertEquals(400, reply.status(), Support.visible(attempt));
-                                assertTrue(reply.closes());
-                                assertTrue(c.closedByServer());
-                            }
-                        }
-                        // after a good request on the same connection, too
-                        try (var c = new Support.Client(server.port())) {
-                            c.send(Support.get("/ok") + attempts.getFirst());
-                            assertEquals(200, c.read().status());
-                            assertEquals(400, c.read().status());
-                            assertTrue(c.closedByServer());
-                        }
-                    }
-                    assertEquals(List.of("/ok"), List.copyOf(paths));
-                }));
+                test("a smuggled request hidden in a body never reaches the handler", () -> smuggling(Transport.PLAIN)));
+    }
+
+    /**
+     * Over {@code t}: every {@code step}-th case of both tables (the handler is never called for
+     * the head cases, never gets the body for the body cases) and the smuggling attempts.
+     */
+    static Suite selection(Transport t, int step) {
+        var calls = new AtomicInteger();
+        var bodies = new AtomicInteger();
+        return suite("malformed requests",
+                parameterized("refused from the head; the handler is never called", every(HEAD_CASES, step), bad -> {
+                    calls.set(0);
+                    refused(t, bad, calls, bodies);
+                    assertEquals(0, calls.get(), "handler calls");
+                }),
+                parameterized("refused in the chunked body; the handler never gets the body", every(BODY_CASES, step),
+                        bad -> {
+                            bodies.set(0);
+                            refused(t, bad, calls, bodies);
+                            assertEquals(0, bodies.get(), "bodies the handler got");
+                        }),
+                test("a smuggled request hidden in a body never reaches the handler", () -> smuggling(t)));
+    }
+
+    private static List<Bad> every(List<Bad> cases, int step) {
+        var selected = new ArrayList<Bad>();
+        for (int i = 0; i < cases.size(); i += step) {
+            selected.add(cases.get(i));
+        }
+        return selected;
+    }
+
+    private static void smuggling(Transport t) throws Exception {
+        var paths = new CopyOnWriteArrayList<String>();
+        Handler handler = request -> {
+            paths.add(request.path());
+            request.bytes();
+            return Response.text(200, "ok");
+        };
+        var hidden = "GET /admin HTTP/1.1\r\nHost: a\r\n\r\n";
+        var attempts = List.of(
+                // CL.TE: a front end using Content-Length forwards all; we must not use chunked
+                "POST /a HTTP/1.1\r\nHost: a\r\nContent-Length: " + (5 + hidden.length())
+                        + "\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n" + hidden,
+                // TE.CL: a front end using chunked forwards all; we must not use Content-Length
+                "POST /a HTTP/1.1\r\nHost: a\r\nTransfer-Encoding: chunked\r\nContent-Length: 4\r\n\r\n"
+                        + Integer.toHexString(hidden.length()) + "\r\n" + hidden + "\r\n0\r\n\r\n",
+                // obfuscated Transfer-Encoding names and values
+                "POST /a HTTP/1.1\r\nHost: a\r\nContent-Length: " + (5 + hidden.length())
+                        + "\r\nTransfer-Encoding : chunked\r\n\r\n0\r\n\r\n" + hidden,
+                "POST /a HTTP/1.1\r\nHost: a\r\nContent-Length: " + (5 + hidden.length())
+                        + "\r\nTransfer-Encoding: x\r\n chunked\r\n\r\n0\r\n\r\n" + hidden,
+                "POST /a HTTP/1.1\r\nHost: a\r\nContent-Length: " + (5 + hidden.length())
+                        + "\r\nTransfer-Encoding: xchunked\r\n\r\n0\r\n\r\n" + hidden,
+                // a bare LF that a lenient parser would take as a line end
+                "POST /a HTTP/1.1\r\nHost: a\r\nX: y\nTransfer-Encoding: chunked\r\nContent-Length: "
+                        + (5 + hidden.length()) + "\r\n\r\n0\r\n\r\n" + hidden,
+                // two Content-Length values, the smaller one first
+                "POST /a HTTP/1.1\r\nHost: a\r\nContent-Length: 0\r\nContent-Length: " + hidden.length()
+                        + "\r\n\r\n" + hidden);
+        try (var server = t.start(handler)) {
+            for (var attempt : attempts) {
+                try (var c = t.client(server.port())) {
+                    var reply = c.send(attempt).read();
+                    assertEquals(400, reply.status(), Support.visible(attempt));
+                    assertTrue(reply.closes());
+                    assertTrue(c.closedByServer());
+                }
+            }
+            // after a good request on the same connection, too
+            try (var c = t.client(server.port())) {
+                c.send(Support.get("/ok") + attempts.getFirst());
+                assertEquals(200, c.read().status());
+                assertEquals(400, c.read().status());
+                assertTrue(c.closedByServer());
+            }
+        }
+        assertEquals(List.of("/ok"), List.copyOf(paths));
     }
 }

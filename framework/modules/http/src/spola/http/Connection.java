@@ -6,7 +6,9 @@ import java.io.IOException;
 import java.lang.System.Logger.Level;
 import java.net.Socket;
 import java.net.SocketTimeoutException;
+import java.util.Optional;
 import java.util.concurrent.atomic.AtomicReference;
+import javax.net.ssl.SSLSocket;
 
 /**
  * One connection, served on its own virtual thread: requests are read, handled and answered in
@@ -17,6 +19,13 @@ import java.util.concurrent.atomic.AtomicReference;
  * waits for its next request ({@link State#IDLE}) may be closed at once; one with a request in
  * progress ({@link State#ACTIVE}) is left to finish, and one that lingers after its last response
  * ({@link State#LINGERING}) ends on its own.
+ *
+ * <p>With TLS, the thread first layers an {@link SSLSocket} over the accepted socket and runs
+ * the handshake, within {@link HttpTimeouts#handshakeTimeout()} from accept (the guard thread
+ * closes the socket at the deadline, so a handshake sent one byte at a time ends too). Then it
+ * serves requests over the TLS socket exactly as over plain TCP. Aborts (timeouts, the
+ * shutdown deadline) close the TCP socket underneath, which never blocks; an orderly close goes
+ * through the TLS socket and sends {@code close_notify}, watched by the guard like a write.
  */
 final class Connection implements Runnable {
 
@@ -52,13 +61,17 @@ final class Connection implements Runnable {
     static final int LINGER_BYTES = 1 << 20;
 
     private final HttpServer server;
-    private final Socket socket;
+    private final Socket socket; // the accepted TCP socket; with TLS, the one underneath
+    private final long acceptedAt;
     private final String peer;
     private final AtomicReference<State> state = new AtomicReference<>(State.IDLE);
     private volatile Thread thread;
     private volatile boolean aborted;
     private volatile boolean writeTimedOut;
     private volatile GuardedOutput guarded; // read by the guard thread
+    private volatile long handshakeDeadline; // System.nanoTime(), 0 when no handshake runs; read by the guard
+    private volatile boolean handshakeTimedOut;
+    private SSLSocket ssl; // the TLS socket after a completed handshake, else null
     private ConnectionInput in;
     private BufferedOutputStream wire;
     private ResponseWriter writer;
@@ -67,6 +80,7 @@ final class Connection implements Runnable {
     Connection(HttpServer server, Socket socket) {
         this.server = server;
         this.socket = socket;
+        this.acceptedAt = System.nanoTime();
         this.peer = String.valueOf(socket.getRemoteSocketAddress());
     }
 
@@ -93,8 +107,12 @@ final class Connection implements Runnable {
     public void run() {
         try {
             socket.setTcpNoDelay(true);
-            in = new ConnectionInput(socket);
-            guarded = new GuardedOutput(socket.getOutputStream());
+            Socket io = server.tls() == null ? socket : handshake();
+            if (io == null) {
+                return; // the handshake failed; logged
+            }
+            in = new ConnectionInput(io);
+            guarded = new GuardedOutput(io.getOutputStream());
             wire = new BufferedOutputStream(guarded, 8_192);
             writer = new ResponseWriter(wire);
             serve();
@@ -106,6 +124,46 @@ final class Connection implements Runnable {
             closeSocket();
             server.connectionEnded(this);
         }
+    }
+
+    /**
+     * Layers TLS over the socket and runs the handshake, until the deadline
+     * {@link HttpTimeouts#handshakeTimeout()} after accept: every read waits at most the time left,
+     * and the guard thread closes the socket when the deadline passes. Returns the TLS socket, or
+     * null when the handshake failed or timed out (logged at {@code DEBUG}, escaped; the JDK's
+     * messages hold no input bytes).
+     */
+    private Socket handshake() {
+        long deadline = acceptedAt + server.options().timeouts().handshakeTimeout().toNanos();
+        handshakeDeadline = deadline | 1; // never 0
+        try {
+            if (state.get() == State.CLOSED) {
+                return null; // close() came first
+            }
+            var layered = server.tls().layer(socket);
+            long left = deadline - System.nanoTime();
+            if (left <= 0) {
+                throw new SocketTimeoutException("handshake timeout");
+            }
+            socket.setSoTimeout((int) Math.min(Integer.MAX_VALUE, Math.max(1, (left + 999_999) / 1_000_000)));
+            layered.startHandshake();
+            ssl = layered;
+            return layered;
+        } catch (IOException | RuntimeException e) {
+            if (handshakeTimedOut || e instanceof SocketTimeoutException) {
+                debug("TLS handshake timeout on the connection from " + peer);
+            } else {
+                debug("TLS handshake with " + peer + " failed: " + LoggedThrowable.describe(e));
+            }
+            return null;
+        } finally {
+            handshakeDeadline = 0;
+        }
+    }
+
+    /** The negotiated TLS of this connection, for the request; empty for plain HTTP. */
+    private Optional<TlsInfo> tlsInfo() {
+        return ssl == null ? Optional.empty() : Optional.of(TlsInfo.of(ssl.getSession()));
     }
 
     private void serve() throws IOException {
@@ -184,7 +242,7 @@ final class Connection implements Runnable {
                         writer.sendContinue();
                     }
                 });
-        var request = new Request(head, body);
+        var request = new Request(head, body, tlsInfo());
         boolean headRequest = head.method().equals("HEAD");
         var outcome = skipUnreadBodyOrFail(handle(request, body), request, head, body);
         boolean close = shouldClose(head, body, outcome.failed());
@@ -311,10 +369,23 @@ final class Connection implements Runnable {
 
     // ---- shutdown and timeouts -----------------------------------------------------------
 
-    /** Closes the connection now if it waits for a request (graceful stop). */
+    /**
+     * Closes the connection now if it waits for a request or is in its TLS handshake (graceful
+     * stop). With TLS the TCP input is shut down instead: the connection's blocked read ends, and
+     * its own thread closes the TLS socket with {@code close_notify} (a write from this thread
+     * could block on a client that does not read).
+     */
     void closeIfIdle() {
         if (state.compareAndSet(State.IDLE, State.CLOSED)) {
-            HttpServer.closeQuietly(socket);
+            if (server.tls() == null) {
+                HttpServer.closeQuietly(socket);
+                return;
+            }
+            try {
+                socket.shutdownInput();
+            } catch (IOException e) {
+                HttpServer.closeQuietly(socket);
+            }
         }
     }
 
@@ -339,11 +410,27 @@ final class Connection implements Runnable {
         }
     }
 
+    /** Called by the guard thread: closes the socket of a TLS handshake that has passed its deadline. */
+    void checkHandshake(long now) {
+        long deadline = handshakeDeadline;
+        if (deadline != 0 && now - deadline > 0) {
+            handshakeTimedOut = true;
+            HttpServer.closeQuietly(socket);
+        }
+    }
+
     private void closeSocket() {
         if (linger && !aborted) {
             lingerBeforeClose();
         }
         state.set(State.CLOSED);
+        if (ssl != null && !aborted) {
+            try {
+                guarded.guard(ssl::close); // close_notify; the guard closes the socket if it blocks
+            } catch (IOException e) {
+                // the client is gone; the socket is closed below
+            }
+        }
         HttpServer.closeQuietly(socket);
     }
 
@@ -354,7 +441,11 @@ final class Connection implements Runnable {
     private void lingerBeforeClose() {
         try {
             wire.flush();
-            socket.shutdownOutput();
+            if (ssl != null) {
+                guarded.guard(ssl::shutdownOutput); // close_notify, then the TCP half-close
+            } else {
+                socket.shutdownOutput();
+            }
             if (enterLingering()) {
                 drainInput(lingerDeadline());
             }

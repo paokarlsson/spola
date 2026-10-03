@@ -28,16 +28,23 @@ import java.util.Objects;
  *                        closes the socket; the handler's write then throws. Default 30 s.
  * @param shutdownTimeout how long {@link HttpServer#close()} lets requests in progress finish
  *                        before it aborts them. Default 30 s.
+ * @param handshakeTimeout total time from accepting a connection to the end of its TLS handshake
+ *                        (only with {@link HttpServerOptions#tls()}). A total, not a timeout per
+ *                        read: a client that sends its handshake one byte at a time is cut off
+ *                        too. Exceeded: the connection is closed without a response. Default 10 s.
  */
 public record HttpTimeouts(Duration headerTimeout, Duration idleTimeout, Duration readTimeout,
-                           Duration writeTimeout, Duration shutdownTimeout) {
+                           Duration writeTimeout, Duration shutdownTimeout, Duration handshakeTimeout) {
 
     /** The longest timeout: what {@link java.net.Socket#setSoTimeout} can express. */
     static final Duration MAX = Duration.ofMillis(Integer.MAX_VALUE);
 
+    /** The default {@link #handshakeTimeout()}. */
+    static final Duration DEFAULT_HANDSHAKE_TIMEOUT = Duration.ofSeconds(10);
+
     /** The defaults; ARCHITECTURE.md explains each value. */
     public static final HttpTimeouts DEFAULT = new HttpTimeouts(Duration.ofSeconds(10), Duration.ofSeconds(60),
-            Duration.ofSeconds(30), Duration.ofSeconds(30), Duration.ofSeconds(30));
+            Duration.ofSeconds(30), Duration.ofSeconds(30), Duration.ofSeconds(30), DEFAULT_HANDSHAKE_TIMEOUT);
 
     /**
      * Checks the timeouts.
@@ -52,6 +59,25 @@ public record HttpTimeouts(Duration headerTimeout, Duration idleTimeout, Duratio
         check("readTimeout", readTimeout);
         check("writeTimeout", writeTimeout);
         check("shutdownTimeout", shutdownTimeout);
+        check("handshakeTimeout", handshakeTimeout);
+    }
+
+    /**
+     * The timeouts without TLS, with the default {@link #handshakeTimeout()} of 10 s (the form
+     * from before TLS existed; plain HTTP never uses the handshake timeout).
+     *
+     * @param headerTimeout   total time from the first byte of a request to the end of its headers
+     * @param idleTimeout     how long a keep-alive connection may wait between requests
+     * @param readTimeout     longest wait without progress while the body is read
+     * @param writeTimeout    longest wait without progress while the response is written
+     * @param shutdownTimeout how long {@code close()} lets requests in progress finish
+     * @throws NullPointerException     if a timeout is {@code null}
+     * @throws IllegalArgumentException if a timeout is shorter than 1 ms or longer than
+     *                                  {@link Integer#MAX_VALUE} ms
+     */
+    public HttpTimeouts(Duration headerTimeout, Duration idleTimeout, Duration readTimeout, Duration writeTimeout,
+                        Duration shutdownTimeout) {
+        this(headerTimeout, idleTimeout, readTimeout, writeTimeout, shutdownTimeout, DEFAULT_HANDSHAKE_TIMEOUT);
     }
 
     private static void check(String name, Duration value) {
@@ -69,7 +95,8 @@ public record HttpTimeouts(Duration headerTimeout, Duration idleTimeout, Duratio
      * @return the copy
      */
     public HttpTimeouts withHeaderTimeout(Duration headerTimeout) {
-        return new HttpTimeouts(headerTimeout, idleTimeout, readTimeout, writeTimeout, shutdownTimeout);
+        return new HttpTimeouts(headerTimeout, idleTimeout, readTimeout, writeTimeout, shutdownTimeout,
+                handshakeTimeout);
     }
 
     /**
@@ -79,7 +106,8 @@ public record HttpTimeouts(Duration headerTimeout, Duration idleTimeout, Duratio
      * @return the copy
      */
     public HttpTimeouts withIdleTimeout(Duration idleTimeout) {
-        return new HttpTimeouts(headerTimeout, idleTimeout, readTimeout, writeTimeout, shutdownTimeout);
+        return new HttpTimeouts(headerTimeout, idleTimeout, readTimeout, writeTimeout, shutdownTimeout,
+                handshakeTimeout);
     }
 
     /**
@@ -89,7 +117,8 @@ public record HttpTimeouts(Duration headerTimeout, Duration idleTimeout, Duratio
      * @return the copy
      */
     public HttpTimeouts withReadTimeout(Duration readTimeout) {
-        return new HttpTimeouts(headerTimeout, idleTimeout, readTimeout, writeTimeout, shutdownTimeout);
+        return new HttpTimeouts(headerTimeout, idleTimeout, readTimeout, writeTimeout, shutdownTimeout,
+                handshakeTimeout);
     }
 
     /**
@@ -99,7 +128,8 @@ public record HttpTimeouts(Duration headerTimeout, Duration idleTimeout, Duratio
      * @return the copy
      */
     public HttpTimeouts withWriteTimeout(Duration writeTimeout) {
-        return new HttpTimeouts(headerTimeout, idleTimeout, readTimeout, writeTimeout, shutdownTimeout);
+        return new HttpTimeouts(headerTimeout, idleTimeout, readTimeout, writeTimeout, shutdownTimeout,
+                handshakeTimeout);
     }
 
     /**
@@ -109,7 +139,19 @@ public record HttpTimeouts(Duration headerTimeout, Duration idleTimeout, Duratio
      * @return the copy
      */
     public HttpTimeouts withShutdownTimeout(Duration shutdownTimeout) {
-        return new HttpTimeouts(headerTimeout, idleTimeout, readTimeout, writeTimeout, shutdownTimeout);
+        return new HttpTimeouts(headerTimeout, idleTimeout, readTimeout, writeTimeout, shutdownTimeout,
+                handshakeTimeout);
+    }
+
+    /**
+     * A copy with another TLS handshake timeout.
+     *
+     * @param handshakeTimeout total time from accepting a connection to the end of its TLS handshake
+     * @return the copy
+     */
+    public HttpTimeouts withHandshakeTimeout(Duration handshakeTimeout) {
+        return new HttpTimeouts(headerTimeout, idleTimeout, readTimeout, writeTimeout, shutdownTimeout,
+                handshakeTimeout);
     }
 
     /** {@code duration} in whole milliseconds, at least 1 (for {@code setSoTimeout}). */

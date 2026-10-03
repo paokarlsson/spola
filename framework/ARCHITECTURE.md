@@ -17,7 +17,7 @@ framework/
   modules/codegen/README.md arbetsflödet för genererade builders/with-metoder, bredvid Lombok
   modules/demo/README.md    integrationsprogrammet: körning, Spring Boot-jämförelse, friktionsrapport
   modules/json/README.md    exempel för spola.json och spola.json.codec bredvid Jackson, avvikelser från Jacksons standard
-  modules/http/README.md    exempel för spola.http bredvid Spring Boot/Tomcat, gränserna mot Spring Boots egenskaper
+  modules/http/README.md    exempel för spola.http bredvid Spring Boot/Tomcat, gränserna mot Spring Boots egenskaper, HTTPS och `server.ssl.*`
   out/                      byggresultat (ignoreras av git)
     classes/<modulnamn>/    kompilerade klasser per modul
     <modulnamn>.jar         en jar per modul (utan tester)
@@ -1349,3 +1349,153 @@ absolute-form går före `Host` (RFC 9112 §3.2.2) och någon måste avgöra det
 - **Delat tillstånd.** Servern delar bara räkningen av anslutningar (`Semaphore`), mängden
   anslutningar för mjukt stopp och vakten (`ConcurrentHashMap.newKeySet()`), och flaggan
   `closing`. Inget cachat datum, ingen pool. Allt annat hör till en anslutnings tråd.
+
+## HTTP-server del 2: TLS (`spola.http`)
+
+Uppdrag 07b. HTTPS ovanpå samma kärna som 07a. TLS-protokollet är JDK:ns (`javax.net.ssl`,
+REGLER §4: JDK:ns primitiver); det Spola bygger är konfigurationen, inläsningen och
+kontrollen av nycklar och certifikat, och kopplingen till anslutningens livscykel.
+
+### API (paket `spola.http`)
+
+| Typ | Roll |
+|---|---|
+| `TlsOptions` | record: `TlsIdentity identity`, `ClientAuth clientAuth`, `Optional<TlsTrust> clientTrust`, `List<String> protocols`, `List<String> cipherSuites`; fabrikerna `pkcs12`, `pem`, `of(SSLContext)`, `of(TlsIdentity)`; `withProtocols`, `withCipherSuites`, `withClientAuth` |
+| `TlsIdentity` | serverns privata nyckel och certifikatkedja (PKCS#12 eller PEM), eller en färdig `SSLContext`; läst och kontrollerad när den skapas |
+| `TlsTrust` | betrodda certifikat för klientcertifikat (PKCS#12 eller PEM) |
+| `ClientAuth` | `NONE`, `WANT`, `NEED` |
+| `TlsInfo` | record: förhandlat protokoll, chiffersvit, klientens certifikatkedja |
+| `TlsMaterialException` | `IllegalArgumentException` för felaktigt material, med `file()` |
+| `HttpServerOptions.tls`, `withTls`, `withoutTls` | TLS som valfritt värde |
+| `HttpTimeouts.handshakeTimeout`, `withHandshakeTimeout` | total tid från accept till klart handslag |
+| `Request.scheme()`, `Request.tls()` | `"https"`/`"http"`, och `Optional<TlsInfo>` |
+
+Interna klasser: `TlsLayer` (serverns `SSLContext` och `SSLParameters`, lägger en
+`SSLSocket` i serverläge över en accepterad socket), `TlsMaterial` (PKCS#12, certifikat,
+nycklar, kontroller, JSSE-managers), `Pem` (strikt PEM-läsare).
+
+### Beslut
+
+- **TLS är ett valfritt värde i optionerna: `Optional<TlsOptions>`, inte en sealed
+  `Transport`.** Det finns två fall, med och utan TLS, och det enda som skiljer dem är
+  TLS-inställningarna; `Optional` uttrycker det utan en ny hierarki, och `HttpServerOptions`
+  behåller sin form (`DEFAULT` utan TLS, `withTls`/`withoutTls`). En sealed `Transport` hade
+  lönat sig först med fler transporter (t.ex. Unix-socketar eller HTTP/3), som inte finns. Den
+  gamla konstruktorn med fyra komponenter finns kvar (utan TLS), så 07a:s API och beteende är
+  oförändrade. En server lyssnar med eller utan TLS; den som vill ha båda startar två.
+- **`HttpTimeouts` fick en sjätte komponent, `handshakeTimeout`, sist.** Den gamla
+  konstruktorn med fem tidsgränser finns kvar och ger standardvärdet 10 s, så befintlig kod
+  (och 07a:s tester) kompilerar och jämför lika som förut.
+- **Material läses och kontrolleras när `TlsOptions` (dvs. `TlsIdentity`/`TlsTrust`)
+  skapas**, inte vid start och inte vid första anslutningen: saknad fil, fel lösenord, okänt
+  alias, keystore utan nyckel eller med flera utan alias, tom kedja, kedja i fel ordning (varje
+  certifikats utfärdare ska vara nästa certifikats subjekt), nyckel som inte hör till
+  certifikatet. Nyckeln kontrolleras mot certifikatet genom att signera 32 slumpbytes med
+  nyckeln och verifiera med certifikatets publika nyckel; det fungerar lika för RSA, EC och
+  EdDSA och fångar också EC-nycklar på samma kurva som inte hör ihop. Felen är
+  `TlsMaterialException` (en `IllegalArgumentException`) med filens sökväg och en
+  förklaring. Meddelandena innehåller aldrig lösenord eller nyckelbytes; undantag från JDK:n
+  hängs bara på som orsak för I/O, keystore-inläsning och certifikat (publik data), aldrig för
+  nyckelparsning eller Base64 (JDK:ns meddelande för felaktig Base64 visar ett tecken ur
+  blocket). Ett tabelltest med 31 fall kontrollerar meddelande, orsakskedja, stackspår och
+  `toString()` mot lösenorden och mot nycklarnas Base64, hex och råa bytes.
+- **Lösenord.** `char[]` kopieras in, används och nollställs i `finally`; anroparens array
+  rörs inte. Nyckeln plockas ut ur keystoren och läggs i en ny keystore i minnet under ett
+  slumpat lösenord (nollställt efteråt), som en `SunX509`-`KeyManagerFactory` läser en gång vid
+  skapandet; varken användarens lösenord eller keystoren behålls. `SunX509` (JDK:ns
+  standardalgoritm) i stället för `PKIX` eftersom den kopierar ut nyckeln vid `init`, så inget
+  handslag behöver dekryptera den igen. Utan alias krävs exakt en privat nyckel i keystoren;
+  med flera ger felet en lista över alias (escapade). Separata nyckellösenord stöds inte
+  (keytool och openssl skriver PKCS#12 med samma lösenord).
+- **PEM utan preview-API.** JDK 25:s PEM-API (JEP 470) är preview och får inte användas
+  (REGLER §3). `Pem` läser ramarna strikt enligt RFC 7468: bara ASCII-text, rader som slutar
+  med LF eller CRLF, `-----BEGIN label-----` och `-----END label-----` med samma etikett,
+  inget nästlat BEGIN, inget END utan BEGIN, bara Base64-tecken inne i ett block (avslutande
+  blanktecken tas bort, tomma rader och `Proc-Type`-huvuden avvisas), strikt avkodning med
+  `Base64.getDecoder()`. Text utanför blocken tillåts (RFC 7468 §5.2; openssl skriver t.ex.
+  `Bag Attributes`). Certifikat läses med `CertificateFactory` (X.509), nyckeln som okrypterad
+  PKCS#8 (`PRIVATE KEY`) med `KeyFactory` och `PKCS8EncodedKeySpec`; algoritmen avgörs av
+  nyckeln genom att `RSA`, `EC` och `EdDSA` prövas i tur och ordning. `ENCRYPTED PRIVATE KEY`,
+  `RSA PRIVATE KEY`, `EC PRIVATE KEY` och `DSA PRIVATE KEY` avvisas med kommandot för
+  konvertering (`openssl pkcs8 -topk8 -nocrypt`). Filer över 1 MiB avvisas. Avkodade bytes och
+  Base64-buffertar nollställs efter användning (så långt det går: texten som `String` kan inte
+  nollställas).
+- **Protokoll och chiffersviter.** Standard `TLSv1.3` och `TLSv1.2`, och bara de är tillåtna:
+  äldre namn (`TLSv1.1`, `TLSv1`, `SSLv3`, `SSLv2Hello`) ger `IllegalArgumentException` med
+  "older than TLS 1.2", okända namn (också fel skiftläge, `DTLSv1.2`) ger samma undantagstyp.
+  Chiffersviter: standard är JDK:ns standardsviter för de valda protokollen (ingen egen
+  lista; JDK:n uppdaterar den och `jdk.tls.disabledAlgorithms` gäller). En uttrycklig lista
+  kontrolleras mot de sviter kontexten stöder, svaga sviter (anon, NULL, EXPORT, RC4, DES,
+  3DES, MD5, SCSV) avvisas, och minst en svit måste passa något av protokollen (TLS 1.3-sviter
+  saknar `_WITH_`), annars skulle varje handslag misslyckas. Serverns ordning gäller
+  (`setUseCipherSuitesOrder(true)`).
+- **ALPN: bara `http/1.1`.** `SSLParameters.setApplicationProtocols({"http/1.1"})`. JDK:ns
+  server väljer `http/1.1` när klienten erbjuder det (också tillsammans med `h2`), svarar med
+  `no_application_protocol` när klienten bara erbjuder annat (ingen tyst HTTP/1.1 till en
+  klient som inte talar det), och förhandlar utan ALPN när klienten inte skickar något.
+  `HttpClient` med standardversion (HTTP/2 föredras) får därför HTTP/1.1 (testat).
+- **Handslaget på anslutningens tråd med en total tidsgräns.** Acceptor-tråden gör bara
+  `accept()` som förut (plattformstråd, vanlig `ServerSocket`); anslutningens virtuella tråd
+  lägger en `SSLSocket` över den accepterade socketen
+  (`SSLSocketFactory.createSocket(socket, null, true)`, serverläge) och anropar
+  `startHandshake()` innan första förfrågan läses. `handshakeTimeout` (standard 10 s, som
+  `headerTimeout`) räknas från accept: varje läsning får högst tiden som är kvar
+  (`setSoTimeout`), och vakttråden (samma som för `writeTimeout`) stänger TCP-socketen när
+  deadline passerat, så att en klient som skickar handslaget en byte i taget kopplas ned
+  (testat med en riktig ClientHello en byte var 10 ms). Vaktens period är en fjärdedel av den
+  kortaste av `writeTimeout` och `handshakeTimeout` (5 ms–1 s). Anslutningen finns i
+  serverns mängd och har sin plats i `maxConnections` från accept, så en anslutning i handslag
+  räknas (testat). Ett misslyckat handslag (vanlig HTTP, skräp, fel version, okänt
+  certifikat, avbrutet, tidsgräns) stänger bara den anslutningen och loggas på `DEBUG` med
+  en fast text och JDK-undantagets escapade klass och meddelande; JDK:ns meddelanden innehåller
+  inte indata. Ingen HTTP-felkod skickas till en klient som talar HTTP till TLS-porten (Tomcat
+  gör det inte heller som standard).
+- **TLS ändrar inte HTTP-semantiken.** Efter handslaget får `ConnectionInput` och
+  `GuardedOutput` TLS-socketens strömmar; allt annat är 07a:s kod. `setSoTimeout` på en
+  `SSLSocket` i lager går till TCP-socketen, och en `SocketTimeoutException` lämnar
+  TLS-socketen användbar (testat i JDK 25), så tidsgränserna per läsning och deadline fungerar
+  som förut. Ett urval av 07a:s tester körs över TLS genom att samma testfall tar en
+  `Transport` (vanlig eller TLS): anslutningar (keep-alive, pipelining, HTTP/1.0 m.m.),
+  chunked, `100-continue`, var tredje fall ur båda tabellerna med felaktiga förfrågningar,
+  smuggelförsöken och mjukt stopp.
+- **Stängning över TLS.** Avbrott (skrivvakten, handslagets deadline, `shutdownTimeout`)
+  stänger TCP-socketen under TLS-lagret: det blockerar aldrig och väcker den blockerade
+  tråden. En ordnad stängning går genom `SSLSocket` och skickar `close_notify`: efter
+  `Connection: close` med `shutdownOutput()` (sedan efterläsning som förut) och när
+  anslutningen slutar med `close()`. Båda kan blockera på en klient som inte läser, så de körs
+  som en bevakad skrivning (`GuardedOutput.guard`): vakten stänger socketen efter
+  `writeTimeout`. Mjukt stopp av en ledig TLS-anslutning stänger TCP-socketens läsriktning
+  (`shutdownInput`) i stället för socketen: anslutningens egen tråd vaknar, ser att den ska
+  sluta och stänger med `close_notify`; `close()` gör alltså ingen skrivning som kan blockera
+  (en anslutning i handslag stängs på samma sätt).
+- **`Request.tls()` och `scheme()`.** `TlsInfo` (protokoll, svit, klientens kedja som
+  `List<X509Certificate>`, tom utan klientcertifikat) skapas från `SSLSocket.getSession()` för
+  varje förfrågan, så den visar läget efter en eventuell omförhandling. `scheme()` är
+  `"https"` över TLS. En absolute-form-target med `http://` över TLS avvisas inte (RFC 9112
+  §3.2.2 säger inget om det), och `scheme()` beskriver anslutningen, inte targeten (testat).
+- **mTLS.** `NONE` (standard) begär inget certifikat; `WANT` begär men kräver inte; `NEED`
+  kräver. `WANT` och `NEED` kräver en `TlsTrust` (PKIX `TrustManagerFactory` över de betrodda
+  certifikaten, ingen spärrkontroll utöver JDK:ns standard), utom för `TlsOptions.of(SSLContext)`
+  där kontextens egna trust managers används; en `TlsTrust` till en sådan, eller till `NONE`,
+  ger `IllegalArgumentException` i stället för att tyst ignoreras. Med `WANT` ger ett skickat
+  men ej betrott certifikat ett misslyckat handslag (JDK:ns beteende, testat). Testerna
+  skickar det ej betrodda certifikatet med en egen `X509ExtendedKeyManager`, eftersom JDK:ns
+  key managers på klientsidan inte skickar ett certifikat vars utfärdare servern inte nämnt
+  (annars hade testet bara visat en klient utan certifikat).
+- **Modulen sätter inga globala egenskaper.** Inga system- eller säkerhetsegenskaper sätts
+  (testat i källkoden). Klientinitierad omförhandling i TLS 1.2 styrs bara av JDK:ns globala
+  `jdk.tls.rejectClientInitiatedRenegotiation` (standard `false`); README rekommenderar
+  `-Djdk.tls.rejectClientInitiatedRenegotiation=true` eller enbart TLS 1.3. Ingen omladdning av
+  certifikat i drift och ingen SNI med flera certifikat (ett per server).
+- **Testernas certifikat skapas av testerna.** JDK:n har inget publikt API för att utfärda
+  X.509-certifikat och `sun.security.x509` exporteras inte. `TestPki` kör `keytool` från
+  `java.home` med `ProcessBuilder` i en temporär katalog, i två omgångar parallella processer:
+  först en CA (RSA, `bc:c`) och en självsignerad "rogue"-klient (EC), sedan certifikat som
+  CA:n utfärdar med `-genkeypair -signer ca` (i kopior av CA:ns keystore): server RSA, EC och
+  Ed25519 med SAN `IP:127.0.0.1,DNS:localhost`, en klient, och en server för ett annat namn
+  (för att visa att `HttpClient` kontrollerar namnet). `KeyStore`-API:t delar sedan upp
+  keystorerna och skriver PEM-filerna (`getEncoded()` + Base64). Materialet skapas en gång
+  per testkörning (fixture på TLS-sviten) och tas bort efteråt. Klienterna får en egen
+  `SSLContext` som bara litar på testets CA (inga `javax.net.ssl.*`-egenskaper), med
+  värdnamnskontroll påslagen. Inga nycklar eller certifikat finns i repot (guardrails tillåter
+  ändå bara `.java` och `.md`).

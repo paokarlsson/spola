@@ -44,6 +44,24 @@ final class GuardedOutput extends OutputStream {
         }
     }
 
+    /** Blocking socket I/O that the guard watches like a write. */
+    interface Action {
+        void run() throws IOException;
+    }
+
+    /**
+     * Runs {@code action} (closing the TLS socket, which writes {@code close_notify}) as one
+     * write: the guard closes the socket if it makes no progress within the write timeout.
+     */
+    void guard(Action action) throws IOException {
+        writingSince = System.nanoTime() | 1;
+        try {
+            action.run();
+        } finally {
+            writingSince = 0;
+        }
+    }
+
     @Override
     public void flush() throws IOException {
         out.flush();

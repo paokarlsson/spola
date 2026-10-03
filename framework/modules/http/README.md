@@ -4,11 +4,12 @@ HTTP/1.1-servern i Spola: en `ServerSocket`, en virtuell tråd per anslutning oc
 I/O. Modulen ersätter den inbäddade Tomcat som Spring Boot startar (`spring-boot-starter-web`
 utan routing). Keep-alive, pipelining, strikt parsning enligt RFC 9112 och RFC 9110, chunked
 kodning åt båda hållen, `Expect: 100-continue`, gränser och tidsgränser som värden, skydd mot
-request smuggling och response splitting, och mjukt stopp. Inga annoteringar, ingen reflektion,
+request smuggling och response splitting, mjukt stopp, och HTTPS (TLS 1.3/1.2 med PKCS#12-
+eller PEM-material, valfria klientcertifikat). Inga annoteringar, ingen reflektion,
 inga `requires` på andra Spola-moduler, och inte `com.sun.net.httpserver`.
 
 Routing, sökvägsmönster, procentavkodning, queryparametrar, cookies och JSON hör till uppdrag
-08; TLS till uppdrag 07b. Här finns bara kärnan: en `Handler` som får en `Request` och
+08. Här finns bara kärnan: en `Handler` som får en `Request` och
 returnerar en `Response`.
 
 | Spring Boot (inbäddad Tomcat) | Spola |
@@ -21,6 +22,7 @@ returnerar en `Response`.
 | `StreamingResponseBody` | `Response.stream(200, typ, out -> ...)` |
 | `server.shutdown=graceful` + `ConfigurableApplicationContext.close()` | `server.close()` (alltid mjukt) |
 | `server.tomcat.*`, `server.max-http-request-header-size` | `HttpLimits`, `HttpTimeouts` |
+| `server.ssl.*` | `HttpServerOptions.withTls(TlsOptions...)`, se [HTTPS](#https-tls) |
 
 ## Ett komplett exempel
 
@@ -153,6 +155,148 @@ Det som skiljer:
 | `HttpTimeouts.shutdownTimeout` | 30 s | `spring.lifecycle.timeout-per-shutdown-phase` med `server.shutdown=graceful` | 30 s | Spola stoppar alltid mjukt. Efter tidsgränsen stängs socketarna och trådarna avbryts; `close()` returnerar när alla anslutningstrådar är klara, eller senast 1 s efter avbrottet (en handler som ignorerar avbrottet hålls inte kvar). |
 | `BodyStream.MAX_CHUNK_LINE` (fast) | 4 096 byte | Tomcats `maxExtensionSize` | 8 192 | Chunk-storleksraden inklusive tillägg; längre ger 400. Tilläggen läses aldrig. |
 
+## HTTPS (TLS)
+
+TLS-protokollet är JDK:ns (`javax.net.ssl`, `SSLSocket`). Spola gör konfigurationen,
+inläsningen och kontrollen av nycklar och certifikat, och kopplar TLS till anslutningens
+livscykel: handslaget körs på anslutningens egen virtuella tråd (aldrig på tråden som tar emot
+anslutningar) inom `HttpTimeouts.handshakeTimeout` räknat från accept, och därefter fungerar
+allt som för vanlig HTTP (parsning, gränser, keep-alive, pipelining, `100-continue`,
+skrivvakten, mjukt stopp). En server lyssnar antingen med eller utan TLS; vill du ha båda (t.ex.
+omdirigering från 80 till 443) startar du två servrar. Ingen automatisk omdirigering och ingen
+HSTS (hör till senare uppdrag).
+
+### PKCS#12
+
+Spring Boot (`application.properties`):
+
+```properties
+server.port=8443
+server.ssl.enabled=true
+server.ssl.key-store=/etc/app/server.p12
+server.ssl.key-store-type=PKCS12
+server.ssl.key-store-password=${KEYSTORE_PASSWORD}
+server.ssl.key-alias=server
+```
+
+Spola:
+
+```java
+char[] password = System.getenv("KEYSTORE_PASSWORD").toCharArray();
+var tls = TlsOptions.pkcs12(Path.of("/etc/app/server.p12"), password, "server"); // läses och kontrolleras här
+java.util.Arrays.fill(password, '\0'); // Spola har redan kopierat och nollställt sin kopia
+var options = HttpServerOptions.DEFAULT.withPort(8443).withTls(tls);
+try (var server = HttpServer.start(options, request -> Response.text(200, "hello " + request.scheme()))) {
+    ...
+}
+```
+
+Utan alias krävs att keystoren har exakt en privat nyckel; annars talar felet om vilka alias
+som finns.
+
+### PEM (t.ex. Let's Encrypt)
+
+Spring Boot:
+
+```properties
+server.ssl.certificate=/etc/letsencrypt/live/example.com/fullchain.pem
+server.ssl.certificate-private-key=/etc/letsencrypt/live/example.com/privkey.pem
+```
+
+Spola:
+
+```java
+var tls = TlsOptions.pem(Path.of("/etc/letsencrypt/live/example.com/fullchain.pem"),
+        Path.of("/etc/letsencrypt/live/example.com/privkey.pem"));
+var options = HttpServerOptions.DEFAULT.withAddress(InetAddress.getByName("0.0.0.0"))
+        .withPort(443).withTls(tls);
+```
+
+Kedjan ska börja med serverns certifikat, följt av utfärdarna i ordning (som `fullchain.pem`).
+Nyckeln ska vara okrypterad PKCS#8 (`-----BEGIN PRIVATE KEY-----`): RSA, EC, Ed25519 eller
+Ed448. En krypterad nyckel (`ENCRYPTED PRIVATE KEY`) eller en nyckel i det äldre formatet
+(`RSA PRIVATE KEY`, `EC PRIVATE KEY`) avvisas med ett meddelande som säger hur den konverteras:
+
+```
+openssl pkcs8 -topk8 -nocrypt -in key.pem -out key-pkcs8.pem
+```
+
+PEM läses utan JDK 25:s PEM-API (preview, JEP 470): ramarna parsas strikt av Spola och
+innehållet läses med `CertificateFactory` och `KeyFactory`.
+
+### Klientcertifikat (mTLS)
+
+Spring Boot:
+
+```properties
+server.ssl.client-auth=need
+server.ssl.trust-store=/etc/app/client-ca.p12
+server.ssl.trust-store-password=${TRUSTSTORE_PASSWORD}
+```
+
+Spola:
+
+```java
+var tls = TlsOptions.pkcs12(Path.of("/etc/app/server.p12"), password)
+        .withClientAuth(ClientAuth.NEED, TlsTrust.pkcs12(Path.of("/etc/app/client-ca.p12"), trustPassword));
+// eller: TlsTrust.pem(Path.of("/etc/app/client-ca.pem"))
+
+Handler handler = request -> {
+    var client = request.tls().orElseThrow().clientCertificates().getFirst();
+    return Response.text(200, "hello " + client.getSubjectX500Principal().getName());
+};
+```
+
+`NONE` (standard) begär inget certifikat. `WANT` begär ett men släpper in klienter utan (då är
+`clientCertificates()` tom); ett certifikat som skickas men inte går att verifiera mot
+`TlsTrust` ger ändå ett misslyckat handslag. `NEED` kräver ett giltigt certifikat. Spärrlistor
+och OCSP kontrolleras inte utöver JDK:ns standard (inget).
+
+### `server.ssl.*` mot `TlsOptions`
+
+| Spring Boot | Spola | Avvikelse |
+|---|---|---|
+| `server.ssl.enabled` | `HttpServerOptions.withTls(...)` / `withoutTls()` | TLS är ett värde i optionerna (`Optional<TlsOptions>`), ingen flagga. |
+| `server.ssl.key-store` | `TlsOptions.pkcs12(path, password)` | Läses och kontrolleras när `TlsOptions` skapas, inte vid start eller första anslutningen. Ingen `classpath:`-sökväg, bara filer. |
+| `server.ssl.key-store-password` | andra argumentet, `char[]` | Kopieras och nollställs efter inläsningen; anroparens array rörs inte. Syns aldrig i `toString()` eller felmeddelanden. |
+| `server.ssl.key-password` | – | Nyckeln läses med keystore-lösenordet (som keytool och openssl skriver PKCS#12); separat nyckellösenord stöds inte. |
+| `server.ssl.key-store-type` | – | Bara PKCS#12. JKS och annat fungerar via `TlsOptions.of(SSLContext)` eller konvertering (`keytool -importkeystore -deststoretype pkcs12`). |
+| `server.ssl.key-alias` | `TlsOptions.pkcs12(path, password, alias)` | Utan alias måste keystoren ha exakt en privat nyckel (Tomcat väljer då själv en). |
+| `server.ssl.certificate` | `TlsOptions.pem(certificateChain, privateKey)` | Kedjans ordning kontrolleras. |
+| `server.ssl.certificate-private-key` | andra argumentet till `pem` | Bara okrypterad PKCS#8; krypterade PEM-nycklar och PKCS#1 avvisas (Spring stöder krypterade via `private-key-password`). Nyckeln kontrolleras mot certifikatet när `TlsOptions` skapas. |
+| `server.ssl.client-auth` (`none`/`want`/`need`) | `withClientAuth(ClientAuth.NONE/WANT/NEED, trust)` | `WANT`/`NEED` kräver en `TlsTrust` (utom med `TlsOptions.of(SSLContext)`, vars egna trust managers används). |
+| `server.ssl.trust-store` (+ `-password`, `-type`) | `TlsTrust.pkcs12(path, password)`, `TlsTrust.pem(path)` | Bara poster av typen trusted certificate i PKCS#12 räknas. Ingen standard-truststore (JDK:ns `cacerts`) för klientcertifikat. |
+| `server.ssl.enabled-protocols` | `withProtocols("TLSv1.3", "TLSv1.2")` | Standard TLS 1.3 och 1.2. Äldre (`TLSv1.1`, `TLSv1`, `SSLv3`) eller okända namn ger `IllegalArgumentException`. |
+| `server.ssl.ciphers` | `withCipherSuites(...)` | Standard är JDK:ns sviter för de valda protokollen. En uttrycklig lista kontrolleras mot de sviter JDK:n stöder; svaga (anon, NULL, EXPORT, RC4, DES/3DES) och listor som inte passar något av protokollen avvisas. |
+| `server.ssl.bundle`, SSL-bundles med omladdning | – | Ingen omladdning i drift och ingen SNI med flera certifikat: ett certifikat per server. |
+| `server.http2.enabled` | – | ALPN annonserar bara `http/1.1`. En klient som erbjuder `h2` och `http/1.1` får `http/1.1`; en klient som bara erbjuder `h2` får ett misslyckat handslag. |
+
+Ny tidsgräns: `HttpTimeouts.handshakeTimeout` (standard 10 s) är den totala tiden från accept
+till klart handslag, inte per läsning, så en klient som skickar handslaget en byte i taget
+kopplas ned. En anslutning som står i handslag räknas mot `maxConnections`. Misslyckade
+handslag (vanlig HTTP till TLS-porten, skräp, fel protokoll, okänt certifikat) stänger bara den
+anslutningen och loggas på `DEBUG`, escapat och utan indata.
+
+`Request.scheme()` är `"https"` över TLS, annars `"http"`, och `Request.tls()` ger det
+förhandlade protokollet, chiffersviten och klientens certifikatkedja. En absolute-form-target
+med `http://` över TLS avvisas inte (RFC 9112 §3.2.2 kräver det inte) och ändrar inte
+`scheme()`.
+
+### Omförhandling (TLS 1.2)
+
+I TLS 1.2 kan en klient begära en ny förhandling mitt i en anslutning. Det kostar servern
+CPU (en möjlig överbelastningsattack) och är sällan nödvändigt. JDK:n styr det med den globala
+systemegenskapen `jdk.tls.rejectClientInitiatedRenegotiation` (standard `false`). Spola sätter
+inga globala egenskaper; vi rekommenderar att programmet startas med
+
+```
+java -Djdk.tls.rejectClientInitiatedRenegotiation=true ...
+```
+
+eller att `withProtocols("TLSv1.3")` används när alla klienter klarar TLS 1.3 (TLS 1.3 har
+ingen omförhandling). `Request.tls()` läses från sessionen för varje förfrågan och visar
+därför läget efter en eventuell omförhandling.
+
 ## Strikt parsning: vad som avvisas
 
 Varje fel ger ett kort svar i klartext med statuskoden, `Connection: close`, och anslutningen
@@ -199,10 +343,15 @@ ARCHITECTURE.md.
 | Typ | Roll |
 |---|---|
 | `HttpServer` | `start(options, handler)`, `port()`, `address()`, `close()` (mjukt stopp) |
-| `HttpServerOptions` | record: adress, port, `HttpLimits`, `HttpTimeouts`; `DEFAULT` och `withX` |
-| `HttpLimits`, `HttpTimeouts` | records med `DEFAULT` och `withX` |
+| `HttpServerOptions` | record: adress, port, `HttpLimits`, `HttpTimeouts`, `Optional<TlsOptions>`; `DEFAULT` och `withX` |
+| `HttpLimits`, `HttpTimeouts` | records med `DEFAULT` och `withX` (`HttpTimeouts` med `handshakeTimeout`) |
+| `TlsOptions` | record: `TlsIdentity`, `ClientAuth`, `Optional<TlsTrust>`, protokoll, chiffersviter; `pkcs12`, `pem`, `of(SSLContext)`, `withX` |
+| `TlsIdentity`, `TlsTrust` | serverns nyckel och kedja, resp. betrodda certifikat för klientcertifikat; lästa och kontrollerade när de skapas |
+| `ClientAuth` | `NONE`, `WANT`, `NEED` |
+| `TlsInfo` | record: protokoll, chiffersvit, klientens certifikatkedja |
+| `TlsMaterialException` | felaktigt nyckelmaterial: fil, vad som är fel; aldrig lösenord eller nyckelbytes |
 | `Handler` | `Response handle(Request request) throws Exception` |
-| `Request` | `method()`, `target()`, `path()`, `query()`, `host()`, `version()`, `headers()`, `body()`, `bytes()` |
+| `Request` | `method()`, `target()`, `path()`, `query()`, `host()`, `scheme()`, `tls()`, `version()`, `headers()`, `body()`, `bytes()` |
 | `Headers` | oföränderliga, ordnade, skiftlägesokänsliga namn, flera värden: `first`, `all`, `contains`, `of`, `with` |
 | `Response` | record: status, `Headers`, `ResponseBody`; `text`, `bytes`, `stream`, `status`, `withHeader` |
 | `ResponseBody` | sealed: `Empty`, `Bytes`, `Streaming` |

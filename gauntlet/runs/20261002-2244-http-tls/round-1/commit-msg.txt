@@ -1,0 +1,13 @@
+feat(http): add HTTPS to spola.http with PKCS#12/PEM material and mTLS
+
+The server can now serve HTTPS over TLS 1.3/1.2 with ALPN http/1.1.
+Key material comes from PKCS#12, PEM or a ready SSLContext and is checked
+eagerly. It supports client certificates, a total handshake timeout, and
+Request.tls()/scheme(). The 07a suite now also runs over TLS. Still open:
+the Base64 test is flaky and TLS can bypass the header timeout.
+
+Gauntlet-Run: 20261002-2244-http-tls
+Gauntlet-Round: 1/5
+Gauntlet-Verdict: FAIL (1 blocker, 1 major, 6 minor upheld)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>

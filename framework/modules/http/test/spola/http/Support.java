@@ -20,6 +20,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.ResourceBundle;
+import javax.net.ssl.SSLException;
 
 /** Servers on 127.0.0.1 port 0 with short timeouts, a raw socket client and a log that is captured. */
 final class Support {
@@ -157,10 +158,19 @@ final class Support {
         }
 
         Client(int port, int readTimeoutMillis) throws IOException {
-            socket = new Socket(LOCALHOST, port);
+            this(new Socket(LOCALHOST, port), readTimeoutMillis);
+        }
+
+        private Client(Socket socket, int readTimeoutMillis) throws IOException {
+            this.socket = socket;
             socket.setSoTimeout(readTimeoutMillis);
             in = new BufferedInputStream(socket.getInputStream());
             out = socket.getOutputStream();
+        }
+
+        /** A client on a connected socket (a TLS socket after its handshake). */
+        static Client over(Socket socket, int readTimeoutMillis) throws IOException {
+            return new Client(socket, readTimeoutMillis);
         }
 
         Client send(String text) throws IOException {
@@ -264,7 +274,7 @@ final class Support {
                 while ((n = in.read(buffer)) >= 0) {
                     all.write(buffer, 0, n);
                 }
-            } catch (SocketException e) {
+            } catch (SocketException | SSLException e) {
                 // reset by the server: closed as well
             }
             return all.toByteArray();
@@ -276,7 +286,7 @@ final class Support {
                 return in.read() < 0;
             } catch (SocketTimeoutException e) {
                 return false;
-            } catch (SocketException e) {
+            } catch (SocketException | SSLException e) { // reset, or TLS ended without close_notify
                 return true;
             }
         }
