@@ -13,3 +13,4 @@
 - 2026-10-03 09:44 · 20261002-2244-http-tls · PASS · 2 rounds · HTTP server part 2: TLS (HTTPS) on top of spola.http · commits: 2bab4f1, 236fe7e
 - 2026-10-03 10:21 · 20261003-0945-web-routing-karna · PASS · 1 rounds · Web part 1: routing as code, parameters, filters and error handling · commits: 0e6c386
 - 2026-10-03 11:02 · 20261003-1022-web-json-innehallsforhandling · PASS · 2 rounds · Web part 2: JSON bodies, media types and content negotiation · commits: f73d0b4, ffa67ec
+- 2026-10-03 11:31 · 20261003-1102-web-cookies-och-formular · PASS · 1 rounds · Web part 3: cookies, Set-Cookie and form bodies (spola.web) · commits: 6ec2828
