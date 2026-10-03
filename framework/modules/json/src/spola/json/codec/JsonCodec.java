@@ -100,7 +100,7 @@ public abstract class JsonCodec<T> {
         var decoding = new Decoding();
         T value = decodeAt(json, Path.ROOT, decoding);
         if (decoding.count() > 0) {
-            throw new JsonMappingException(decoding.problems());
+            throw new JsonMappingException(decoding.problems(), decoding.count());
         }
         return value;
     }

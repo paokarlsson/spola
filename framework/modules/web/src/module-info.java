@@ -17,6 +17,10 @@
  *       group.</li>
  *   <li>{@link spola.web.ExceptionMapper}, {@link spola.web.WebException},
  *       {@link spola.web.Problem}: exceptions to responses.</li>
+ *   <li>JSON bodies with an explicit {@code JsonCodec}: {@code WebRequest.readJson} in
+ *       ({@code @RequestBody}), {@link spola.web.Responses} out ({@code @ResponseBody}), with
+ *       strict {@link spola.web.MediaType} and {@link spola.web.AcceptHeader} parsing and
+ *       content negotiation (415, 406).</li>
  * </ul>
  *
  * <p>{@code spola.http} is required transitively because the API uses its {@code Request},

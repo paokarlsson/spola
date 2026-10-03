@@ -1695,3 +1695,164 @@ stället för körfel (REGLER §4). `pathParamSegments` är catch-allens lista (
 - **Tester** går genom en riktig `HttpServer` (127.0.0.1, port 0) med `HttpClient` eller en
   rå socket (för sökvägar som `HttpClient` inte skickar oförändrade), eftersom
   `spola.http.Request` bara skapas av servern.
+
+## Web del 2: JSON-kroppar, mediatyper och innehållsförhandling (`spola.web`)
+
+Uppdrag 08b. Planeraren delade det tidigare 08b i två: **08b** (detta: `MediaType`,
+`Accept`, innehållsförhandling, JSON-kroppar in och ut, 415, 406, 413 och problem-svar för
+kroppsfel) och **08c** (cookies in och `Set-Cookie` ut, formulärkroppar
+`application/x-www-form-urlencoded`). Multipart ligger utanför båda. Skälet är att varje
+uppdrag ska bli lagom stort: tolkningen av mediatyper och `Accept` är egen parsning av extern
+data och behöver sina egna tester.
+
+### API (paket `spola.web`)
+
+| Typ | Roll |
+|---|---|
+| `MediaType` | record (`type`, `subtype`, ordnade `parameters`): `parse`, `of`, `APPLICATION_JSON`, `APPLICATION_PROBLEM_JSON`, `TEXT_PLAIN`, `ALL`, `includes`, `isJson`, `isWildcard`, `charset`, kanonisk `toString` |
+| `AcceptHeader` | `parse(String)`, `parse(List<String>)` (flera fält), `ANY`, `ranges()` (`Range(range, quality)` i tusendelar), `quality(MediaType)`, `negotiate(List<MediaType>)` |
+| `WebRequest` (nytt) | `contentType()`, `accept()`, `negotiate(MediaType...)`, `readJson(codec)`, `readJson(codec, limits)`; `body()`/`bytes()` markerar kroppen som läst |
+| `RouterBuilder` (nytt) | `jsonLimits(JsonLimits)` |
+| `Responses` | `json(request, status, codec, value)`, `json(request, status, JsonValue)`, `created(request, location, codec, value)`, `noContent()` |
+| `Problem` (nytt) | `FieldError(path, message)`, `withErrors(List<FieldError>)`, `MAX_ERRORS` |
+| `WebException` (nytt) | `errors()`, skyddad konstruktor med `errors` |
+
+Interna klasser: `MediaTypeParser` (den strikta parsern, delad av `MediaType` och
+`AcceptHeader`), `JsonBody` (reglerna i `readJson` och den begränsade strömmen
+`LimitedInput`), `BodyState` (vem som läst kroppen, routerns `JsonLimits`; delas av alla
+`WebRequest` från samma förfrågan som `QueryState`).
+
+### Beslut
+
+- **Inga nya beroenden.** `module-info.java` är oförändrad: allt finns i `spola.http` och
+  `spola.json` (redan `requires transitive`). Ingen reflektion. `Accept`-huvudets namn blev
+  `AcceptHeader` (uppdraget tillåter ett motsvarande namn) så att det inte förväxlas med
+  huvudets namn som sträng.
+- **Ett litet tillägg i `spola.json`:** `JsonMappingException.problemCount()` ger antalet
+  hittade problem, även de som inte listas. Utan det kan `readJson` inte ange antalet i
+  detaljen när det är fler än 100 (`problems()` har då 100 poster plus en sammanfattning vars
+  antal bara finns i texten, och att tolka den vore skört). Den befintliga konstruktorn finns
+  kvar och ger `problems.size()`; `decode` skickar med räknaren från `Decoding`. Inga
+  befintliga tester är ändrade.
+- **`MediaType`-syntaxen (RFC 9110 §8.3.1) strikt.** `type "/" subtype *( OWS ";" OWS
+  parameter )`; typ, subtyp och parameternamn är `token` (§5.6.2), värdet `token` eller
+  `quoted-string` (§5.6.4) med `\`-escape; OWS är mellanslag och tab. Typ, subtyp och
+  parameternamn görs till gemener. Parametervärden behåller skiftläget, utom `charset`, vars
+  värde görs till gemener redan vid parsningen så att `equals` och `charset()` blir
+  okänsliga för skiftläge. Fel (`IllegalArgumentException`, kort meddelande i utskrivbar
+  ASCII som citerar högst 40 tecken av indata, escapat): tom indata, saknad typ, `/` eller
+  subtyp, `*` som typ med en konkret subtyp, en tom parameter (`;;`, avslutande `;`; RFC
+  9110 tillåter tomma parametrar men uppdraget kräver `parameter` efter varje `;`), en
+  parameter utan `=` eller utan värde, samma namn två gånger (utan hänsyn till skiftläge),
+  styrtecken (allt under U+0020 utom tab, och U+007F), icke-ASCII (även obs-text, som RFC
+  9110 tillåter i citerade värden), ett oavslutat citat, blanktecken först eller sist, fler än
+  **64 parametrar** och fler än **1 024 tecken**. Längden kontrolleras först, sedan alla tecken,
+  sedan grammatiken; parsningen är linjär. Den kanoniska formen (`toString`) skriver
+  `;namn=värde` utan mellanslag och citerar värden som inte är `token`, och parsar tillbaka
+  till samma värde. Den kanoniska konstruktorn kontrollerar och normaliserar på samma sätt
+  (record-invarianten gäller även för `new MediaType(...)`).
+- **`includes` med parametrar.** Ett intervall innehåller en typ när typ och subtyp är `*` eller
+  lika och varje parameter i intervallet finns med samma värde i typen; typens extra
+  parametrar spelar ingen roll. Det behövs för regeln "med parametrar före utan" i
+  `Accept` (`text/html;level=1;q=0` får inte utesluta `text/html`). En konkret typ innehåller
+  aldrig ett jokertecken.
+- **`isJson`:** `application/json` eller `application/<något>+json` (strukturerat suffix,
+  RFC 6839), oavsett parametrar. `application/+json`, `text/json` och `application/json-patch`
+  är inte JSON.
+- **`Accept` (RFC 9110 §12.5.1).** Huvudet delas på komma utanför citerade strängar (en
+  `quoted-pair` avslutar aldrig citatet; ett oavslutat citat går till slutet och rapporteras
+  av elementets parser). Varje element parsas med samma parser som `MediaType`, med samma
+  gränser per element, plus vikten: den första parametern som heter `q` (utan hänsyn till
+  skiftläge) är vikten, `qvalue = "0" [ "." 0*3DIGIT ] / "1" [ "." 0*3("0") ]` exakt (så
+  `q=1.`, `q=0.` och `q=1.000` godtas; `q=1.5`, `q=-1`, `q=0.0001`, `q=1.0000`, `q=abc` och
+  ett citerat värde är fel). Parametrar före `q` hör till intervallet; parametrar efter `q`
+  (accept-ext från RFC 7231, `token [ "=" värde ]`) kontrolleras och ignoreras, även ett andra
+  `q`. Tomma element (`a, ,b`) hoppas över (§5.6.1.2). Flera `Accept`-fält slås ihop i ordning
+  (§5.3). Högst **100 intervall** sammanlagt; det 101:a ger fel innan det parsas. Vikten lagras
+  som heltal i tusendelar så att jämförelser blir exakta.
+- **Saknat eller tomt `Accept`.** Inget `Accept`-fält, eller bara tomma element, betyder att
+  allt godtas med kvalitet 1 (§12.5.1; Spring gör samma sak med ett tomt huvud).
+- **Specificitetsregeln.** Kvaliteten för en erbjuden typ är vikten hos det mest specifika
+  intervallet som innehåller den. Specificiteten är först nivån (`*/*` lägst, sedan `type/*`,
+  sedan `type/subtype`), sedan antalet parametrar. Ordningen i huvudet spelar ingen roll.
+  Inget intervall som innehåller typen ger kvalitet 0, och `q=0` betyder "inte godtagbar"
+  även när `*/*` skulle godta typen.
+- **Oavgjorda fall.** (1) Två lika specifika intervall som båda innehåller typen
+  (`text/plain;q=0.4, text/plain;q=0.6`, eller `text/html;a=1` och `text/html;b=2` för
+  `text/html;a=1;b=2`): den högsta vikten gäller, så att resultatet inte beror på ordningen i
+  huvudet. (2) Två erbjudna typer med samma kvalitet: den som står först i
+  `negotiate(...)` vinner (serverns ordning, som Springs `produces`). (3) Inget `Accept`: den
+  första erbjudna typen. Erbjudna typer får inte vara jokertecken (programmeringsfel,
+  `IllegalArgumentException`).
+- **Felaktigt `Accept` ger 400, inte 406.** Ett huvud som inte går att tolka är klientens
+  fel, inte en fråga om vad servern kan leverera (avvikelse från Spring, i README:s tabell).
+  `WebRequest.accept()` och `negotiate` översätter parserns fel till `WebException` 400 med
+  detaljen `Invalid Accept header: ...`. Inget godtagbart ger 406 med detaljen
+  `Acceptable representations: ...`.
+- **`contentType()`** ger `Optional.empty()` utan huvud och 415 för ett felaktigt eller
+  upprepat `Content-Type` (två fält är tvetydiga).
+- **Ordningen i `readJson` och dess statuskoder** (motsvarar `@RequestBody`):
+  0. Kroppen tas i anspråk (`BodyState`, atomiskt). Ett andra `readJson`, eller `readJson`
+     efter `body()`/`bytes()` (även via en kopia från `withAttribute`), ger
+     `IllegalStateException` (programmeringsfel, 500). `body()`/`bytes()` efter `readJson` ger
+     också `IllegalStateException`; `body()` och `bytes()` sinsemellan fungerar som förut.
+     Kroppen tas i anspråk före kontrollerna, så även ett andra anrop efter en 415 är ett fel.
+  1. `Content-Encoding` som inte är tomt eller bara `identity` (utan hänsyn till skiftläge,
+     kommaseparerat, flera fält) ger **415** med `Accept: application/json` och
+     `Accept-Encoding: identity` (RFC 9110 §15.5.16 föreslår `Accept-Encoding`).
+  2. Saknat, upprepat eller felaktigt `Content-Type`, en typ där `isJson()` är falskt, eller
+     en `charset` som inte är `utf-8` (efter gemener; citerat `"utf-8"` godtas, `utf8` är inte
+     ett registrerat namn och godtas inte) ger **415** med `Accept: application/json`.
+  3.–4. Kroppen läses genom `LimitedInput`, som ger högst `maxInputSize + 1` byte och räknar.
+     `Json.parse(InputStream, limits)` parsar medan kroppen strömmar in. Misslyckas parsningen
+     och har strömmen gett mer än gränsen blir det **413** (`Request body is larger than N
+     bytes.`); har den inte gett någon byte blir det **400** `Request body is required` (en
+     tom kropp är tom oavsett ramning); annars **400** `Request body is not valid JSON: line L,
+     column C: <beskrivning>`. Det gäller också djup, antal poster, stränglängd och tallängd.
+     Beskrivningen kommer från `JsonParseException.description()`, men citerade utdrag ur
+     kroppen (parsern citerar ett dubblerat medlemsnamn, upp till 40 tecken) ersätts med
+     `"..."`. Enstaka tecken (`found 'x'`) står kvar, eftersom ett tecken inte kan bära data.
+     Gränsen kontrolleras på två ställen (strömmen och parsern), så en kropp över gränsen ger
+     413 även om parsern skulle ha hittat ett syntaxfel tidigare i samma buffert.
+  5. `codec.decode`: `JsonMappingException` ger **400** med detaljen `Request body has N
+     problem(s).` (singular för 1; över 100 dessutom `The first 100 are listed.`) och
+     `errors`.
+  En `RequestBodyException` (över `HttpLimits.maxBodySize`, trasig ramning, timeout) passerar
+  `Json.parse` och `readJson` oförändrad (därför deklarerar `readJson` `IOException`), så
+  routern skickar den vidare till `spola.http`, som svarar med kroppens status och stänger
+  anslutningen; en allmän mapper för `Exception` når den inte (08a:s regel).
+  Alla fel i 1–5 är `WebException` och går genom routerns mappers.
+- **Strömmande parsning och 413.** Hela kroppen läses aldrig in före parsningen: minnet
+  begränsas av parserns buffert och trädet, inte av kroppens storlek. Läsningen avbryts en
+  byte efter gränsen (testat med en oändlig ström: exakt `maxInputSize + 1` byte läses). När
+  handlern sedan svarar 413 läser och kastar `spola.http` resten av kroppen (upp till
+  `maxBodySize`) innan svaret skickas, enligt 07a:s regel för olästa kroppar; inget av det
+  buffras. Är kroppen större än `maxBodySize` ersätter serverns 413 handlerns svar och
+  anslutningen stängs. Routerns standard är `JsonLimits.DEFAULT` (4 MiB) och ändras med
+  `RouterBuilder.jsonLimits`; `readJson(codec, limits)` går före routerns gränser.
+- **`errors` är det gemensamma felformatet inför 09.** Ett problem-svar för fel i
+  förfrågans innehåll har den extra medlemmen `errors`: en array av
+  `{"path": ..., "message": ...}` i dokumentordning, högst 100 poster (samma gräns som
+  kodeken), och detaljen anger antalet. `path` använder kodekens notation (`$.items[3].qty`).
+  Formatet finns som `Problem.FieldError` och `Problem.withErrors`, och en `WebException`
+  bär listan i `errors()` (skyddad konstruktor), så att uppdrag 09 (validering) kan ge samma
+  format och en mapper kan läsa felen utan att tolka JSON. `path` och `message` från kodeken
+  är redan utskrivbar ASCII; `Problem` kortar dem som andra strängar (2 000 tecken).
+- **`Responses` buffrar.** `json` förhandlar först (`negotiate(APPLICATION_JSON)`: 406, eller
+  400 för ett felaktigt `Accept`), kodar sedan värdet till ett `JsonValue` och skriver det
+  med `Json.writeUtf8` till en byte-array. Svaret är `Response.bytes` med
+  `Content-Type: application/json` utan `charset` (RFC 8259 §11 definierar ingen) och
+  `Content-Length` från servern. `HEAD` får samma huvuden utan kropp (servern utelämnar
+  kroppen, 07a). `created` lägger till `Location`; `noContent` är 204.
+- **`encode`-fel ger 500.** Ett `JsonMappingException` från `encode` är serverns fel (värdet
+  kommer från servern) och kastas vidare som `IllegalStateException` med undantaget som
+  orsak. Routern svarar då 500 utan detaljer och loggar det escapat. Omslaget gör också att
+  en mapper som en applikation registrerat för `JsonMappingException` (tänkt för indata) inte
+  kan göra det till en 400 (testat).
+- **Problem-svar förhandlas inte.** `Problem.toResponse()` och `WebException` utan mapper ger
+  alltid `application/problem+json`, även när `Accept` inte godtar det (RFC 9457 §3, och som
+  Spring Boot gör när inget annat format är möjligt). Ett 406-svar skulle annars själv kunna
+  bli 406.
+- **`produces`/`consumes` är inte en del av routingen.** Handlern förhandlar (`readJson` ger
+  415, `negotiate`/`Responses.json` 406). Det håller routingen oberoende av huvuden och gör
+  förhandlingen synlig i koden (REGLER §4).

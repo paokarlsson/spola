@@ -30,6 +30,11 @@ public final class WebTests {
                 ProblemTests.tests(),
                 LogTests.tests(),
                 ScaleTests.tests(),
+                MediaTypeTests.tests(),
+                AcceptTests.tests(),
+                CrudTests.tests(),
+                JsonBodyTests.tests(),
+                ResponsesTests.tests(),
                 SourceRulesTests.tests())
                 .timeout(Duration.ofSeconds(60));
     }

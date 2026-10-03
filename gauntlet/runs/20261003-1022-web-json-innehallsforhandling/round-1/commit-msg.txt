@@ -1,0 +1,10 @@
+feat(web): add JSON bodies, media types and content negotiation
+
+Adds strict MediaType and Accept parsing (RFC 9110) with
+specificity-based negotiation, WebRequest.readJson with streaming parse
+and 415/400/413 problems carrying an errors list, and Responses for
+JSON out with 406 handling. The README has a CRUD example next to Spring.
+
+Gauntlet-Run: 20261003-1022-web-json-innehallsforhandling
+Gauntlet-Round: 1/5
+Gauntlet-Verdict: FAIL (0 blocker, 1 major, 5 minor upheld)

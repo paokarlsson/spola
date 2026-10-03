@@ -9,6 +9,8 @@ import java.util.Objects;
 import java.util.Optional;
 import spola.http.Headers;
 import spola.http.Request;
+import spola.json.JsonLimits;
+import spola.json.codec.JsonCodec;
 
 /**
  * The request a {@link WebHandler} and a {@link Filter} get: the underlying
@@ -27,6 +29,10 @@ import spola.http.Request;
  * several values for one name keep their order. Decoded control characters are allowed in
  * values (they are data). Invalid encoding or more than 1 000 pairs is a {@link WebException}
  * 400, thrown by the first method that reads the query.
+ *
+ * <p>The body can be read once: as JSON with {@link #readJson} (the counterpart of Spring's
+ * {@code @RequestBody}), or as a stream with {@link #body()} or {@link #bytes()}. Every request
+ * derived with {@link #withAttribute} shares the body and that rule.
  */
 public final class WebRequest {
 
@@ -35,15 +41,17 @@ public final class WebRequest {
     private final List<String> segments;
     private final Route route;
     private final QueryState query;
+    private final BodyState body;
     private final Map<AttributeKey<?>, Object> attributes;
 
-    WebRequest(Request http, String path, List<String> segments, Route route, QueryState query,
+    WebRequest(Request http, String path, List<String> segments, Route route, QueryState query, BodyState body,
             Map<AttributeKey<?>, Object> attributes) {
         this.http = http;
         this.path = path;
         this.segments = segments;
         this.route = route;
         this.query = query;
+        this.body = body;
         this.attributes = attributes;
     }
 
@@ -214,11 +222,134 @@ public final class WebRequest {
     }
 
     /**
-     * The body as a stream; see {@link Request#body()}.
+     * The {@code Content-Type} of the request.
+     *
+     * @return the media type, or empty if the request has none
+     * @throws WebException 415 if it is not a valid media type (see {@link MediaType#parse}) or
+     *                      is given more than once
+     */
+    public Optional<MediaType> contentType() {
+        return JsonBody.contentType(headers());
+    }
+
+    /**
+     * The {@code Accept} header, every {@code Accept} field combined (see {@link AcceptHeader}).
+     *
+     * @return the header; {@link AcceptHeader#ANY} if the request has none
+     * @throws WebException 400 if it is not valid (Spring answers 406 here; a malformed header is
+     *                      the client's error)
+     */
+    public AcceptHeader accept() {
+        try {
+            return AcceptHeader.parse(headers().all("Accept"));
+        } catch (IllegalArgumentException e) {
+            throw new WebException(400, "Invalid Accept header: " + e.getMessage() + ".");
+        }
+    }
+
+    /**
+     * Content negotiation: the media type to respond with, among those the handler can produce,
+     * after the request's {@code Accept} (see {@link AcceptHeader#negotiate}). The highest
+     * quality above 0 wins; on equal quality the first one given; without {@code Accept} the
+     * first one.
+     *
+     * <pre>{@code
+     * var type = request.negotiate(MediaType.APPLICATION_JSON, MediaType.TEXT_PLAIN);
+     * return type.equals(MediaType.TEXT_PLAIN) ? Response.text(200, order.toString())
+     *         : Responses.json(request, 200, ORDER, order);
+     * }</pre>
+     *
+     * @param offered the media types, without wildcards, in the server's order of preference
+     * @return the chosen media type, one of {@code offered}
+     * @throws WebException             406 if none is acceptable, 400 if {@code Accept} is invalid
+     * @throws IllegalArgumentException if {@code offered} is empty or has a wildcard
+     */
+    public MediaType negotiate(MediaType... offered) {
+        var types = List.of(offered);
+        return accept().negotiate(types).orElseThrow(() -> {
+            var names = new StringBuilder();
+            for (var type : types) {
+                names.append(names.isEmpty() ? "" : ", ").append(type);
+            }
+            return new WebException(406, Text.truncate("Acceptable representations: " + names + ".", 500));
+        });
+    }
+
+    /**
+     * Reads the body as JSON with the router's {@link JsonLimits} (see
+     * {@link RouterBuilder#jsonLimits}; {@link JsonLimits#DEFAULT} unless set) and decodes it
+     * with {@code codec}: the counterpart of Spring's {@code @RequestBody}. See
+     * {@link #readJson(JsonCodec, JsonLimits)} for the rules.
+     *
+     * @param codec the codec
+     * @param <T>   the decoded type
+     * @return the value
+     * @throws WebException                     415, 413 or 400, see
+     *                                          {@link #readJson(JsonCodec, JsonLimits)}
+     * @throws IllegalStateException            if the body was already read
+     * @throws spola.http.RequestBodyException if the body is larger than
+     *                                          {@code HttpLimits.maxBodySize}, malformed or stops
+     *                                          arriving (the server answers with its status)
+     * @throws IOException                      if the connection fails
+     */
+    public <T> T readJson(JsonCodec<T> codec) throws IOException {
+        return readJson(codec, body.jsonLimits());
+    }
+
+    /**
+     * Reads the body as JSON with {@code limits} (instead of the router's) and decodes it with
+     * {@code codec}. Checked in this order:
+     *
+     * <ol>
+     *   <li>A {@code Content-Encoding} other than {@code identity}: 415 (RFC 9110 §8.4), with
+     *       {@code Accept: application/json} and {@code Accept-Encoding: identity}.</li>
+     *   <li>No {@code Content-Type}, an invalid one, one that is not JSON
+     *       ({@code application/json} or {@code application/<name>+json}, see
+     *       {@link MediaType#isJson()}), or a {@code charset} other than UTF-8 (without regard to
+     *       case): 415 with {@code Accept: application/json}.</li>
+     *   <li>An empty body: 400 {@code Request body is required}.</li>
+     *   <li>The body is parsed as it streams in, never read whole first. More than
+     *       {@code limits.maxInputSize()} bytes: 413 (reading stops one byte past the limit).
+     *       Not JSON, or over another limit (depth, entries, string or number length): 400 with
+     *       the parser's description, line and column, but no text quoted from the body.</li>
+     *   <li>{@code codec.decode}: a mismatch is 400 with the detail
+     *       {@code Request body has N problems.} and the extension member {@code errors}, every
+     *       problem as {@code {"path": ..., "message": ...}} in document order, at most 100
+     *       (see {@link Problem#withErrors}).</li>
+     * </ol>
+     *
+     * <p>Every one of those is a {@link WebException} and goes through the router's exception
+     * mappers like any other. The body can be read once: a second {@code readJson}, or
+     * {@code readJson} after {@link #body()} or {@link #bytes()}, is a programming error
+     * ({@link IllegalStateException}, so 500).
+     *
+     * @param codec  the codec
+     * @param limits the parser's limits for this body
+     * @param <T>    the decoded type
+     * @return the value
+     * @throws WebException                     415, 413 or 400 as listed
+     * @throws IllegalStateException            if the body was already read
+     * @throws spola.http.RequestBodyException if the body is larger than
+     *                                          {@code HttpLimits.maxBodySize}, malformed or stops
+     *                                          arriving (passed on unchanged, so the server
+     *                                          answers with its status)
+     * @throws IOException                      if the connection fails
+     */
+    public <T> T readJson(JsonCodec<T> codec, JsonLimits limits) throws IOException {
+        Objects.requireNonNull(codec, "codec");
+        Objects.requireNonNull(limits, "limits");
+        body.claimForJson();
+        return JsonBody.read(headers(), http.body(), codec, limits);
+    }
+
+    /**
+     * The body as a stream (the same stream on every call); see {@link Request#body()}.
      *
      * @return the body
+     * @throws IllegalStateException if {@link #readJson} read the body
      */
     public InputStream body() {
+        body.claimForStream("body");
         return http.body();
     }
 
@@ -226,10 +357,13 @@ public final class WebRequest {
      * Reads the rest of the body; see {@link Request#bytes()}.
      *
      * @return the bytes
-     * @throws IOException if the body cannot be read ({@link spola.http.RequestBodyException}
-     *                     for a body that is too large or malformed)
+     * @throws IOException           if the body cannot be read
+     *                               ({@link spola.http.RequestBodyException} for a body that is
+     *                               too large or malformed)
+     * @throws IllegalStateException if {@link #readJson} read the body
      */
     public byte[] bytes() throws IOException {
+        body.claimForStream("bytes");
         return http.bytes();
     }
 
@@ -262,7 +396,7 @@ public final class WebRequest {
         key.type().cast(value);
         var copy = new HashMap<AttributeKey<?>, Object>(attributes);
         copy.put(key, value);
-        return new WebRequest(http, path, segments, route, query, Map.copyOf(copy));
+        return new WebRequest(http, path, segments, route, query, body, Map.copyOf(copy));
     }
 
     /** How many times the query was parsed, for tests. */

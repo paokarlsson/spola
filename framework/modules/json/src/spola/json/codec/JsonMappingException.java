@@ -33,9 +33,16 @@ public final class JsonMappingException extends RuntimeException {
     @SuppressWarnings("serial")
     private final List<JsonProblem> problems;
 
+    private final int problemCount;
+
     JsonMappingException(List<JsonProblem> problems) {
+        this(problems, problems.size());
+    }
+
+    JsonMappingException(List<JsonProblem> problems, int problemCount) {
         super(summary(problems), null, false, true);
         this.problems = List.copyOf(problems);
+        this.problemCount = problemCount;
     }
 
     /**
@@ -45,6 +52,17 @@ public final class JsonMappingException extends RuntimeException {
      */
     public List<JsonProblem> problems() {
         return problems;
+    }
+
+    /**
+     * How many problems were found, listed or not: {@code problems().size()} when at most 100
+     * were found, otherwise more than 100 (the last entry of {@link #problems()} is then the
+     * summary of the ones left out, not a problem itself).
+     *
+     * @return the number of problems, at least 1
+     */
+    public int problemCount() {
+        return problemCount;
     }
 
     /** Room kept at the end of the message for {@code "; ... (100 more)"}. */

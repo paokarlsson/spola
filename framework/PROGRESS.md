@@ -359,8 +359,44 @@
   `RequestBodyException` (chunked över `maxBodySize`), problem-formatet, loggrader utan
   styrtecken, 1 000 routes och 200 samtidiga klienter, och källkodsreglerna.
 
+### Uppdrag 08b: web del 2, JSON-kroppar, mediatyper och innehållsförhandling (`spola.web`)
+- Planeraren delade 08b: **08b** (detta: `MediaType`, `Accept`, förhandling, JSON in och ut,
+  415/406/413 och problem-svar för kroppsfel) och **08c** (cookies, `Set-Cookie`,
+  formulärkroppar). Multipart ligger utanför båda. Se ARCHITECTURE.md ("Web del 2").
+- `MediaType` (record): strikt RFC 9110 §8.3.1, gemener för typ/subtyp/parameternamn,
+  `charset` utan hänsyn till skiftläge, `quoted-string` med escape, högst 64 parametrar och
+  1 024 tecken, `includes` (jokertecken och parametrar), `isJson` (`+json`), `charset()`,
+  kanonisk `toString`.
+- `AcceptHeader`: q-värden (0–1, högst tre decimaler), accept-ext efter `q` ignoreras, flera
+  fält slås ihop, komma i citat delar inte, högst 100 intervall; kvaliteten från det mest
+  specifika intervallet oberoende av ordning, `q=0` utesluter, serverns ordning vid lika
+  kvalitet, saknat `Accept` godtar allt.
+- `WebRequest`: `contentType()` (415), `accept()` (400), `negotiate(...)` (406/400),
+  `readJson(codec)` och `readJson(codec, limits)` med ordningen `Content-Encoding` (415),
+  `Content-Type`/`charset` (415 med `Accept: application/json`), tom kropp (400), strömmande
+  parsning (413 över `maxInputSize`, 400 för syntax och gränser, utan text ur kroppen),
+  mappning (400 med `errors`). Kroppen läses en gång (`IllegalStateException`).
+  `RouterBuilder.jsonLimits`.
+- `Responses`: `json` (förhandlar, buffrar, `application/json` utan charset,
+  `Content-Length`), `created` (201 med `Location`), `noContent`; `encode`-fel ger 500.
+- `Problem.FieldError`/`withErrors` och `WebException.errors()`: `errors`-formatet
+  (`path`, `message`, högst 100) som 09 ska återanvända.
+- `spola.json`: `JsonMappingException.problemCount()` (litet tillägg, se ARCHITECTURE.md).
+  Inga befintliga tester ändrade; `module-info.java` i `spola.web` oförändrad.
+- `README.md` i `modules/web/`: CRUD-exempel med JSON bredvid Spring Boot (exemplet är
+  testkällan `ItemApi.java`, och ett test kontrollerar att README visar den oförändrad),
+  förhandlingsexempel och nya avvikelserader.
+- 447 tester i `spola.web` (cirka 2 s; 159 nya): 25 giltiga och 35 ogiltiga `MediaType`, 48
+  förhandlingsfall genom servern, CRUD med `HttpClient` och `HEAD`, 11 fall av 415 och tre
+  godtagna JSON-typer, 400 för tom kropp/syntax/djup, tre mappningsfel på olika nivåer, 250
+  fel, loggrader utan styrtecken, 413 för en kropp på 2 MiB som strömmas chunked mot 1 KiB,
+  exakt `maxInputSize + 1` lästa byte, `maxBodySize` från `spola.http`, egna gränser, läs en
+  gång, mappers för 415/400, 406 och problem-svar med `Accept: text/html`, `encode`-fel, 200
+  samtidiga klienter med JSON.
+
 ## Återstår (enligt `uppdrag/PLAN.md`)
-- 08b (JSON-kroppar, `Content-Type`/`Accept`, cookies, formulärkroppar) och 09–20 enligt planen.
+- 08c (cookies in, `Set-Cookie` ut, formulärkroppar `application/x-www-form-urlencoded`) och
+  09–20 enligt planen.
 - **Kvar från friktionsrapporten i 05c** (`modules/demo/README.md`, avsnitt "Friktion"):
   - **DI:** den typade formen av `to(...)` går inte att blanda `Class` och `Key` i; ett enda
     kvalificerat beroende gör att alla måste skrivas `Key.of(...)` (punkt 3).
@@ -377,6 +413,16 @@
     `LoggingSettings` efter bindningen, inte i `ConfigException` (punkt 7).
 
 ## Kända problem och begränsningar
+- **Web (spola.web, 08b):** efter en 413 från `readJson` läser `spola.http` resten av kroppen
+  (upp till `maxBodySize`, utan att buffra) innan svaret skickas; en klient som skickar en
+  stor kropp får alltså vänta tills den skickats. `readJson` kan inte veta om någon läst
+  `request.http().body()` direkt (bara `WebRequest.body()`/`bytes()` räknas). Bara UTF-8
+  godtas (`charset=utf8` utan bindestreck ger 415). Ett `Accept` med bara tomma element
+  behandlas som saknat. `Responses.json` buffrar hela svaret (inget strömmande JSON-svar).
+  Ett parsat träd tar upp till ungefär 25 gånger kroppens storlek i minne (se JSON), så
+  `jsonLimits` bör sättas lägre än 4 MiB för publika API:er med många samtidiga klienter.
+  Accept-ext efter `q` ignoreras, även ett andra `q`. Ingen `Accept-Charset`,
+  `Accept-Language`, ETag eller villkorliga förfrågningar.
 - **Web (spola.web, 08a):** queryn parsas lat, så en ogiltig query (felaktig kodning, över
   1 000 par) ger 400 bara om något läser den. För en förfrågan som får 400 från
   sökvägskontrollen ser filtren den råa sökvägen i `path()` och tomma `pathSegments()`.

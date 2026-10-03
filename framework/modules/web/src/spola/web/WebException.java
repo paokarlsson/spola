@@ -1,6 +1,7 @@
 package spola.web;
 
 import java.io.Serial;
+import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 import spola.http.Headers;
@@ -35,6 +36,7 @@ public class WebException extends RuntimeException {
     private final String title;
     private final String detail;
     private final transient Headers headers;
+    private final transient List<Problem.FieldError> errors;
 
     /**
      * An exception with the status's standard title and no detail.
@@ -79,14 +81,31 @@ public class WebException extends RuntimeException {
      * @throws IllegalArgumentException if the status is outside 400–599
      */
     protected WebException(int status, String title, String detail, Headers headers) {
+        this(status, title, detail, headers, List.of());
+    }
+
+    /**
+     * An exception whose problem lists errors in request content (see {@link #errors()}).
+     *
+     * @param status  the status, 400–599
+     * @param title   the title, or {@code null} for the status's standard title
+     * @param detail  the detail, or {@code null} for none
+     * @param headers headers for the response (they must be allowed in a {@link Response})
+     * @param errors  the errors, in order; the problem keeps at most {@value Problem#MAX_ERRORS}
+     * @throws IllegalArgumentException if the status is outside 400–599
+     */
+    protected WebException(int status, String title, String detail, Headers headers,
+            List<Problem.FieldError> errors) {
         Problem.checkStatus(status);
         Objects.requireNonNull(headers, "headers");
+        Objects.requireNonNull(errors, "errors");
         var resolvedTitle = title == null ? Problem.standardTitle(status) : title;
         super(status + " " + resolvedTitle + (detail == null ? "" : ": " + detail));
         this.status = status;
         this.title = resolvedTitle;
         this.detail = detail;
         this.headers = headers;
+        this.errors = List.copyOf(errors);
     }
 
     /**
@@ -127,7 +146,20 @@ public class WebException extends RuntimeException {
     }
 
     /**
-     * The problem for this exception: status, title and detail, {@code type} {@code about:blank}.
+     * Errors in request content, such as every mapping problem of a JSON body that
+     * {@link WebRequest#readJson} rejected; the problem carries them as its {@code errors}
+     * member (see {@link Problem#withErrors}). A mapper that makes its own response can read
+     * them here.
+     *
+     * @return the errors, unmodifiable, often empty
+     */
+    public List<Problem.FieldError> errors() {
+        return errors;
+    }
+
+    /**
+     * The problem for this exception: status, title and detail, {@code type} {@code about:blank},
+     * and {@code errors} when {@link #errors()} is not empty.
      *
      * @param instance the {@code instance} member (the request's path), or {@code null}
      * @return the problem
@@ -136,6 +168,9 @@ public class WebException extends RuntimeException {
         var problem = Problem.of(status).withTitle(title);
         if (detail != null) {
             problem = problem.withDetail(detail);
+        }
+        if (!errors.isEmpty()) {
+            problem = problem.withErrors(errors);
         }
         return instance == null ? problem : problem.withInstance(instance);
     }

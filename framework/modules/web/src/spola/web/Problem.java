@@ -43,6 +43,39 @@ public record Problem(String type, String title, int status, Optional<String> de
     /** The most characters a text member (or a string in the extensions) is cut to. */
     public static final int MAX_TEXT = 2_000;
 
+    /** The most entries {@link #withErrors} keeps in {@code errors}. */
+    public static final int MAX_ERRORS = 100;
+
+    /**
+     * One entry of the {@code errors} extension member: where in the request something is wrong
+     * and what. This is Spola's common format for errors in request content: {@code readJson}
+     * uses it for mapping problems ({@code $.items[3].qty}), and validation is to use it too.
+     *
+     * @param path    where the problem is, such as {@code $.items[3].qty}
+     * @param message what is wrong, such as {@code expected int but found string}
+     */
+    public record FieldError(String path, String message) {
+
+        /**
+         * Checks the components.
+         *
+         * @throws NullPointerException if {@code path} or {@code message} is {@code null}
+         */
+        public FieldError {
+            Objects.requireNonNull(path, "path");
+            Objects.requireNonNull(message, "message");
+        }
+
+        /**
+         * The entry as JSON.
+         *
+         * @return {@code {"path": ..., "message": ...}}
+         */
+        public JsonObject toJson() {
+            return JsonObject.builder().put("path", path).put("message", message).build();
+        }
+    }
+
     private static final Set<String> STANDARD_MEMBERS = Set.of("type", "title", "status", "detail", "instance");
 
     /**
@@ -149,6 +182,33 @@ public record Problem(String type, String title, int status, Optional<String> de
         extensions.members().forEach(builder::put);
         builder.put(name, value);
         return new Problem(type, title, status, detail, instance, builder.build());
+    }
+
+    /**
+     * A copy with the extension member {@code errors}: an array of
+     * {@code {"path": ..., "message": ...}} objects in the given order, at most
+     * {@value #MAX_ERRORS} (the first ones; the detail should say how many there were). Strings
+     * are cut like every extension string.
+     *
+     * <pre>{@code
+     * {"type":"about:blank","title":"Bad Request","status":400,"detail":"Request body has 2 problems.",
+     *  "errors":[{"path":"$.qty","message":"expected int but found string"},
+     *            {"path":"$.sku","message":"missing member"}]}
+     * }</pre>
+     *
+     * @param errors the errors
+     * @return the copy
+     * @throws IllegalArgumentException if the problem already has an {@code errors} member
+     */
+    public Problem withErrors(java.util.List<FieldError> errors) {
+        var array = new java.util.ArrayList<JsonValue>(Math.min(errors.size(), MAX_ERRORS));
+        for (var error : errors) {
+            if (array.size() == MAX_ERRORS) {
+                break;
+            }
+            array.add(error.toJson());
+        }
+        return withExtension("errors", JsonArray.copyOf(array));
     }
 
     /**

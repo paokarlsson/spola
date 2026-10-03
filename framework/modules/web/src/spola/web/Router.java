@@ -11,6 +11,7 @@ import spola.http.Handler;
 import spola.http.Request;
 import spola.http.RequestBodyException;
 import spola.http.Response;
+import spola.json.JsonLimits;
 
 /**
  * Routes requests to handlers: the counterpart of Spring MVC's {@code DispatcherServlet} with
@@ -61,12 +62,15 @@ public final class Router implements Handler {
     private final RouteTable table;
     private final List<Filter> filters;
     private final Map<Class<?>, MapperEntry<?>> mappers;
+    private final JsonLimits jsonLimits;
     private final System.Logger log;
 
-    Router(RouteTable table, List<Filter> filters, Map<Class<?>, MapperEntry<?>> mappers, System.Logger log) {
+    Router(RouteTable table, List<Filter> filters, Map<Class<?>, MapperEntry<?>> mappers, JsonLimits jsonLimits,
+            System.Logger log) {
         this.table = table;
         this.filters = filters;
         this.mappers = mappers;
+        this.jsonLimits = jsonLimits;
         this.log = log;
     }
 
@@ -90,17 +94,18 @@ public final class Router implements Handler {
     @Override
     public Response handle(Request http) throws Exception {
         var query = new QueryState(http.query().orElse(null));
+        var body = new BodyState(jsonLimits);
         var method = http.method();
         var rawPath = http.path();
         if (rawPath.equals("*")) {
-            return run(new WebRequest(http, rawPath, List.of(), null, query, Map.of()), filters,
+            return run(new WebRequest(http, rawPath, List.of(), null, query, body, Map.of()), filters,
                     request -> {
                         throw new WebException(404, "Not Found", "The asterisk-form request-target (OPTIONS *) is not"
                                 + " routed.");
                     });
         }
         return switch (Decoding.checkPath(rawPath)) {
-            case Decoding.InvalidPath invalid -> run(new WebRequest(http, rawPath, List.of(), null, query, Map.of()),
+            case Decoding.InvalidPath invalid -> run(new WebRequest(http, rawPath, List.of(), null, query, body, Map.of()),
                     filters, request -> {
                         throw new WebException(400, "Bad Request", "Invalid request path: " + invalid.reason() + ".");
                     });
@@ -109,12 +114,12 @@ public final class Router implements Handler {
                     var route = found.route();
                     var chain = route.filters().isEmpty() ? filters
                             : concat(filters, route.filters());
-                    yield run(new WebRequest(http, valid.decoded(), valid.segments(), route, query, Map.of()), chain,
+                    yield run(new WebRequest(http, valid.decoded(), valid.segments(), route, query, body, Map.of()), chain,
                             route.handler());
                 }
                 case RouteTable.NoMethod noMethod -> {
                     var allow = String.join(", ", noMethod.allowed());
-                    var request = new WebRequest(http, valid.decoded(), valid.segments(), null, query, Map.of());
+                    var request = new WebRequest(http, valid.decoded(), valid.segments(), null, query, body, Map.of());
                     if (method.equals("OPTIONS")) {
                         yield run(request, filters, r -> Response.status(204).withHeader("Allow", allow));
                     }
@@ -123,7 +128,7 @@ public final class Router implements Handler {
                     });
                 }
                 case RouteTable.NotFound notFound -> run(
-                        new WebRequest(http, valid.decoded(), valid.segments(), null, query, Map.of()), filters,
+                        new WebRequest(http, valid.decoded(), valid.segments(), null, query, body, Map.of()), filters,
                         request -> {
                             throw new WebException(404);
                         });

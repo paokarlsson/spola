@@ -7,6 +7,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.function.Consumer;
+import spola.json.JsonLimits;
 
 /**
  * Builds a {@link Router}. Routes, filters, groups and exception mappers are registered with
@@ -62,6 +63,7 @@ public final class RouterBuilder {
     private final List<Scope> groups = new ArrayList<>();
     private final List<Registration> registrations = new ArrayList<>();
     private final List<Router.MapperEntry<?>> mappers = new ArrayList<>();
+    private JsonLimits jsonLimits = JsonLimits.DEFAULT;
     private System.Logger log = System.getLogger("spola.web");
 
     RouterBuilder() {
@@ -197,6 +199,21 @@ public final class RouterBuilder {
     }
 
     /**
+     * Sets the parser limits {@link WebRequest#readJson(spola.json.codec.JsonCodec)} uses for
+     * every route ({@link JsonLimits#DEFAULT} unless set: 4 MiB, depth 512). A body larger than
+     * {@code maxInputSize()} gets 413, other limits 400. A handler can pass its own limits to
+     * {@link WebRequest#readJson(spola.json.codec.JsonCodec, JsonLimits)}. The server's
+     * {@code HttpLimits.maxBodySize} still applies to every body, whatever this says.
+     *
+     * @param limits the limits
+     * @return this builder
+     */
+    public RouterBuilder jsonLimits(JsonLimits limits) {
+        this.jsonLimits = Objects.requireNonNull(limits, "limits");
+        return this;
+    }
+
+    /**
      * Checks everything registered and builds the router. The builder can be used further;
      * later changes do not affect the router.
      *
@@ -242,7 +259,7 @@ public final class RouterBuilder {
         if (!problems.isEmpty()) {
             throw new RouterDefinitionException(problems);
         }
-        return new Router(new RouteTable(routes), List.copyOf(root.filters), Map.copyOf(byClass), log);
+        return new Router(new RouteTable(routes), List.copyOf(root.filters), Map.copyOf(byClass), jsonLimits, log);
     }
 
     /** The route of a registration, or {@code null} after adding its problems. */
