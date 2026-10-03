@@ -1,6 +1,8 @@
 package spola.web;
 
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
@@ -200,8 +202,8 @@ public record Problem(String type, String title, int status, Optional<String> de
      * @return the copy
      * @throws IllegalArgumentException if the problem already has an {@code errors} member
      */
-    public Problem withErrors(java.util.List<FieldError> errors) {
-        var array = new java.util.ArrayList<JsonValue>(Math.min(errors.size(), MAX_ERRORS));
+    public Problem withErrors(List<FieldError> errors) {
+        var array = new ArrayList<JsonValue>(Math.min(errors.size(), MAX_ERRORS));
         for (var error : errors) {
             if (array.size() == MAX_ERRORS) {
                 break;
@@ -238,7 +240,7 @@ public record Problem(String type, String title, int status, Optional<String> de
         return switch (value) {
             case JsonString s -> s.value().length() > MAX_TEXT ? JsonString.of(Text.truncate(s.value(), MAX_TEXT)) : s;
             case JsonArray a -> {
-                var values = new java.util.ArrayList<JsonValue>(a.values().size());
+                var values = new ArrayList<JsonValue>(a.values().size());
                 boolean changed = false;
                 for (var element : a.values()) {
                     var cut = cut(element);

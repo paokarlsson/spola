@@ -1,0 +1,10 @@
+fix(web): accept charset=utf-8 in Accept ranges for JSON responses
+
+A client sending Accept: application/json; charset=utf-8 got 406 even
+though JSON is always UTF-8; such ranges now match JSON offers. The
+legacy HttpURLConnection Accept header is documented as a deviation,
+and the Content-Type parsing and error cap constants are deduplicated.
+
+Gauntlet-Run: 20261003-1022-web-json-innehallsforhandling
+Gauntlet-Round: 2/5
+Gauntlet-Verdict: PASS (0 blocker, 0 major, 4 minor upheld)

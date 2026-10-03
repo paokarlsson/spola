@@ -409,7 +409,10 @@ bestäms av det mest specifika intervallet i `Accept` som innehåller den (med p
 utan, `text/plain` före `text/*` före `*/*`), oavsett ordningen i huvudet, så
 `Accept: */*, application/json;q=0` utesluter JSON. Vid lika kvalitet vinner ordningen i
 anropet, och utan `Accept` väljs den första. Inget godtagbart ger 406, ett felaktigt `Accept`
-400. `request.accept()` ger det tolkade huvudet (`AcceptHeader`) och
+400. Eftersom JSON alltid är UTF-8 (RFC 8259 §8.1) godtar `charset=utf-8` i ett intervall en
+JSON-typ utan `charset`: `Accept: application/json; charset=utf-8` ger 200 från
+`Responses.json`, medan `charset=iso-8859-1` ger 406 (om inte till exempel `*/*` också finns).
+`request.accept()` ger det tolkade huvudet (`AcceptHeader`) och
 `request.contentType()` förfrågans `MediaType`.
 
 ## Mönster och matchning
@@ -440,6 +443,8 @@ anropet, och utan `Accept` väljs den första. Inget godtagbart ger 406, ett fel
 | `HEAD`/`OPTIONS` | Automatiska | Automatiska, men en egen `HEAD`- eller `OPTIONS`-route går före. |
 | Filter och 404 | Servlet-filter körs för allt, interceptors bara för en hittad handler | Routerns filter körs för allt (också 400, 404, 405, automatiskt `OPTIONS`); en grupps filter bara för gruppens routes. |
 | Felaktigt `Accept` | Ger 406 (`HttpMediaTypeNotAcceptableException`) | Ger 400 med detalj: huvudet är klientens fel, inte en fråga om vad servern kan leverera. Ett `q` utanför `0`–`1`, med fler än tre decimaler eller citerat, och fler än 100 intervall, är fel. |
+| Gammalt `HttpURLConnection`-standardhuvud | `text/html, image/gif, image/jpeg, *; q=.2, */*; q=.2` godtas (Spring tolkar `*` som `*/*`) | Ger 400: ett ensamt `*` är ingen mediatyp i RFC 9110, och `Accept` tolkas strikt. Huvudet skickas bara av `HttpURLConnection` före JDK 23 när anroparen inte sätter `Accept`; sätt det uttryckligen. |
+| `charset` i `Accept` | `application/json;charset=UTF-8` godtar `application/json` | Samma för JSON: `charset=utf-8` (oavsett skiftläge, även citerat) godtar en JSON-typ utan `charset`. En annan `charset` utesluter. För andra typer krävs samma `charset` i den erbjudna typen. |
 | `charset` i `Content-Type` | Jackson läser UTF-16/UTF-32 och flera andra kodningar | Bara UTF-8 (RFC 8259 §8.1): en annan `charset` ger 415. `charset` jämförs utan hänsyn till skiftläge, citerat `"utf-8"` godtas. Svar har `application/json` utan `charset`. |
 | Felformat för kroppsfel | `MethodArgumentNotValidException`/`HttpMessageNotReadableException` med Boots egna fält | Problem-svar med `errors`: `[{"path": "$.items[3].qty", "message": "..."}]` i dokumentordning, högst 100, och en detalj med antalet. Samma format används för validering (uppdrag 09). |
 | Förhandling av felsvar | `ProblemDetail` skrivs som `application/problem+json` eller `application/json` (eller XML med Jackson XML) efter `Accept`; Boots `/error` ger HTML till webbläsare | Problem-svar förhandlas inte: alltid `application/problem+json`, även med `Accept: text/html`. |

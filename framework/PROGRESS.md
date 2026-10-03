@@ -370,7 +370,8 @@
 - `AcceptHeader`: q-värden (0–1, högst tre decimaler), accept-ext efter `q` ignoreras, flera
   fält slås ihop, komma i citat delar inte, högst 100 intervall; kvaliteten från det mest
   specifika intervallet oberoende av ordning, `q=0` utesluter, serverns ordning vid lika
-  kvalitet, saknat `Accept` godtar allt.
+  kvalitet, saknat `Accept` godtar allt. `charset=utf-8` i ett intervall godtar JSON utan
+  `charset` (RFC 8259 §8.1), så `Accept: application/json; charset=utf-8` ger 200 (runda 2).
 - `WebRequest`: `contentType()` (415), `accept()` (400), `negotiate(...)` (406/400),
   `readJson(codec)` och `readJson(codec, limits)` med ordningen `Content-Encoding` (415),
   `Content-Type`/`charset` (415 med `Accept: application/json`), tom kropp (400), strömmande
@@ -386,7 +387,7 @@
 - `README.md` i `modules/web/`: CRUD-exempel med JSON bredvid Spring Boot (exemplet är
   testkällan `ItemApi.java`, och ett test kontrollerar att README visar den oförändrad),
   förhandlingsexempel och nya avvikelserader.
-- 447 tester i `spola.web` (cirka 2 s; 159 nya): 25 giltiga och 35 ogiltiga `MediaType`, 48
+- 455 tester i `spola.web` (cirka 2 s; 167 nya): 25 giltiga och 35 ogiltiga `MediaType`, 55
   förhandlingsfall genom servern, CRUD med `HttpClient` och `HEAD`, 11 fall av 415 och tre
   godtagna JSON-typer, 400 för tom kropp/syntax/djup, tre mappningsfel på olika nivåer, 250
   fel, loggrader utan styrtecken, 413 för en kropp på 2 MiB som strömmas chunked mot 1 KiB,
@@ -421,7 +422,9 @@
   behandlas som saknat. `Responses.json` buffrar hela svaret (inget strömmande JSON-svar).
   Ett parsat träd tar upp till ungefär 25 gånger kroppens storlek i minne (se JSON), så
   `jsonLimits` bör sättas lägre än 4 MiB för publika API:er med många samtidiga klienter.
-  Accept-ext efter `q` ignoreras, även ett andra `q`. Ingen `Accept-Charset`,
+  Accept-ext efter `q` ignoreras, även ett andra `q`. `text/plain;charset=utf-8` i `Accept`
+  godtar inte ett erbjudet `text/plain` (bara JSON har undantaget). Det gamla
+  `HttpURLConnection`-standardhuvudet (med ett ensamt `*`) ger 400. Ingen `Accept-Charset`,
   `Accept-Language`, ETag eller villkorliga förfrågningar.
 - **Web (spola.web, 08a):** queryn parsas lat, så en ogiltig query (felaktig kodning, över
   1 000 par) ger 400 bara om något läser den. För en förfrågan som får 400 från

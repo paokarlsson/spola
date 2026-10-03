@@ -44,16 +44,18 @@ final class ResponsesTests {
         return suite("Responses",
                 test("406 when Accept does not take application/json", () -> {
                     for (var accept : List.of("text/html", "application/json;q=0, */*", "*/*, application/json;q=0",
-                            "application/xml, text/*")) {
+                            "application/xml, text/*", "application/json;charset=iso-8859-1")) {
                         var reply = Support.send(server.get().port(), "GET", "/item", "Accept: " + accept);
                         assertEquals(406, reply.status(), accept + ": " + reply);
                         assertEquals("application/problem+json", reply.header("Content-Type"));
                         assertEquals("Acceptable representations: application/json.", reply.json().string("detail"));
                     }
                 }),
-                test("200 for */*, application/*, a lower but non-zero weight, and no Accept", () -> {
+                test("200 for */*, application/*, a lower but non-zero weight, charset=utf-8, and no Accept", () -> {
                     for (var accept : List.of("*/*", "application/*", "application/json;q=0.5, text/html;q=0.9",
-                            "application/json", "text/html, application/json;q=0.001")) {
+                            "application/json", "text/html, application/json;q=0.001",
+                            "application/json; charset=utf-8", "application/json;charset=\"UTF-8\"",
+                            "application/json;charset=iso-8859-1, */*;q=0.1")) {
                         var reply = Support.send(server.get().port(), "GET", "/item", "Accept: " + accept);
                         assertEquals(200, reply.status(), accept + ": " + reply);
                         assertEquals("application/json", reply.header("Content-Type"));

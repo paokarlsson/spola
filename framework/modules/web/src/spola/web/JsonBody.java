@@ -3,7 +3,10 @@ package spola.web;
 import java.io.IOException;
 import java.io.InputStream;
 import java.util.ArrayList;
+import java.util.List;
+import java.util.Objects;
 import java.util.Optional;
+import java.util.function.Function;
 import spola.http.Headers;
 import spola.json.Json;
 import spola.json.JsonLimits;
@@ -18,13 +21,10 @@ final class JsonBody {
     private JsonBody() {
     }
 
-    /** The problems a codec lists at most (and so the most entries in {@code errors}). */
-    static final int MAX_LISTED = 100;
-
     /** What a 415 from {@code readJson} tells the client to send. */
     private static final Headers ACCEPT_JSON = Headers.of("Accept", "application/json");
 
-    /** {@code Content-Encoding} values: {@code identity}, or nothing. */
+    /** What a 415 for a {@code Content-Encoding} tells the client to send: JSON, without content coding. */
     private static final Headers ACCEPT_IDENTITY = Headers.of("Accept", "application/json",
             "Accept-Encoding", "identity");
 
@@ -70,20 +70,12 @@ final class JsonBody {
     }
 
     /** Step 2: one {@code Content-Type} field that is JSON in UTF-8. */
-    static MediaType checkContentType(Headers headers) {
+    static void checkContentType(Headers headers) {
         var values = headers.all("Content-Type");
         if (values.isEmpty()) {
             throw unsupported("Content-Type is missing; send application/json.");
         }
-        if (values.size() > 1) {
-            throw unsupported("Content-Type is given " + values.size() + " times; send it once.");
-        }
-        MediaType type;
-        try {
-            type = MediaType.parse(values.getFirst());
-        } catch (IllegalArgumentException e) {
-            throw unsupported("Invalid Content-Type: " + e.getMessage() + ".");
-        }
+        var type = single(values, JsonBody::unsupported);
         if (!type.isJson()) {
             throw unsupported("Content-Type " + Text.quote(type.toString()) + " is not JSON; send application/json.");
         }
@@ -92,7 +84,6 @@ final class JsonBody {
             throw unsupported("charset " + Text.quote(charset.get()) + " is not supported; JSON is UTF-8 (RFC 8259"
                     + " section 8.1).");
         }
-        return type;
     }
 
     /** {@link WebRequest#contentType()}: 415 (without {@code Accept}) if it is not one valid field. */
@@ -101,13 +92,18 @@ final class JsonBody {
         if (values.isEmpty()) {
             return Optional.empty();
         }
+        return Optional.of(single(values, detail -> new WebException(415, detail)));
+    }
+
+    /** The one {@code Content-Type} in {@code values} (not empty), parsed; otherwise {@code error}'s 415. */
+    private static MediaType single(List<String> values, Function<String, WebException> error) {
         if (values.size() > 1) {
-            throw new WebException(415, "Content-Type is given " + values.size() + " times.");
+            throw error.apply("Content-Type is given " + values.size() + " times; send it once.");
         }
         try {
-            return Optional.of(MediaType.parse(values.getFirst()));
+            return MediaType.parse(values.getFirst());
         } catch (IllegalArgumentException e) {
-            throw new WebException(415, "Invalid Content-Type: " + e.getMessage() + ".");
+            throw error.apply("Invalid Content-Type: " + e.getMessage() + ".");
         }
     }
 
@@ -124,7 +120,7 @@ final class JsonBody {
         int count = e.problemCount();
         var problems = e.problems();
         // the codec lists at most 100 problems and then one that counts the rest: leave that one out
-        var listed = problems.subList(0, Math.min(problems.size(), Math.min(count, MAX_LISTED)));
+        var listed = problems.subList(0, Math.min(problems.size(), Math.min(count, Problem.MAX_ERRORS)));
         var errors = new ArrayList<Problem.FieldError>(listed.size());
         for (var problem : listed) {
             errors.add(new Problem.FieldError(problem.path(), problem.message()));
@@ -203,7 +199,7 @@ final class JsonBody {
 
         @Override
         public int read(byte[] buffer, int offset, int length) throws IOException {
-            java.util.Objects.checkFromIndexSize(offset, length, buffer.length);
+            Objects.checkFromIndexSize(offset, length, buffer.length);
             if (length == 0) {
                 return 0;
             }

@@ -1756,6 +1756,18 @@ Interna klasser: `MediaTypeParser` (den strikta parsern, delad av `MediaType` oc
   parametrar spelar ingen roll. Det behövs för regeln "med parametrar före utan" i
   `Accept` (`text/html;level=1;q=0` får inte utesluta `text/html`). En konkret typ innehåller
   aldrig ett jokertecken.
+- **`charset=utf-8` i ett intervall godtar JSON utan `charset` (08b runda 2).** Ett intervall
+  med `charset=utf-8` (efter gemener, alltså även `UTF-8` och citerat `"UTF-8"`) innehåller
+  en JSON-typ (`isJson()`) som saknar `charset`. JSON är UTF-8 per definition (RFC 8259 §8.1)
+  och Spola skriver alltid JSON som UTF-8, så `Accept: application/json; charset=utf-8`
+  (OkHttp/Retrofit, Springs `APPLICATION_JSON_UTF8_VALUE` i Feign/RestTemplate) ska ge 200,
+  inte 406. Intervallet behåller sin högre specificitet. Undantaget ligger i `includes` (inte
+  bara i `AcceptHeader`) så att den publika metoden och förhandlingen aldrig säger olika saker.
+  Alla andra `charset`-värden utesluter fortfarande (`charset=iso-8859-1` innehåller inte
+  `application/json`, men ett `*/*` i samma huvud kan ta den). Regeln gäller bara JSON: för
+  `text/plain` vet `includes` inte vilken kodning svaret får, så `text/plain;charset=utf-8`
+  innehåller inte `text/plain`; den som vill erbjuda det får erbjuda
+  `text/plain;charset=utf-8` uttryckligen.
 - **`isJson`:** `application/json` eller `application/<något>+json` (strukturerat suffix,
   RFC 6839), oavsett parametrar. `application/+json`, `text/json` och `application/json-patch`
   är inte JSON.

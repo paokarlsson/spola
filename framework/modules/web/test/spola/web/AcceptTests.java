@@ -70,6 +70,14 @@ final class AcceptTests {
             c("application/*;q=0.1, application/json;q=0", List.of(JSON, "application/vnd.x+json"),
                     "application/vnd.x+json"),
             c("application/json;q=0.5, text/html;q=0.9", List.of(JSON), JSON),
+            // charset=utf-8 is satisfied by JSON without a charset (RFC 8259 8.1); other charsets are not
+            c("application/json; charset=utf-8", List.of(JSON), JSON),
+            c("application/json;charset=\"UTF-8\"", List.of(JSON), JSON),
+            c("application/json;charset=UTF-8, text/plain;q=0.9", List.of(TEXT, JSON), JSON),
+            c("application/json;charset=utf-8;q=0, */*", List.of(JSON, TEXT), TEXT),
+            c("application/json;charset=iso-8859-1", List.of(JSON), "406"),
+            c("application/json;charset=iso-8859-1, */*;q=0.1", List.of(JSON), JSON),
+            c("text/plain;charset=utf-8", List.of(TEXT), "406"),
             // equal quality: the server's order wins
             c("application/json;q=0.5, text/plain;q=0.5", List.of(JSON, TEXT), JSON),
             c("application/json;q=0.5, text/plain;q=0.5", List.of(TEXT, JSON), TEXT),

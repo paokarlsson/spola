@@ -133,6 +133,14 @@ public record MediaType(String type, String subtype, Map<String, String> paramet
      * {@code text/html;level=1;charset=utf-8} but not {@code text/html}). {@code other}'s extra
      * parameters do not matter. A concrete type never includes a wildcard.
      *
+     * <p>One exception: a range's {@code charset=utf-8} (any case, quoted or not) is also
+     * satisfied by a JSON media type ({@link #isJson()}) that has no {@code charset}, because
+     * JSON is UTF-8 by definition (RFC 8259 §8.1) and Spola always writes it as UTF-8. So
+     * {@code application/json;charset=utf-8} includes {@code application/json}, which is what
+     * many clients (OkHttp/Retrofit, Spring's {@code APPLICATION_JSON_UTF8_VALUE}) send. Any
+     * other charset still excludes it: {@code application/json;charset=iso-8859-1} does not
+     * include {@code application/json}.
+     *
      * @param other the media type
      * @return whether it is included
      */
@@ -145,7 +153,12 @@ public record MediaType(String type, String subtype, Map<String, String> paramet
             return false;
         }
         for (var entry : parameters.entrySet()) {
-            if (!entry.getValue().equals(other.parameters.get(entry.getKey()))) {
+            var value = other.parameters.get(entry.getKey());
+            if (value == null && entry.getKey().equals("charset") && entry.getValue().equals("utf-8")
+                    && other.isJson()) {
+                continue; // JSON without a charset is UTF-8 (RFC 8259 8.1)
+            }
+            if (!entry.getValue().equals(value)) {
                 return false;
             }
         }

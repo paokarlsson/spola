@@ -166,6 +166,18 @@ final class MediaTypeTests {
                     assertFalse(MediaType.ALL.isJson());
                     assertFalse(MediaType.parse("application/xml").isJson());
                 }),
+                test("includes: charset=utf-8 is satisfied by JSON without a charset (RFC 8259 8.1)", () -> {
+                    var json = MediaType.APPLICATION_JSON;
+                    assertTrue(MediaType.parse("application/json;charset=utf-8").includes(json));
+                    assertTrue(MediaType.parse("application/json; charset=UTF-8").includes(json));
+                    assertTrue(MediaType.parse("application/json;charset=\"UTF-8\"").includes(json));
+                    assertTrue(MediaType.parse("application/*;charset=utf-8").includes(MediaType.APPLICATION_PROBLEM_JSON));
+                    assertTrue(MediaType.parse("application/json;charset=utf-8").includes(MediaType.parse("application/json;charset=UTF-8")));
+                    assertFalse(MediaType.parse("application/json;charset=iso-8859-1").includes(json));
+                    assertFalse(MediaType.parse("application/json;charset=utf-8").includes(MediaType.parse("application/json;charset=utf-16")));
+                    assertFalse(MediaType.parse("application/json;charset=utf-8;v=2").includes(json));
+                    assertFalse(MediaType.parse("application/json;charset=utf-8").includes(MediaType.parse("text/json")));
+                }),
                 test("includes: wildcards and parameters", () -> {
                     var json = MediaType.APPLICATION_JSON;
                     assertTrue(MediaType.ALL.includes(json));
@@ -173,7 +185,8 @@ final class MediaTypeTests {
                     assertFalse(MediaType.parse("text/*").includes(json));
                     assertTrue(json.includes(json));
                     assertTrue(json.includes(MediaType.parse("application/json;charset=utf-8")));
-                    assertFalse(MediaType.parse("application/json;charset=utf-8").includes(json));
+                    assertFalse(MediaType.parse("text/plain;charset=utf-8").includes(MediaType.TEXT_PLAIN));
+                    assertFalse(MediaType.parse("application/xml;charset=utf-8").includes(MediaType.parse("application/xml")));
                     assertTrue(MediaType.parse("text/html;level=1").includes(MediaType.parse("text/html;level=1;a=b")));
                     assertFalse(MediaType.parse("text/html;level=1").includes(MediaType.parse("text/html;level=2")));
                     assertFalse(json.includes(MediaType.ALL));
