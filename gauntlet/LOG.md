@@ -15,3 +15,4 @@
 - 2026-10-03 11:02 · 20261003-1022-web-json-innehallsforhandling · PASS · 2 rounds · Web part 2: JSON bodies, media types and content negotiation · commits: f73d0b4, ffa67ec
 - 2026-10-03 11:31 · 20261003-1102-web-cookies-och-formular · PASS · 1 rounds · Web part 3: cookies, Set-Cookie and form bodies (spola.web) · commits: 6ec2828
 - 2026-10-03 12:05 · 20261003-1131-validation-karna · PASS · 1 rounds · Validation part 1: composable validators and violation reports · commits: 61de226
+- 2026-10-03 12:36 · 20261003-1205-validation-webb · PASS · 1 rounds · Validation part 2: validation and form binding in spola.web · commits: c190458
