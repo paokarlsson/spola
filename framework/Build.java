@@ -67,6 +67,8 @@ static final List<ModuleDir> MODULES = List.of(
                 new TestEntry("spola.validation.ValidationTests", "suite")),
         new ModuleDir("spola.security", Path.of("modules/security"),
                 new TestEntry("spola.security.SecurityTests", "suite")),
+        new ModuleDir("spola.security.web", Path.of("modules/security-web"),
+                new TestEntry("spola.security.web.SecurityWebTests", "suite")),
         new ModuleDir("spola.demo", Path.of("modules/demo"),
                 new TestEntry("spola.demo.DemoTests", "suite")));
 

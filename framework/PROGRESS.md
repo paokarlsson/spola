@@ -537,9 +537,52 @@
   `InMemoryUserStore`, `Authenticator` med räknande hasher, 200 virtuella trådar, markörer för
   lösenord och hashar i `toString()` och undantag, README och källregler.
 
+### Uppdrag 10b: säkerhet del 2, säkerhetsfilter, HTTP Basic och åtkomstregler (`spola.security.web`) — rad 10 i `PLAN.md` klar
+- **Rad 10 i `PLAN.md` är klar** (10a och 10b). **Formulärinloggning och utloggning flyttades
+  till uppdrag 11**, eftersom de kräver sessioner; de kommer där tillsammans med sessioner, JWT,
+  CSRF och CORS.
+- **Säkerhetskritisk kod.** Modulen avgör vem som får nå vad och tolkar `Authorization`. Den är
+  testad mot RFC 7617:s exempel och med över 30 felaktiga värden, men **en människa bör granska
+  den** innan ramverket används på riktigt.
+- Ny bryggmodul `spola.security.web` (`modules/security-web/`) med `requires transitive
+  spola.web`, `requires transitive spola.security` och `requires static java.net.http` (bara
+  för testerna). Tillagd i `MODULES` i `Build.java` med testingången
+  `spola.security.web.SecurityWebTests`. Ett litet tillägg i `spola.web`:
+  `RouterBuilder.log(System.Logger)` är publik (var paketprivat; inget ändrat beteende, se
+  ARCHITECTURE.md). Modulen skriver inga loggrader.
+- `WebSecurity.builder()` med `authentication(...)` och `rule(matcher, access)`; `build()` ger
+  ett oföränderligt, trådsäkert `WebSecurity`. `filter()` registreras först på routern: 400 för
+  flera `Authorization`-fält, mekanismerna i ordning (första som inte ger `None` avgör;
+  `Rejected` ger alltid 401), `SecurityContext` som attribut, första matchande regel avgör och
+  ingen matchande regel nekar. `require(rule)` är ett filter för grupper (`@PreAuthorize`).
+  `WebSecurity.identity` och `requireIdentity` läser identiteten; utan filtret kastar de
+  `IllegalStateException` (500). Ett filter som når samma förfrågan två gånger ger 500.
+- `RequestAuthentication`, `AuthOutcome` (`None`, `Success`, `Rejected`) och `HttpBasic.of(
+  authenticator, realm)`: schemat skiftlägesokänsligt, ett eller flera mellanslag, token68 högst
+  8 192 tecken, strikt kanonisk standard-Base64 med utfyllnad, UTF-8 med `REPORT`, delning vid
+  första `:`, inga styrtecken, inget tomt namn, ett `Authenticator`-anrop per förfrågan, avkodade
+  byte och tecken nollställs. Realm 1–100 tecken utskrivbar ASCII utan `"` och `\`.
+- `RequestMatcher` (`under`, `exactly` på avkodade segment, `method` där `GET` också matchar
+  `HEAD`, `anyRequest`, lambdor) och `AccessRule` (`permitAll`, `denyAll`, `authenticated`,
+  `hasRole`, `hasAnyRole`, lambdor). `build()` avvisar regler efter `anyRequest()` med en rad per
+  problem.
+- 401: `Problem.of(401)` med `WWW-Authenticate: Basic realm="...", charset="UTF-8"` per
+  `HttpBasic`; 403: `Problem.of(403)` utan `WWW-Authenticate`; båda med
+  `Cache-Control: no-store`, utan `detail` och lika oavsett orsak.
+- `README.md` i `modules/security-web/`: exemplet (`SecurityExample.java`, kontrollerat av ett
+  test) bredvid Spring Security (`SecurityFilterChain`-böna med `authorizeHttpRequests`,
+  `httpBasic()`, `@PreAuthorize`, `@AuthenticationPrincipal`), jämförelsetabell och
+  avvikelsetabell.
+- 46 tester i `spola.security.web` (under 1 s): Basic genom en riktig server (rå socket och
+  `HttpClient`), 32 felaktiga `Authorization`-värden, RFC 7617-exemplen, räknande
+  `Authenticator`, lagring som kastar, matchers mot avkodade och avvisade sökvägar, `HEAD`,
+  regelordning, roller, undantag i matchers/regler/mekanismer, `require`, saknat och dubbelt
+  filter, routerns 400/404/405/`OPTIONS`, 200 virtuella trådar, markörer i alla svar och
+  loggrader, README och källregler.
+
 ## Återstår (enligt `uppdrag/PLAN.md`)
-- 10b (rad 10 fortsätter: filterkedja, HTTP Basic, formulärinloggning, auktorisering, 401/403)
-  och 11–20 enligt planen (rad 08 är klar med 08a–08c, rad 09 med 09a och 09b).
+- 11–20 enligt planen (rad 08 är klar med 08a–08c, rad 09 med 09a och 09b, rad 10 med 10a och
+  10b). Uppdrag 11 får också formulärinloggning och utloggning (flyttade från rad 10).
 - **Kvar från friktionsrapporten i 05c** (`modules/demo/README.md`, avsnitt "Friktion"):
   - **DI:** den typade formen av `to(...)` går inte att blanda `Class` och `Key` i; ett enda
     kvalificerat beroende gör att alla måste skrivas `Key.of(...)` (punkt 3).
@@ -556,6 +599,21 @@
     `LoggingSettings` efter bindningen, inte i `ConfigException` (punkt 7).
 
 ## Kända problem och begränsningar
+- **Säkerhet i webben (spola.security.web, 10b):** säkerhetskritisk; bör granskas av en
+  människa. **Varje förfrågan med Basic-uppgifter kostar en PBKDF2-beräkning** (inga cachade
+  inloggningar), så många förfrågningar med uppgifter belastar CPU:n; **ingen
+  hastighetsbegränsning** och ingen låsning av konton. **Inga säkerhetshuvuden**
+  (`X-Content-Type-Options`, `X-Frame-Options`, HSTS) sätts. **Ingen auditloggning** av
+  inloggningar (uppdrag 18); modulen loggar ingenting. Ingen formulärinloggning, utloggning,
+  sessioner, JWT, CSRF eller CORS (uppdrag 11). Att filtret är registrerat först på routern kan
+  modulen inte kontrollera; ett filter före det ser också förfrågningar som sedan nekas.
+  Identiteten finns bara på `WebRequest` (ingen `SecurityContextHolder` eller `ScopedValue`
+  för kod utanför webblagret). Användarnamnet och `Authorization`-värdet finns som `String` och
+  kan inte nollställas. Bara `anyRequest()` självt känns igen som "alla förfrågningar" i
+  `build()`; en egen lambda som matchar allt följd av fler regler upptäcks inte. Ett undantag
+  som användarens `UserStore` kastar loggas av routern med sitt meddelande; lagringen får inte
+  lägga lösenord eller andra hemligheter i det. `exactly` och `under` tar inga prefix med
+  avslutande `/`.
 - **Säkerhet (spola.security, 10a):** säkerhetskritisk; bör granskas av en människa. Bara
   PBKDF2-HMAC-SHA256 (ingen BCrypt, SCrypt, Argon2 eller delegerande hasher). Ingen låsning av
   konton och ingen hastighetsbegränsning; varje försök kostar en PBKDF2-beräkning, så en

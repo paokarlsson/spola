@@ -1,0 +1,13 @@
+feat(security): add spola.security.web filter, HTTP Basic and access rules
+
+New module that puts spola.security in front of spola.web routes: one
+security filter that runs the authentication mechanisms in order, strict
+RFC 7617 Basic parsing, request matchers and first-match access rules
+that deny by default. 46 tests, README next to Spring Security.
+
+Gauntlet-Run: 20261003-1316-security-filter-basic-och-atkomstregler
+Gauntlet-Round: 1/5
+Gauntlet-Verdict: PASS (0 blocker, 0 major, 7 minor upheld)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01AKZj43HLYQ2QFifQynKJBY

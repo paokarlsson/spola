@@ -360,8 +360,16 @@ public final class RouterBuilder {
         }
     }
 
-    /** Sets the logger (tests capture what the router logs). */
-    RouterBuilder log(System.Logger log) {
+    /**
+     * Sets the logger the router writes to instead of the {@link System.Logger} named
+     * {@code spola.web}, so that tests (also those of other modules) can capture what the
+     * router logs.
+     *
+     * @param log the logger
+     * @return this builder
+     * @throws NullPointerException if {@code log} is {@code null}
+     */
+    public RouterBuilder log(System.Logger log) {
         this.log = Objects.requireNonNull(log, "log");
         return this;
     }

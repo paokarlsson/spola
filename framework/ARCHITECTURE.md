@@ -20,6 +20,7 @@ framework/
   modules/http/README.md    exempel för spola.http bredvid Spring Boot/Tomcat, gränserna mot Spring Boots egenskaper, HTTPS och `server.ssl.*`
   modules/web/README.md     exempel för spola.web bredvid Spring MVC, avvikelser från Spring MVC
   modules/validation/README.md  exempel för spola.validation bredvid Jakarta Bean Validation, avvikelser från Jakarta
+  modules/security-web/README.md  exempel för spola.security.web bredvid Spring Security, avvikelser från Spring Security
   out/                      byggresultat (ignoreras av git)
     classes/<modulnamn>/    kompilerade klasser per modul
     <modulnamn>.jar         en jar per modul (utan tester)
@@ -1691,7 +1692,8 @@ stället för körfel (REGLER §4). `pathParamSegments` är catch-allens lista (
   kvarvarande stackspår (samma teknik som i `spola.http`, egen kopia eftersom `spola.http`
   inte exporterar sin). Ingen loggrad innehåller alltså styrtecken från förfrågan, även när
   sökvägen eller ett parametervärde innehåller `%0A`, `%0D`, `%1B` eller C1-tecken (testat).
-  Testerna fångar loggen via en paketprivat `RouterBuilder.log(System.Logger)`.
+  Testerna fångar loggen via `RouterBuilder.log(System.Logger)` (paketprivat i 08a, publik
+  sedan 10b så att också andra modulers tester kan fånga routerns loggrader).
 - **Inga ändringar i `spola.http`.** Allt uppdraget behöver finns i dess publika API.
 - **Tester** går genom en riktig `HttpServer` (127.0.0.1, port 0) med `HttpClient` eller en
   rå socket (för sökvägar som `HttpClient` inte skickar oförändrade), eftersom
@@ -2392,3 +2394,145 @@ Intern klass: `Names` (regler för användarnamn och roller, escaping i `toStrin
   1–256 tecken och jämförs exakt; `toString()` escapar styrtecken, radavgränsare,
   bidi-tecken och ensamma surrogat så att ett namn inte kan förfalska en loggrad, och visar
   aldrig hashen. `Identity` får namnet och rollerna från den `User` som lagringen gav.
+
+## Säkerhet del 2: säkerhetsfilter, HTTP Basic och åtkomstregler (`spola.security.web`)
+
+Uppdrag 10b, sista delen av rad 10 i `PLAN.md`. Bryggmodulen mellan `spola.security` och
+`spola.web`: ett säkerhetsfilter med utbytbara autentiseringsmekanismer, HTTP Basic (RFC 7617),
+segmentvisa matchers, åtkomstregler, identiteten per förfrågan, gruppskydd och fasta 401/403.
+Formulärinloggning och utloggning kräver sessioner och flyttades till uppdrag 11. Koden är
+säkerhetskritisk och bör granskas av en människa.
+
+### API (paket `spola.security.web`)
+
+| Typ | Roll |
+|---|---|
+| `WebSecurity` | `builder()`, `filter()`, `require(rule)`, statiska `identity(request)` och `requireIdentity(request)` |
+| `WebSecurity.Builder` | `authentication(mechanism)` (flera gånger), `rule(matcher, access)`, `build()` |
+| `RequestAuthentication` | funktionellt gränssnitt `AuthOutcome authenticate(WebRequest)` |
+| `AuthOutcome` | sealed: `None()`, `Success(Identity)`, `Rejected()` |
+| `HttpBasic` | `of(authenticator, realm)`, `realm()`, `challenge()`; `MAX_TOKEN_CHARS` (8 192), `MAX_REALM_CHARS` (100) |
+| `RequestMatcher` | funktionellt gränssnitt `matches(WebRequest)`; `under`, `exactly`, `method`, `anyRequest` |
+| `AccessRule` | funktionellt gränssnitt `allows(Optional<Identity>, WebRequest)`; `permitAll`, `denyAll`, `authenticated`, `hasRole`, `hasAnyRole` |
+| `SecurityContext` | record `(Optional<Identity> identity)`, attributet som filtret lägger på förfrågan |
+
+Interna klasser: `Matchers` och `Rules` (implementationerna bakom fabrikerna), `Text`
+(korta, escapade värden i felmeddelanden).
+
+### Beslut
+
+- **Bryggmodul i stället för ett beroende mellan `spola.web` och `spola.security`.**
+  `spola.security` ska förbli fristående: hashning och autentisering behövs också utan HTTP (ett
+  CLI, en batch, en annan protokollserver), och modulen har inga `requires` alls. `spola.web` ska
+  gå att använda utan säkerhet. Till skillnad från valideringen i 09b, där integrationen var
+  liten och lades i `spola.web`, är säkerhetsdelen stor och har egna begrepp (mekanismer, regler,
+  401/403), så den får en egen modul, som `spring-security-web` bredvid `spring-security-core`.
+  `spola.security.web` har `requires transitive spola.web` och `requires transitive
+  spola.security`, eftersom båda modulernas typer (`Filter`, `WebRequest`, `Authenticator`,
+  `Identity`) finns i dess API, och `requires static java.net.http` bara för testerna. Ett test
+  fäster listan.
+- **Ett litet tillägg i `spola.web`: `RouterBuilder.log(System.Logger)` är publik.** Metoden
+  fanns som paketprivat för `spola.web`s egna tester. Kriterium 11 kräver att testerna läser
+  varje loggrad som routern skriver, och den här modulens tester ligger i ett annat paket och kan
+  inte läsa `java.logging` (modulens `requires` är fastlagda). Tillägget ändrar inget beteende:
+  standardloggern är fortfarande `System.getLogger("spola.web")`; metoden fick bara Javadoc och
+  blev publik. Inga andra ändringar under andra modulers `src/` eller `test/`, och i `Build.java`
+  bara den nya raden i `MODULES`.
+- **Mekanismer och `AuthOutcome`.** En `RequestAuthentication` säger om förfrågan har uppgifter
+  för den (`None`), om de var rätt (`Success(identity)`) eller om de fanns men var fel eller
+  trasiga (`Rejected`). Filtret provar mekanismerna i registreringsordning och den första som
+  inte ger `None` avgör; ingen mekanism eller bara `None` betyder anonym. Tre utfall i stället för
+  `Optional<Identity>` behövs för att skilja "inga uppgifter" (nästa mekanism får försöka, eller
+  anonym) från "fel uppgifter". **`Rejected` ger alltid 401, även på en `permitAll`-väg**, innan
+  någon regel läses: en klient som skickar fel lösenord ska få veta det i stället för att tyst
+  behandlas som anonym (som Spring, där `BasicAuthenticationFilter` svarar 401 på fel uppgifter
+  oavsett väg). Annars kan en klient med ett utgånget lösenord se ut att fungera mot öppna vägar
+  och få obegripliga fel längre fram, och ett fel i en mekanism skulle kunna ge anonym tillgång i
+  stället för ett tydligt nej. Uppdrag 11 lägger till JWT och sessioner som fler mekanismer. Ett
+  undantag (och ett `null`) från en mekanism går till routerns mappers, 500 utan mapper.
+- **Basic-tolkningen och dess gränser.** `Authorization` är ett singelfält (RFC 9110 §11.6.2):
+  fler än ett fält ger 400 i filtret innan någon mekanism körs (och i `HttpBasic` själv, om den
+  anropas utanför filtret). Schemat är den inledande följden tokentecken och jämförs
+  skiftlägesokänsligt; ett annat schema (`Bearer`, `Digest`, `Basicx`) ger `None`. Efter
+  `Basic` måste ett eller flera mellanslag (SP) och en token68 följa; tab, ingen token eller ett
+  andra ord ger `Rejected`. En token längre än 8 192 tecken avvisas innan den avkodas (huvudets
+  egen gräns i `spola.http` är 16 KiB för alla fält). Base64 är strikt standard-Base64 med
+  utfyllnad och kanonisk: längden måste vara delbar med fyra (JDK:ns avkodare godtar saknad
+  utfyllnad), `Base64.getDecoder()` avvisar `-_` och felplacerad utfyllnad, och en ny kodning
+  måste ge samma text (det fångar satta oanvända bitar, som JDK:n godtar). Byten avkodas som
+  UTF-8 med `REPORT` (felaktiga, överlånga och kodade surrogat avvisas), delas vid första `:`
+  (lösenordet får innehålla `:`), och styrtecken (U+0000–U+001F, U+007F) i namn eller lösenord
+  och ett tomt namn ger `Rejected`. Ingen normalisering. Först därefter anropas
+  `Authenticator.authenticate`, exakt en gång; båda `Failed`-orsakerna ger `Rejected`. Ett
+  användarnamn över 256 tecken avvisas inte här utan av `Authenticator` (med dummyhashen, så
+  tiden blir densamma). Avkodningen skriver i en `char[]` lika lång som byten (UTF-8 ger aldrig
+  fler tecken), och lösenordet ges till `Authenticator` som en skrivskyddad `CharBuffer` över den;
+  byten och tecknen nollställs i `finally`. Användarnamnet är en `String` och huvudets värde
+  finns som `String` i förfrågan; de, och kopior som hasharen eller lagringen gör, kan inte
+  rensas. Varje Basic-förfrågan kostar en PBKDF2-beräkning; lyckade inloggningar cachas inte och
+  det finns ingen hastighetsbegränsning (utanför uppdraget).
+- **Matchning på avkodade segment, `HEAD`-regeln och ingen Ant-syntax.** `under` och `exactly`
+  jämför hela segment med `WebRequest.pathSegments()`, alltså samma avkodade segment som routern
+  routar på, skiftlägeskänsligt. Därför matchar `under("/admin")` också `/%61dmin` (som routern
+  routar till `/admin`) men inte `/administrator` eller `/Admin`, och det finns inget sätt att
+  nå en route under `/admin` som regeln inte ser. En sökväg som routern avvisar med 400 har tomma
+  `pathSegments()` och matchar inget `under`/`exactly` (roten `/` har också tomma segment men
+  känns igen på `path()`), så den nekas om ingen `anyRequest()`-regel finns. Prefixet kontrolleras
+  när matchern skapas: `/` först, inga tomma segment, inga `.`/`..`, inga `{ } * ? % \` och inga
+  styrtecken (`\` finns inte i listan i uppdraget men kan aldrig matcha, eftersom routern avvisar
+  avkodade `\`; ett sådant prefix är alltså alltid ett misstag). Ant-mönster (`/admin/**`,
+  `*.json`) finns inte: de har egna regler för vad `*` och `**` täcker, som skiljer sig från hur
+  routern matchar, och skillnader mellan regelns och routerns tolkning är precis det som ger
+  förbikopplingar. Segmentvisa prefix täcker det vanliga fallet, och allt annat är en lambda.
+  `method("GET", ...)` matchar även `HEAD`, eftersom routern svarar på `HEAD` med `GET`-routen;
+  annars skulle en regel som bara gäller `GET` gå att kringgå med `HEAD`. Metoden jämförs
+  exakt (routern är skiftlägeskänslig, så `get` är en annan metod).
+- **Första matchande regel och nekat som standard.** Reglerna läses i registreringsordning och
+  den första vars matcher matchar avgör, som i Spring. **Matchar ingen regel nekas förfrågan**
+  (401 anonym, 403 inloggad). Spring kräver i stället `anyRequest()` sist och låter annars
+  förfrågan passera; en glömd regel öppnar då en väg. Här stänger en glömd regel den, vilket
+  märks direkt. `build()` samlar problemen och kastar ett `IllegalArgumentException` med en rad
+  per problem; i dag är det enda problemet en regel efter `anyRequest()` (den kan aldrig matcha),
+  igenkänd på instansen som `anyRequest()` returnerar. Roller kontrolleras när regeln skapas med
+  samma regler som `Identity` (1–100 tecken utskrivbar ASCII utan mellanslag; ett test visar att
+  båda avvisar samma värden), eftersom `spola.security` inte exporterar sin kontroll. Ett undantag
+  från en matcher eller regel fångas inte: routern svarar 500, och förfrågan släpps aldrig igenom
+  av ett fel.
+- **Identiteten som attribut i stället för `ThreadLocal`, och varför ett saknat filter ger 500.**
+  Filtret lägger alltid ett `SecurityContext` på förfrågan (`withAttribute`) under en nyckel som
+  bara modulen har, och skickar den nya förfrågan vidare. Identiteten följer alltså förfrågan som
+  ett värde: den syns i "Go to definition", kan inte läcka mellan förfrågningar på samma
+  (virtuella) tråd och behöver ingen städning. `ThreadLocal` (Springs `SecurityContextHolder`)
+  och `ScopedValue` används inte i 10b; identitet utanför webblagret är ett senare uppdrag.
+  `WebSecurity.identity`, `requireIdentity` och filtret från `require` kastar
+  `IllegalStateException` (500) när attributet saknas: att filtret saknas eller ligger fel är
+  ett programmeringsfel, och om det i stället tolkades som anonym skulle en glömd registrering
+  tyst ge fel beteende (och en regel som `permitAll` för anonyma skulle se ut att fungera). En
+  andra nyckel bär den `WebSecurity` vars filter körde, så att `requireIdentity` för en anonym
+  förfrågan kan kasta en `WebException` 401 som ger exakt filtrets 401-svar (med samma
+  `WWW-Authenticate`); en mapper för `WebException` ser status 401 och huvudena i `headers()`.
+  Når filtret samma förfrågan två gånger (registrerat både på routern och på en grupp) kastar det
+  `IllegalStateException`, så att `Authenticator` aldrig anropas två gånger för en förfrågan.
+- **Filtret ytterst.** Filtret registreras först på routern. Routerns filter körs för varje
+  förfrågan, också 400, 404, 405 och automatiskt `OPTIONS`, så en anonym förfrågan till en okänd
+  väg under en skyddad regel får 401 och inte 404 (svaret avslöjar inte vilka vägar som finns),
+  och inga filter innanför ser en nekad förfrågan. Det kan inte kontrolleras av modulen (routern
+  visar inte sin filterlista); det står i Javadoc, README och module-info.
+- **401 kontra 403, och svar som inte skiljer på orsaker.** 401 betyder "vem är du?": anonym
+  förfrågan som nekas, eller uppgifter som en mekanism avvisat. Svaret är `Problem.of(401)` utan
+  `detail` och utan `instance`, med ett `WWW-Authenticate: Basic realm="<realm>",
+  charset="UTF-8"` per `HttpBasic` i registreringsordning (RFC 7617 §2.1; utan `HttpBasic`
+  inget fält). 403 betyder "jag vet vem du är, och du får inte": `Problem.of(403)` utan
+  `WWW-Authenticate`, så att en webbläsare inte frågar efter nya uppgifter i onödan. Båda har
+  `Cache-Control: no-store`. Svaren byggs en gång i `build()` och är byte för byte lika oavsett
+  orsak (fel lösenord, okänd användare, avstängt konto, trasig Base64, saknad roll). Ett svar som
+  skiljer på orsaker hjälper den som gissar konton (finns användaren, är kontot avstängt) och
+  kan läcka indata; `instance` utelämnas eftersom svaret är detsamma för alla vägar och inte
+  behöver eka sökvägen. Modulen skriver inga loggrader alls (auditloggning hör till uppdrag 18),
+  och inget svar eller undantagsmeddelande innehåller användarnamn, lösenord eller huvudets värde
+  (testat med markörsträngar mot varje svar och varje routerloggrad i sviten).
+- **Tester** går genom en riktig `HttpServer` (127.0.0.1, port 0) med rå socket (för exakta
+  huvuden och felaktiga värden) och `HttpClient`, en `InMemoryUserStore` med
+  `Pbkdf2PasswordHasher.of(10_000, 16, 32)` och en räknande lagring och hasher. Varje svar och
+  varje skickat `Authorization`-värde sparas, och `LeakTests` kör sist och letar efter markörer
+  (`zUsr`, `zPwd`, RFC-exemplen, varje skickat värde) i alla svar och loggrader.
