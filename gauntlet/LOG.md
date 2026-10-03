@@ -11,3 +11,4 @@
 - 2026-10-02 12:02 · 20261002-1118-json-codec-mappning · PASS · 2 rounds · JSON part 2: explicit codec mapping between records and JSON · commits: 10f7936, fcaed2a
 - 2026-10-02 22:44 · 20261002-1523-http-server-karna · PASS · 3 rounds · HTTP server part 1: HTTP/1.1 on virtual threads with abuse limits · commits: ee0a922, 6f65214, f65c082
 - 2026-10-03 09:44 · 20261002-2244-http-tls · PASS · 2 rounds · HTTP server part 2: TLS (HTTPS) on top of spola.http · commits: 2bab4f1, 236fe7e
+- 2026-10-03 10:21 · 20261003-0945-web-routing-karna · PASS · 1 rounds · Web part 1: routing as code, parameters, filters and error handling · commits: 0e6c386
