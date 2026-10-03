@@ -302,7 +302,10 @@
   `handshakeTimeout` från accept (vakttråden stänger vid deadline); anslutningar i handslag
   räknas mot `maxConnections`. Misslyckade handslag loggas på `DEBUG`, escapat.
 - Över TLS: samma HTTP-semantik, `writeTimeout`, mjukt stopp med `close_notify` (ledig
-  anslutning: `shutdownInput`, tråden stänger själv), avbrott via TCP-socketen.
+  anslutning: `shutdownInput`, tråden stänger själv), avbrott via TCP-socketen. Läsningarnas
+  tidsgränser (huvud, ledig, kropp, efterläsning) hålls också som deadlines av vakttråden,
+  eftersom en `SSLSocket`-läsning kan överleva sin `soTimeout` (en post en byte i taget).
+- PEM-läsaren kräver utfylld Base64 (längd multipel av fyra, RFC 7468 strikt).
 - Modulen sätter inga system- eller säkerhetsegenskaper. README: HTTPS-avsnitt med PKCS#12,
   PEM och mTLS bredvid Spring Boot, tabell `server.ssl.*` → `TlsOptions` med avvikelser,
   omförhandlingsrisken och `jdk.tls.rejectClientInitiatedRenegotiation`.
@@ -310,9 +313,10 @@
   TLS via en `Transport`-parameter), plus TLS-tester: `HttpClient` GET/POST mot PKCS#12,
   PKCS#12 med alias, PEM RSA/EC/Ed25519 och `SSLContext` (värdnamnskontroll på, också ett
   negativt namnfall), TLS 1.3/1.2 och avvisade TLS 1.1/1.0/SSLv3 (JSSE-klient och råa
-  ClientHello), ALPN, mTLS `NEED`/`WANT`/`NONE`, 31 fall felaktigt material, lösenordsarrayen,
+  ClientHello), ALPN, mTLS `NEED`/`WANT`/`NONE`, 32 fall felaktigt material, lösenordsarrayen,
   options-kontroller, `handshakeTimeout` (ClientHello en byte i taget och tyst klient medan en
-  annan klient betjänas), misslyckade handslag och loggar, `maxConnections` under handslag,
+  annan klient betjänas), huvud-, ledig- och efterläsningstid som totaler över TLS (en post en
+  byte i taget), misslyckade handslag och loggar, `maxConnections` under handslag,
   `writeTimeout`, mjukt stopp och 200 samtidiga HTTPS-klienter. Certifikaten skapas av
   testerna med `keytool` och `KeyStore`-API:t (`TestPki`). Totalt 281 tester i modulen,
   cirka 30 s.
@@ -358,7 +362,9 @@
   till TLS-porten får inget HTTP-svar, bara en stängd anslutning. `Request.tls()` kräver en
   `getSession()` per förfrågan. Nyckelmaterialets text (`String` från filen) kan inte
   nollställas. Väcks en blockerad läsning inte av `shutdownInput` (beror på plattformen)
-  stängs en ledig TLS-anslutning vid mjukt stopp först vid `shutdownTimeout`.
+  stängs en ledig TLS-anslutning vid mjukt stopp först vid `shutdownTimeout`. En klient som
+  överskrider `headerTimeout` över TLS kopplas ned utan `408` (socketen stängs under
+  TLS-lagret). Över TLS måste en hel TLS-post komma inom `readTimeout`.
 - **JSON (spola.json):** indenterad utskrift växer med kvadraten på djupet (indraget), så
   `writePretty` på ett mycket djupt träd (tusentals nivåer) ger mycket stor utdata; kompakt
   utskrift är linjär. Ett parsat träd tar upp till ungefär 25 gånger indatans storlek i minne

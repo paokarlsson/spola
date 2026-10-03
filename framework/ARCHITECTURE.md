@@ -1397,7 +1397,7 @@ nycklar, kontroller, JSSE-managers), `Pem` (strikt PEM-läsare).
   förklaring. Meddelandena innehåller aldrig lösenord eller nyckelbytes; undantag från JDK:n
   hängs bara på som orsak för I/O, keystore-inläsning och certifikat (publik data), aldrig för
   nyckelparsning eller Base64 (JDK:ns meddelande för felaktig Base64 visar ett tecken ur
-  blocket). Ett tabelltest med 31 fall kontrollerar meddelande, orsakskedja, stackspår och
+  blocket). Ett tabelltest med 32 fall kontrollerar meddelande, orsakskedja, stackspår och
   `toString()` mot lösenorden och mot nycklarnas Base64, hex och råa bytes.
 - **Lösenord.** `char[]` kopieras in, används och nollställs i `finally`; anroparens array
   rörs inte. Nyckeln plockas ut ur keystoren och läggs i en ny keystore i minnet under ett
@@ -1412,7 +1412,10 @@ nycklar, kontroller, JSSE-managers), `Pem` (strikt PEM-läsare).
   med LF eller CRLF, `-----BEGIN label-----` och `-----END label-----` med samma etikett,
   inget nästlat BEGIN, inget END utan BEGIN, bara Base64-tecken inne i ett block (avslutande
   blanktecken tas bort, tomma rader och `Proc-Type`-huvuden avvisas), strikt avkodning med
-  `Base64.getDecoder()`. Text utanför blocken tillåts (RFC 7468 §5.2; openssl skriver t.ex.
+  `Base64.getDecoder()`. Blockets Base64 måste vara utfylld (`=`), alltså en längd som är en
+  multipel av fyra (RFC 7468 §3, strikt grammatik): `getDecoder()` godtar annars Base64 utan
+  utfyllnad, och ett block som tappat ett tecken kunde då avkodas till skräp i stället för att
+  avvisas som ogiltig Base64. Text utanför blocken tillåts (RFC 7468 §5.2; openssl skriver t.ex.
   `Bag Attributes`). Certifikat läses med `CertificateFactory` (X.509), nyckeln som okrypterad
   PKCS#8 (`PRIVATE KEY`) med `KeyFactory` och `PKCS8EncodedKeySpec`; algoritmen avgörs av
   nyckeln genom att `RSA`, `EC` och `EdDSA` prövas i tur och ordning. `ENCRYPTED PRIVATE KEY`,
@@ -1443,7 +1446,8 @@ nycklar, kontroller, JSSE-managers), `Pem` (strikt PEM-läsare).
   (`setSoTimeout`), och vakttråden (samma som för `writeTimeout`) stänger TCP-socketen när
   deadline passerat, så att en klient som skickar handslaget en byte i taget kopplas ned
   (testat med en riktig ClientHello en byte var 10 ms). Vaktens period är en fjärdedel av den
-  kortaste av `writeTimeout` och `handshakeTimeout` (5 ms–1 s). Anslutningen finns i
+  kortaste av `writeTimeout` och `handshakeTimeout` (5 ms–1 s); över TLS ingår också läsningarnas
+  tidsgränser (se nästa punkt). Anslutningen finns i
   serverns mängd och har sin plats i `maxConnections` från accept, så en anslutning i handslag
   räknas (testat). Ett misslyckat handslag (vanlig HTTP, skräp, fel version, okänt
   certifikat, avbrutet, tidsgräns) stänger bara den anslutningen och loggas på `DEBUG` med
@@ -1453,8 +1457,20 @@ nycklar, kontroller, JSSE-managers), `Pem` (strikt PEM-läsare).
 - **TLS ändrar inte HTTP-semantiken.** Efter handslaget får `ConnectionInput` och
   `GuardedOutput` TLS-socketens strömmar; allt annat är 07a:s kod. `setSoTimeout` på en
   `SSLSocket` i lager går till TCP-socketen, och en `SocketTimeoutException` lämnar
-  TLS-socketen användbar (testat i JDK 25), så tidsgränserna per läsning och deadline fungerar
-  som förut. Ett urval av 07a:s tester körs över TLS genom att samma testfall tar en
+  TLS-socketen användbar (testat i JDK 25). Men `soTimeout` räcker inte ensam över TLS: en
+  läsning ur `SSLSocket` blockerar tills en hel TLS-post har kommit och kan vänta på TCP-data
+  många gånger, varje gång med hela `soTimeout`, så en klient som skickar en post en byte i
+  taget skulle aldrig kopplas ned. Därför publicerar `ConnectionInput` vid varje läsning när
+  den senast ska ha returnerat (deadline för huvudet, annars nu + tidsgränsen per läsning:
+  `idleTimeout`, `readTimeout`, efterläsningens tid), och för TLS-anslutningar stänger
+  vakttråden TCP-socketen under en läsning som passerat den (`Connection.checkRead`).
+  Läsningen kastar då `SocketTimeoutException` som en vanlig sockets läsning, så resten av
+  koden är 07a:s; men socketen är stängd, så en klient som kopplas ned mitt i huvudet får
+  inget `408` över TLS (vanlig HTTP får det). Vaktens period är för TLS en fjärdedel av den
+  kortaste av alla tidsgränser (5 ms–1 s). En följd: över TLS måste en hel post (högst
+  16 KiB) komma inom `readTimeout`, medan vanlig HTTP bara kräver någon byte inom den; med
+  standardvärdet 30 s motsvarar det under 5 kbit/s. Testat: en förfrågan en byte var 20 ms
+  kopplas ned vid `headerTimeout`, `idleTimeout` och efterläsningens 2 s. Ett urval av 07a:s tester körs över TLS genom att samma testfall tar en
   `Transport` (vanlig eller TLS): anslutningar (keep-alive, pipelining, HTTP/1.0 m.m.),
   chunked, `100-continue`, var tredje fall ur båda tabellerna med felaktiga förfrågningar,
   smuggelförsöken och mjukt stopp.

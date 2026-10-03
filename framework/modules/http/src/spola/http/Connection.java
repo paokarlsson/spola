@@ -26,6 +26,9 @@ import javax.net.ssl.SSLSocket;
  * serves requests over the TLS socket exactly as over plain TCP. Aborts (timeouts, the
  * shutdown deadline) close the TCP socket underneath, which never blocks; an orderly close goes
  * through the TLS socket and sends {@code close_notify}, watched by the guard like a write.
+ * Over TLS, the guard also enforces the read limits (header, idle, read and linger timeouts) as
+ * deadlines, since an {@code SSLSocket} read can outlast its {@code soTimeout} (see
+ * {@link ConnectionInput}).
  */
 final class Connection implements Runnable {
 
@@ -69,10 +72,11 @@ final class Connection implements Runnable {
     private volatile boolean aborted;
     private volatile boolean writeTimedOut;
     private volatile GuardedOutput guarded; // read by the guard thread
-    private volatile long handshakeDeadline; // System.nanoTime(), 0 when no handshake runs; read by the guard
+    private volatile boolean handshaking; // read by the guard
+    private volatile long handshakeDeadline; // System.nanoTime(), valid while handshaking; read by the guard
     private volatile boolean handshakeTimedOut;
-    private SSLSocket ssl; // the TLS socket after a completed handshake, else null
-    private ConnectionInput in;
+    private volatile SSLSocket ssl; // the TLS socket after a completed handshake, else null; read by the guard
+    private volatile ConnectionInput in; // read by the guard
     private BufferedOutputStream wire;
     private ResponseWriter writer;
     private boolean linger;
@@ -121,8 +125,11 @@ final class Connection implements Runnable {
         } catch (Exception | Error e) {
             server.log().log(Level.ERROR, "connection from " + peer + " failed", LoggedThrowable.of(e));
         } finally {
-            closeSocket();
-            server.connectionEnded(this);
+            try {
+                closeSocket();
+            } finally {
+                server.connectionEnded(this);
+            }
         }
     }
 
@@ -135,7 +142,8 @@ final class Connection implements Runnable {
      */
     private Socket handshake() {
         long deadline = acceptedAt + server.options().timeouts().handshakeTimeout().toNanos();
-        handshakeDeadline = deadline | 1; // never 0
+        handshakeDeadline = deadline;
+        handshaking = true;
         try {
             if (state.get() == State.CLOSED) {
                 return null; // close() came first
@@ -157,7 +165,7 @@ final class Connection implements Runnable {
             }
             return null;
         } finally {
-            handshakeDeadline = 0;
+            handshaking = false;
         }
     }
 
@@ -412,9 +420,21 @@ final class Connection implements Runnable {
 
     /** Called by the guard thread: closes the socket of a TLS handshake that has passed its deadline. */
     void checkHandshake(long now) {
-        long deadline = handshakeDeadline;
-        if (deadline != 0 && now - deadline > 0) {
+        if (handshaking && now - handshakeDeadline > 0) {
             handshakeTimedOut = true;
+            HttpServer.closeQuietly(socket);
+        }
+    }
+
+    /**
+     * Called by the guard thread: over TLS, closes the TCP socket under a read that has passed
+     * its deadline (a plain socket's {@code soTimeout} already bounds the read; see
+     * {@link ConnectionInput}).
+     */
+    void checkRead(long now) {
+        var input = in;
+        if (ssl != null && input != null && input.overdue(now)) {
+            input.cutOff();
             HttpServer.closeQuietly(socket);
         }
     }
@@ -424,9 +444,10 @@ final class Connection implements Runnable {
             lingerBeforeClose();
         }
         state.set(State.CLOSED);
-        if (ssl != null && !aborted) {
+        var output = guarded;
+        if (ssl != null && output != null && !aborted && !in.wasCutOff()) {
             try {
-                guarded.guard(ssl::close); // close_notify; the guard closes the socket if it blocks
+                output.guard(ssl::close); // close_notify; the guard closes the socket if it blocks
             } catch (IOException e) {
                 // the client is gone; the socket is closed below
             }

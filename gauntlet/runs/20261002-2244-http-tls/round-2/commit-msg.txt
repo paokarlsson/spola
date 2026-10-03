@@ -1,0 +1,14 @@
+fix(http): enforce TLS read deadlines and make PEM Base64 strict
+
+Over TLS, a guard thread now closes the socket when a read runs past its
+deadline. That covers the header, idle, body-read and linger timeouts,
+so a client dripping one TLS record slowly can no longer hold a connection.
+PEM bodies must have correct Base64 padding, so the flaky bad-length test
+is now deterministic. Also fixes a permit leak in closeSocket after a
+failed handshake, adds RSASSA-PSS keys, and cleans up sentinels and imports.
+
+Gauntlet-Run: 20261002-2244-http-tls
+Gauntlet-Round: 2/5
+Gauntlet-Verdict: PASS (0 blocker, 0 major, 6 minor upheld)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>

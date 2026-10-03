@@ -7,6 +7,7 @@ import static spola.test.Tests.suite;
 import static spola.test.Tests.test;
 
 import java.io.IOException;
+import java.io.OutputStream;
 import java.net.InetSocketAddress;
 import java.net.Socket;
 import java.nio.ByteBuffer;
@@ -124,6 +125,79 @@ final class TlsHandshakeTests {
             c.send(bytes);
             return c.rest();
         }
+    }
+
+    /** A TCP socket whose output, once {@link #dribble} is set, goes out one byte every 20 ms. */
+    static final class DribbleSocket extends Socket {
+        static final int GAP_MILLIS = 20;
+        volatile boolean dribble;
+
+        DribbleSocket(int port) throws IOException {
+            super(Support.LOCALHOST, port);
+        }
+
+        @Override
+        public OutputStream getOutputStream() throws IOException {
+            var raw = super.getOutputStream();
+            return new OutputStream() {
+                @Override
+                public void write(int b) throws IOException {
+                    write(new byte[] {(byte) b}, 0, 1);
+                }
+
+                @Override
+                public void write(byte[] bytes, int offset, int length) throws IOException {
+                    if (!dribble) {
+                        raw.write(bytes, offset, length);
+                        return;
+                    }
+                    for (int i = 0; i < length; i++) {
+                        raw.write(bytes[offset + i]);
+                        raw.flush();
+                        try {
+                            Thread.sleep(GAP_MILLIS);
+                        } catch (InterruptedException e) {
+                            throw new IOException(e);
+                        }
+                    }
+                }
+
+                @Override
+                public void flush() throws IOException {
+                    raw.flush();
+                }
+            };
+        }
+    }
+
+    /** A TLS client over a {@link DribbleSocket}, after its handshake (at full speed). */
+    static SSLSocket dribbling(DribbleSocket raw) throws Exception {
+        var tls = (SSLSocket) TestPki.get().clientContext().getSocketFactory()
+                .createSocket(raw, "127.0.0.1", raw.getPort(), true);
+        tls.setSoTimeout(10_000);
+        tls.startHandshake();
+        return tls;
+    }
+
+    /**
+     * Sends {@code text} as one TLS record, one byte every {@link DribbleSocket#GAP_MILLIS}, and
+     * returns after how many milliseconds the server cut the connection (a write failed); fails
+     * if the whole record went through.
+     */
+    static long cutAfter(SSLSocket tls, DribbleSocket raw, String text) {
+        var bytes = text.getBytes(java.nio.charset.StandardCharsets.ISO_8859_1);
+        raw.dribble = true;
+        long start = System.nanoTime();
+        try {
+            for (int i = 0; i < 3; i++) { // the cut shows on a later write at the latest
+                tls.getOutputStream().write(bytes);
+                tls.getOutputStream().flush();
+            }
+        } catch (IOException e) {
+            return millisSince(start);
+        }
+        throw new AssertionError("the server read the whole record sent one byte at a time ("
+                + millisSince(start) + " ms)");
     }
 
     private static long millisSince(long start) {
@@ -303,6 +377,38 @@ final class TlsHandshakeTests {
                             assertTrue(closed >= 750 && closed < 2_500, "cut off after " + closed + " ms");
                         }
                         assertTrue(slowClosed.get() < 10L * hello.length, "the slow client was not allowed to finish");
+                    }
+                }),
+                test("header, idle and linger timeouts are totals over TLS: a record sent one byte at a time is cut off", () -> {
+                    // 20 ms between bytes is far below every per-read limit; a request of ~300 bytes takes ~6 s
+                    var request = "GET / HTTP/1.1\r\nHost: x\r\nX-Pad: " + "p".repeat(250) + "\r\n\r\n";
+                    var options = Support.options().withTls(TestPki.get().serverOptions());
+                    var slowHeader = Support.FAST.withHeaderTimeout(Duration.ofMillis(800))
+                            .withIdleTimeout(Duration.ofSeconds(10)).withReadTimeout(Duration.ofSeconds(10));
+                    try (var server = Support.start(options.withTimeouts(slowHeader), r -> Response.text(200, "served"));
+                         var raw = new DribbleSocket(server.port()); var tls = dribbling(raw)) {
+                        long cut = cutAfter(tls, raw, request);
+                        assertTrue(cut >= 600 && cut < 2_500, "header: cut off after " + cut + " ms");
+                    }
+                    var slowIdle = Support.FAST.withHeaderTimeout(Duration.ofSeconds(10))
+                            .withIdleTimeout(Duration.ofMillis(800)).withReadTimeout(Duration.ofSeconds(10));
+                    try (var server = Support.start(options.withTimeouts(slowIdle), r -> Response.text(200, "served"));
+                         var raw = new DribbleSocket(server.port()); var tls = dribbling(raw)) {
+                        var c = Support.Client.over(tls, 10_000);
+                        assertEquals("served", c.send(Support.get("/")).read().text()); // the first request at full speed
+                        long cut = cutAfter(tls, raw, request);
+                        assertTrue(cut >= 400 && cut < 2_500, "idle: cut off after " + cut + " ms");
+                    }
+                    var slowNothing = Support.FAST.withHeaderTimeout(Duration.ofSeconds(10))
+                            .withIdleTimeout(Duration.ofSeconds(10)).withReadTimeout(Duration.ofSeconds(10));
+                    try (var server = Support.start(options.withTimeouts(slowNothing), r -> Response.text(200, "served"));
+                         var raw = new DribbleSocket(server.port()); var tls = dribbling(raw)) {
+                        var c = Support.Client.over(tls, 10_000);
+                        var reply = c.send("GET / HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n").read();
+                        assertEquals("served", reply.text());
+                        long cut = cutAfter(tls, raw, request); // the server lingers at most LINGER_MILLIS
+                        assertTrue(cut >= Connection.LINGER_MILLIS - 500 && cut < Connection.LINGER_MILLIS + 2_000,
+                                "linger: cut off after " + cut + " ms");
                     }
                 }),
                 test("failed handshakes close only their connection, and log no raw control characters", () -> {

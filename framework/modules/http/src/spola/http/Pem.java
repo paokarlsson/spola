@@ -161,6 +161,10 @@ final class Pem {
         if (base64.isEmpty()) {
             throw new TlsMaterialException(file, where + ": the block at line " + beginLine + " is empty");
         }
+        if (base64.length() % 4 != 0) { // RFC 7468 §3 (strict): padded Base64, so whole groups of four
+            clear(base64);
+            throw new TlsMaterialException(file, where + ": the block at line " + beginLine + " is not valid Base64");
+        }
         var chars = new byte[base64.length()];
         for (int i = 0; i < chars.length; i++) {
             chars[i] = (byte) base64.charAt(i);

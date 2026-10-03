@@ -277,6 +277,12 @@ kopplas ned. En anslutning som står i handslag räknas mot `maxConnections`. Mi
 handslag (vanlig HTTP till TLS-porten, skräp, fel protokoll, okänt certifikat) stänger bara den
 anslutningen och loggas på `DEBUG`, escapat och utan indata.
 
+De övriga tidsgränserna gäller som för vanlig HTTP också över TLS, där en läsning väntar på en
+hel TLS-post: `headerTimeout` och `idleTimeout` är lika totala, så en klient som skickar en post
+en byte i taget kopplas ned när de löper ut. Två skillnader: den kopplas ned utan `408` (socketen
+stängs under TLS-lagret), och en hel post (högst 16 KiB) måste komma inom `readTimeout`, inte
+bara någon byte av den.
+
 `Request.scheme()` är `"https"` över TLS, annars `"http"`, och `Request.tls()` ger det
 förhandlade protokollet, chiffersviten och klientens certifikatkedja. En absolute-form-target
 med `http://` över TLS avvisas inte (RFC 9112 §3.2.2 kräver det inte) och ändrar inte

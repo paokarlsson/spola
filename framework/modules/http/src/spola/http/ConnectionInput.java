@@ -6,12 +6,22 @@ import java.io.InputStream;
 import java.net.Socket;
 import java.net.SocketTimeoutException;
 import java.nio.charset.StandardCharsets;
+import java.util.Arrays;
 
 /**
  * The buffered input side of one connection, with the two kinds of timeout the server needs:
  * a timeout per read call ({@link #timeoutPerRead}, for idle waits and the body) and an
  * absolute deadline ({@link #deadline}, for the header section, so that a client sending one
  * byte at a time cannot stretch it). Used by one thread at a time.
+ *
+ * <p>Both are applied as the socket's {@code soTimeout}, which bounds each wait for TCP data.
+ * Over TLS that is not enough: one read of the {@code SSLSocket} blocks until a whole TLS record
+ * has arrived and may wait for TCP data many times, each time with the full {@code soTimeout},
+ * so a client that sends a record one byte at a time would never be cut off. Every read
+ * therefore also publishes when it must have returned ({@link #overdue}); for TLS connections the
+ * server's guard thread closes the TCP socket underneath a read that is overdue
+ * ({@link #cutOff}), and the read then fails with a {@link SocketTimeoutException} just as a
+ * plain socket's read would have.
  */
 final class ConnectionInput {
 
@@ -25,6 +35,8 @@ final class ConnectionInput {
     private long deadlineNanos;
     private int timeoutMillis = 1;
     private int appliedTimeout = -1;
+    private volatile long readDeadline; // System.nanoTime() a running read must have returned by; 0 when none runs
+    private volatile boolean cutOff;     // the guard closed the socket under an overdue read
 
     ConnectionInput(Socket socket) throws IOException {
         this.socket = socket;
@@ -43,6 +55,25 @@ final class ConnectionInput {
         deadlineNanos = nanos;
     }
 
+    /** Called by the guard thread: whether a read is running past its deadline at {@code now}. */
+    boolean overdue(long now) {
+        long deadline = readDeadline;
+        return deadline != 0 && now - deadline > 0;
+    }
+
+    /**
+     * Called by the guard thread just before it closes the socket under an overdue read: the
+     * read's failure is then reported as a timeout.
+     */
+    void cutOff() {
+        cutOff = true;
+    }
+
+    /** Whether the guard has closed the socket under an overdue read. */
+    boolean wasCutOff() {
+        return cutOff;
+    }
+
     /** Bytes already received and not yet consumed. */
     int buffered() {
         return end - pos;
@@ -57,19 +88,35 @@ final class ConnectionInput {
             end -= pos;
             pos = 0;
         }
+        long now = System.nanoTime();
         int timeout = timeoutMillis;
+        long mustReturnBy = now + timeoutMillis * 1_000_000L;
         if (deadlineMode) {
-            long remaining = deadlineNanos - System.nanoTime();
+            long remaining = deadlineNanos - now;
             if (remaining <= 0) {
                 throw new SocketTimeoutException("header timeout");
             }
             timeout = (int) Math.min(Integer.MAX_VALUE, Math.max(1, (remaining + 999_999) / 1_000_000));
+            mustReturnBy = deadlineNanos;
         }
         if (timeout != appliedTimeout) {
             socket.setSoTimeout(timeout);
             appliedTimeout = timeout;
         }
-        int n = in.read(buffer, end, buffer.length - end);
+        int n;
+        readDeadline = mustReturnBy | 1; // never 0
+        try {
+            n = in.read(buffer, end, buffer.length - end);
+        } catch (IOException e) {
+            if (cutOff) {
+                var timedOut = new SocketTimeoutException("read deadline passed");
+                timedOut.initCause(e);
+                throw timedOut;
+            }
+            throw e;
+        } finally {
+            readDeadline = 0;
+        }
         if (n < 0) {
             return false;
         }
@@ -148,7 +195,7 @@ final class ConnectionInput {
                 throw new ProtocolException(tooLongStatus, what + " longer than " + max + " bytes");
             }
             if (n == line.length) {
-                line = java.util.Arrays.copyOf(line, (int) Math.min((long) max, 2L * line.length));
+                line = Arrays.copyOf(line, (int) Math.min((long) max, 2L * line.length));
             }
             line[n++] = (byte) b;
         }

@@ -51,7 +51,7 @@ final class TlsMaterialTests {
             "PEM key (EC) that does not belong to the certificate (EC)", "encrypted PKCS#8 (ENCRYPTED PRIVATE KEY)",
             "PKCS#1 (RSA PRIVATE KEY)", "SEC1 (EC PRIVATE KEY)", "PEM key without END line",
             "PEM certificate chain without END line", "END line with another label", "invalid Base64 character",
-            "invalid Base64 length", "legacy encrypted PEM header", "empty certificate chain (text only)",
+            "invalid Base64 length", "unpadded Base64", "legacy encrypted PEM header", "empty certificate chain (text only)",
             "empty certificate file", "certificate chain that is not PEM (DER)", "key file that is not PEM (DER key)",
             "key file that is not PEM (text)", "the key file given as the certificate chain",
             "certificate chain in the wrong order", "certificate block that is not a certificate",
@@ -98,6 +98,8 @@ final class TlsMaterialTests {
         var lines = rsaKeyPem.split("\n");
         var noEnd = String.join("\n", Arrays.copyOf(lines, lines.length - 1)) + "\n";
         var badChar = rsaKeyPem.replaceFirst("\n([A-Za-z0-9+/]{10})[A-Za-z0-9+/]", "\n$1*");
+        // TestPki.pem writes padded Base64 (a multiple of four characters), so dropping one character
+        // always leaves a length the strict reader refuses, whatever the key's DER length
         var badLength = rsaKeyPem.replaceFirst("\n([A-Za-z0-9+/]{10})[A-Za-z0-9+/]", "\n$1");
         var cases = new ArrayList<Bad>();
         cases.add(new Bad("missing keystore file", "missing.p12", "does not exist",
@@ -139,6 +141,9 @@ final class TlsMaterialTests {
                 () -> TlsOptions.pem(pki.rsaChainPem, pki.write("bad-char.pem", badChar))));
         cases.add(new Bad("invalid Base64 length", "bad-length.pem", "is not valid Base64",
                 () -> TlsOptions.pem(pki.rsaChainPem, pki.write("bad-length.pem", badLength))));
+        cases.add(new Bad("unpadded Base64", "unpadded.pem", "is not valid Base64",
+                () -> TlsOptions.pem(pki.rsaChainPem, pki.write("unpadded.pem", TestPki.pem("PRIVATE KEY",
+                        new byte[] {1, 2, 3, 4}).replace("=", "")))));
         cases.add(new Bad("legacy encrypted PEM header", "proc-type.pem", "Proc-Type",
                 () -> TlsOptions.pem(pki.rsaChainPem, pki.write("proc-type.pem", rsaKeyPem.replace(
                         "-----BEGIN PRIVATE KEY-----\n", "-----BEGIN PRIVATE KEY-----\nProc-Type: 4,ENCRYPTED\n")))));
@@ -161,7 +166,7 @@ final class TlsMaterialTests {
         cases.add(new Bad("certificate block that is not a certificate", "garbage-cert.pem", "not a valid X.509",
                 () -> TlsOptions.pem(pki.writePem("garbage-cert.pem", "CERTIFICATE", new byte[] {1, 2, 3, 4}),
                         pki.rsaKeyPem)));
-        cases.add(new Bad("key block that is not a key", "garbage-key.pem", "not an unencrypted PKCS#8",
+        cases.add(new Bad("key block that is not a key", "garbage-key.pem", "cannot be read as an unencrypted PKCS#8",
                 () -> TlsOptions.pem(pki.rsaChainPem, pki.writePem("garbage-key.pem", "PRIVATE KEY",
                         Arrays.copyOf(rsaKey, rsaKey.length / 2)))));
         cases.add(new Bad("two keys in the key file", "two-keys.pem", "expected exactly one PRIVATE KEY",

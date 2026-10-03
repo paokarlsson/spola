@@ -16,6 +16,7 @@ import java.security.cert.X509Certificate;
 import java.security.spec.PKCS8EncodedKeySpec;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.List;
 import java.util.stream.Collectors;
 import javax.net.ssl.KeyManager;
@@ -67,7 +68,7 @@ final class TlsMaterial {
     static List<String> keyAliases(KeyStore store, Path file) {
         try {
             var aliases = new ArrayList<String>();
-            for (var alias : java.util.Collections.list(store.aliases())) {
+            for (var alias : Collections.list(store.aliases())) {
                 if (store.isKeyEntry(alias)) {
                     aliases.add(alias);
                 }
@@ -163,8 +164,8 @@ final class TlsMaterial {
                     // not this algorithm (or not PKCS#8 at all); try the next
                 }
             }
-            throw new TlsMaterialException(file, what + " " + file + " is not an unencrypted PKCS#8 RSA, EC, Ed25519"
-                    + " or Ed448 private key");
+            throw new TlsMaterialException(file, what + " " + file + " cannot be read as an unencrypted PKCS#8 RSA, EC,"
+                    + " Ed25519 or Ed448 private key (other key types, such as RSASSA-PSS, are not supported)");
         } finally {
             blocks.forEach(Pem.Block::clear);
         }

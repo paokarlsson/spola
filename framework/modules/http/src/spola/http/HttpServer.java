@@ -234,11 +234,19 @@ public final class HttpServer implements AutoCloseable {
     /**
      * The guard thread: closes the socket of a write without progress for longer than
      * {@link HttpTimeouts#writeTimeout()} and of a TLS handshake that is still running at its
-     * deadline ({@link HttpTimeouts#handshakeTimeout()} after accept).
+     * deadline ({@link HttpTimeouts#handshakeTimeout()} after accept); over TLS also of a read
+     * past its deadline (header, idle, read or linger timeout; see {@link ConnectionInput}).
      */
     private void guardWrites() {
-        long timeout = options.timeouts().writeTimeout().toNanos();
-        long shortest = tls == null ? timeout : Math.min(timeout, options.timeouts().handshakeTimeout().toNanos());
+        var timeouts = options.timeouts();
+        long timeout = timeouts.writeTimeout().toNanos();
+        long shortest = timeout;
+        if (tls != null) {
+            for (var limit : List.of(timeouts.handshakeTimeout(), timeouts.headerTimeout(), timeouts.idleTimeout(),
+                    timeouts.readTimeout())) {
+                shortest = Math.min(shortest, limit.toNanos());
+            }
+        }
         long period = Math.clamp(shortest / 4 / 1_000_000, 5, 1_000);
         while (!guardStopped) {
             try {
@@ -250,6 +258,7 @@ public final class HttpServer implements AutoCloseable {
             for (var connection : connections) {
                 connection.checkWrite(now, timeout);
                 connection.checkHandshake(now);
+                connection.checkRead(now);
             }
         }
     }

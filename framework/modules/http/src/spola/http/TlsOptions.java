@@ -60,7 +60,12 @@ public record TlsOptions(TlsIdentity identity, ClientAuth clientAuth, Optional<T
     /** The protocol names that are older than TLS 1.2 (JSSE names). */
     private static final Set<String> TOO_OLD = Set.of("SSLv2Hello", "SSLv2", "SSLv3", "TLSv1", "TLSv1.1");
 
-    /** Parts of a cipher suite name that make it weak: no authentication, no encryption, broken ciphers. */
+    /**
+     * Parts of a cipher suite name that make it weak: no authentication, no encryption, broken
+     * ciphers. This matches the JSSE standard names (IANA names, e.g.
+     * {@code TLS_DH_anon_WITH_AES_128_CBC_SHA}, {@code TLS_RSA_WITH_NULL_SHA256}), compared in
+     * upper case; a name the JDK does not know is refused later by {@code SSLContext} anyway.
+     */
     private static final List<String> WEAK = List.of("_ANON_", "_NULL_", "_EXPORT", "_RC4_", "_DES_", "_DES40_",
             "_3DES_", "_MD5", "SCSV");
 
@@ -265,7 +270,8 @@ public record TlsOptions(TlsIdentity identity, ClientAuth clientAuth, Optional<T
             if (!seen.add(suite)) {
                 throw new IllegalArgumentException("cipher suite " + suite + " is given twice");
             }
-            // TLS 1.3 suites name no key exchange ("_WITH_"); TLS 1.2 suites always do
+            // JSSE/IANA standard names: TLS 1.3 suites name no key exchange (TLS_AES_128_GCM_SHA256),
+            // TLS 1.2 suites always do (TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256)
             boolean tls13 = !suite.contains("_WITH_");
             fits |= protocols.contains(tls13 ? "TLSv1.3" : "TLSv1.2");
         }
