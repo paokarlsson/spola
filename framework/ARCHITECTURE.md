@@ -18,6 +18,7 @@ framework/
   modules/demo/README.md    integrationsprogrammet: körning, Spring Boot-jämförelse, friktionsrapport
   modules/json/README.md    exempel för spola.json och spola.json.codec bredvid Jackson, avvikelser från Jacksons standard
   modules/http/README.md    exempel för spola.http bredvid Spring Boot/Tomcat, gränserna mot Spring Boots egenskaper, HTTPS och `server.ssl.*`
+  modules/web/README.md     exempel för spola.web bredvid Spring MVC, avvikelser från Spring MVC
   out/                      byggresultat (ignoreras av git)
     classes/<modulnamn>/    kompilerade klasser per modul
     <modulnamn>.jar         en jar per modul (utan tester)
@@ -1515,3 +1516,182 @@ nycklar, kontroller, JSSE-managers), `Pem` (strikt PEM-läsare).
   `SSLContext` som bara litar på testets CA (inga `javax.net.ssl.*`-egenskaper), med
   värdnamnskontroll påslagen. Inga nycklar eller certifikat finns i repot (guardrails tillåter
   ändå bara `.java` och `.md`).
+
+## Web del 1: routing som kod, parametrar, filter och felhantering (`spola.web`)
+
+Uppdrag 08a. Rad 08 i `PLAN.md` (routing som kod, request/response-modell, felhantering,
+JSON-integration) är delad av planeraren i två uppdrag: **08a** (detta: routing,
+procentavkodning, sökvägs- och queryparametrar, filter, attribut, felhantering och
+problem-svar) och **08b** (JSON-kroppar via `spola.json.codec`, `Content-Type`/`Accept` med
+415/406, cookies och formulärkroppar). Skälet är att routing med felhantering redan är ett
+fullt uppdrag och att sökvägsavkodningen är säkerhetskritisk.
+
+### API (paket `spola.web`)
+
+| Typ | Roll |
+|---|---|
+| `Router` | `spola.http.Handler`, oföränderlig och trådsäker; `Router.builder()` |
+| `RouterBuilder` | `get`/`post`/`put`/`patch`/`delete`/`route(method, pattern, handler)`, `filter`, `group(prefix, Consumer<RouteGroup>)`, `onException(Class<E>, ExceptionMapper<? super E>)`, `build()` |
+| `RouteGroup` | det en grupp kan registrera: routes, filter, nästlade grupper (inga mappers) |
+| `WebHandler` | `Response handle(WebRequest) throws Exception` |
+| `WebRequest` | oföränderlig: `http()`, `method()`, avkodad `path()`, `pathSegments()`, `pattern()`, `pathParam(name[, Param])`, `pathParamSegments(name)`, `query(name[, Param])`, `queryAll`, `requiredQuery`, `queryParams()`, `headers()`, `body()`/`bytes()`, `attribute(key)`, `withAttribute(key, value)` |
+| `Param<T>` | `STRING`, `INT`, `LONG`, `BOOLEAN`, `UUID`, `LOCAL_DATE`, `BIG_DECIMAL`, `enumOf(Class)`, `of(typnamn, Function)` |
+| `AttributeKey<T>` | `of(name, Class<T>)`, identitetsbaserad |
+| `Filter`, `Filter.Chain` | `Response filter(WebRequest, Chain next)`, `next.proceed(request)` |
+| `ExceptionMapper<E>` | `Response map(E, WebRequest) throws Exception` |
+| `WebException` | okontrollerad, inte `final`: status 400–599, titel, valfri detalj, huvuden (`Allow` på 405); `problem(instance)`, `toResponse(request)` |
+| `Problem` | record för RFC 9457: `type`, `title`, `status`, `detail`, `instance`, `extensions` (`JsonObject`); `of`, `withX`, `toJson()`, `toResponse()` |
+| `RouterDefinitionException` | `IllegalArgumentException` från `build()` med `problems()` |
+
+Interna klasser: `PathPattern` (mönstret och dess segment som sealed hierarki), `Route`,
+`RouteTable` (trädet och uppslaget), `Decoding` (procentavkodning, sökvägskontroll,
+queryparsning), `QueryState` (lat query per förfrågan), `Text` (escaping och kortning),
+`LoggedThrowable` (undantag som är säkra att logga).
+
+Avvikelser från namnen i uppdraget: gruppens lambda får en `RouteGroup`, inte en
+`RouterBuilder`, så att `onException` och `build()` inuti en grupp är kompileringsfel i
+stället för körfel (REGLER §4). `pathParamSegments` är catch-allens lista (se nedan) och
+`pattern()` ger den matchade routens mönster (för loggning och mått i senare uppdrag).
+
+### Beslut
+
+- **Beroenden.** `requires transitive spola.http` (API:t använder `Request`, `Response` och
+  `Headers`) och `requires transitive spola.json`. Uppdraget anger `requires spola.json`;
+  beroendet är transitivt eftersom `Problem` (publikt API) bär sina extra medlemmar som
+  `JsonObject` och javac:s lint `exports` (en del av `-Xlint:all -Werror`) annars ger rött
+  bygge; en applikation som bygger ett `Problem` med extra medlemmar behöver ändå läsa
+  `spola.json`. Inga andra ramverksmoduler. `requires static java.net.http` bara för
+  testerna (som i `spola.http`). Ingen reflektion: huvudkoden importerar inget från
+  `java.lang.reflect` eller `java.lang.invoke` (testat). Det enda anropet i närheten är
+  `Class.getEnumConstants()` i `Param.enumOf`, en gång när parametern skapas (formen
+  `enumOf(Class)` står i uppdraget); varje förfrågan slår upp i en färdig `Map`.
+- **Mönstersyntax.** Ett mönster börjar med `/`; segmenten är literal, variabel `{namn}`
+  (ett helt segment, namnet en Java-identifierare, unikt i mönstret) eller, bara sist,
+  catch-all `{namn...}`. `/` är roten. Ett mönster som slutar med `/` matchar bara sökvägar
+  som slutar med `/` (det sista segmentet är då en tom literal). Inga reguljära uttryck,
+  jokertecken (`*`, `?` avvisas med ett tydligt meddelande, eftersom en Spring-van läsare
+  annars tror att de fungerar), delsegment, `%` eller `.`/`..`-segment. En literal jämförs
+  med det avkodade segmentet, så `/café` matchar `/caf%C3%A9`; tecken som ingen sökväg kan
+  innehålla efter kontrollen (styrtecken, `\`, ensamma surrogat) avvisas vid `build()`.
+- **Grupper.** Prefixet är ett mönster utan avslutande `/`; routens mönster läggs till
+  efter prefixet och `/` i en grupp betyder prefixet självt (`group("/users", g ->
+  g.get("/", ...))` är `/users`). Variabler i prefixet räknas med vid kontrollen av unika
+  namn och form; en catch-all i prefixet är fel om gruppen har routes under den.
+- **Validering vid `build()`.** Alla problem samlas och kastas i en
+  `RouterDefinitionException` (en `IllegalArgumentException`), en rad per problem med
+  metod och mönster, i registreringsordning (samma princip som `Container.create`).
+  Problem: felaktiga mönster och gruppprefix (ett felaktigt prefix rapporteras en gång, och
+  routes i gruppen kontrolleras då bara mot sina egna mönster), metod som inte är `token`
+  (RFC 9110 §5.6.2), två routes med samma metod och form (formen är mönstret med variabler
+  och catch-all utan namn), två mappers för samma klass, och en mapper för en `Error`-klass
+  (fel mappas aldrig, se nedan). Null-argument ger `NullPointerException` direkt, och en
+  grupp som används efter sin lambda ger `IllegalStateException` (programmeringsfel).
+- **Trie-uppslag.** `RouteTable` är ett träd med en nivå per segment: varje nod har
+  literal-barn i en `HashMap` (nyckel: avkodad text), högst ett variabel-barn, routes som
+  slutar i noden och catch-all-routes under noden, båda per metod. Allt är oföränderligt
+  efter `build()` (`Map.copyOf`). Uppslaget går från vänster och provar literal, sedan
+  variabel, sedan catch-all, och backtrackar när en gren inte har någon route för metoden.
+  Den första route som hittas i den ordningen är den mest specifika för sökvägen och metoden
+  (`/a/b/{y}` före `/a/{x}/c` för `/a/b/c`; `GET /m/lit` når `/m/{v}` om literalen bara har
+  `POST`). Arbetet begränsas av trädets noder längs sökvägen (en nod besöks högst en gång,
+  rekursionsdjupet är högst det längsta mönstrets längd), inte av antalet routes, och
+  resultatet beror inte på registreringsordningen eftersom trädet inte gör det och samma form
+  två gånger är förbjudet. Hittas ingen route samlar samma genomgång metoderna för alla
+  routes som matchar sökvägen: tom mängd ger 404, annars 405 (eller automatiskt `OPTIONS`).
+  En variabel matchar aldrig ett tomt segment och en catch-all aldrig ett tomt segment
+  (avslutande `/`), så avslutande snedstreck är strikt även där.
+- **Catch-all.** `pathParam(namn)` ger de avkodade segmenten med `/` emellan (entydigt,
+  eftersom ett avkodat segment aldrig innehåller `/`), `pathParamSegments(namn)` ger dem som
+  lista. En catch-all kräver minst ett segment och inga tomma.
+- **`HEAD`, `OPTIONS`, 404, 405.** I varje träffad nod: exakt metod, annars för `HEAD`
+  `GET`-routen i samma nod (servern skickar ingen kropp). `Allow` är unionen av metoderna,
+  plus `HEAD` när `GET` finns och alltid `OPTIONS`, sorterad och skriven med `", "`.
+  `OPTIONS` utan route för metoden ger 204 med `Allow`; en egen `OPTIONS`- eller
+  `HEAD`-route går före. `OPTIONS *` ger 404. Metoder jämförs skiftlägeskänsligt (`get` är
+  en annan metod än `GET`).
+- **Strikt sökväg, 400 före routing.** Den råa sökvägen (redan kontrollerad mot RFC 3986 av
+  `spola.http`) delas på `/`, sedan avkodas varje segment en gång: `%XX` till byte, sedan
+  JDK:ns UTF-8-avkodare med `CodingErrorAction.REPORT` (ofullständiga sekvenser, överlånga
+  kodningar, kodade surrogat och allt över U+10FFFF ger fel; testat mot gränserna i RFC 3629
+  §4). Ett avkodat segment med `/`, `\` eller styrtecken (U+0000–U+001F, U+007F), segmenten
+  `.` och `..` (även kodade) och tomma segment utom ett sista (avslutande `/`) ger 400.
+  Ingen dubbelavkodning: `%252F` är texten `%2F`. C1-tecken och andra Unicode-tecken är
+  tillåtna i sökvägen men escapas i loggar. Den 400 som routern ger är en `WebException`
+  som kastas innanför routerns filter, så att filter (CORS, säkerhet) också ser den; för en
+  sådan förfrågan är `path()` den råa sökvägen och `pathSegments()` tom.
+- **Queryparametrar.** `application/x-www-form-urlencoded` enligt WHATWG URL Standard §5.1:
+  `&` skiljer par, tomma par hoppas över, första `=` skiljer namn och värde (inget `=` ger
+  tomt värde), `+` blir mellanslag före procentavkodningen (så `%2B` är `+`), strikt UTF-8
+  som för sökvägen. Namnen behåller ordningen de först förekommer i, värdena sin ordning.
+  Avkodade styrtecken är data och tillåts i värden; de escapas i loggar och problem-detaljer.
+  Högst 1 000 par (Tomcats `maxParameterCount` i Spring Boot 3.x), tomma par räknas inte;
+  fler ger 400. **Lat:** parsningen görs första gången något läser queryn och högst en gång
+  per förfrågan (`QueryState`, delad av alla `WebRequest` som härleds med `withAttribute`,
+  `synchronized` eftersom en `WebRequest` får lämnas till andra trådar). Ett fel sparas och
+  ges igen vid varje senare läsning. Följden är att en ogiltig query som ingen läser inte ger
+  400.
+- **Typade parametrar.** `Param` är en klass med typnamn och funktion. De inbyggda är
+  strikta och skrivna för hand i stället för att lita på JDK:ns tolerans:
+  `Integer.parseInt` godtar `+5` och icke-ASCII-siffror, `UUID.fromString` godtar
+  `1-1-1-1-1`, `new BigDecimal` godtar exponenter (och därmed `1e999999999`). `INT`/`LONG`:
+  `-?[0-9]+` inom intervallet; `BOOLEAN`: `true`/`false`; `UUID`: 36 tecken `8-4-4-4-12`;
+  `LOCAL_DATE`: `yyyy-MM-dd` och ett riktigt datum; `BIG_DECIMAL`: `-?[0-9]+(\.[0-9]+)?`,
+  högst 100 tecken; enum: exakt namn. Ett undantag från funktionen blir `WebException` 400
+  med parameterns namn, typnamnet och värdet (citerat, högst 40 tecken, escapat); funktionens
+  eget meddelande visas inte. En funktion som returnerar `null` är ett programmeringsfel
+  (500). `requiredQuery` utan värde ger 400. `pathParam` med ett namn som inte finns i den
+  matchade routens mönster ger `IllegalArgumentException` (500).
+- **Attribut som typade nycklar på en oföränderlig request.** `AttributeKey<T>` jämförs på
+  identitet (två nycklar med samma namn är olika) och bär en `Class<T>` som värdet
+  kontrolleras mot i `withAttribute` (primitiva typer avvisas, eftersom deras `Class` inte
+  kan kontrollera ett värde). `withAttribute` ger en ny `WebRequest` med en kopierad
+  `Map.copyOf`; originalet ändras aldrig, så inget tillstånd delas mellan förfrågningar eller
+  mellan filter som får samma request.
+- **Filtrens omfång och ordning.** Kedjan för en förfrågan är: routerns filter (i
+  registreringsordning, det första ytterst), sedan filtren för routens grupper (yttersta
+  gruppen först, inom en grupp i registreringsordning, oavsett om filtret lades till före
+  eller efter gruppens routes), sedan handlern. Routerns filter körs för varje förfrågan,
+  även 400 från sökvägskontrollen, 404, 405, automatiskt `OPTIONS` och `OPTIONS *`; en grupps
+  filter bara för gruppens routes (en 405 eller 404 under gruppens prefix når dem inte,
+  eftersom ingen route i gruppen matchade). **Routingen avgörs före filtren:** ett filter kan
+  inte byta route (`WebRequest` har ingen `withPath`), men det ser den matchade routens
+  variabler och `pattern()`.
+- **Undantag mappas där de uppstår.** Varje steg i kedjan (filter eller handler) körs i ett
+  `try`; ett undantag blir ett svar i samma steg, och filtren utanför ser ett vanligt svar
+  (som Spring, där `@ControllerAdvice` svarar innanför servlet-filtren). Därför kan ett
+  yttre filter lägga till huvuden (CORS) även på felsvar, och ett undantag från ett filter
+  går till samma mappers. Ett `null`-svar från filter, handler eller mapper är ett
+  programmeringsfel och behandlas som ett undantag.
+- **Valet av mapper.** Den mapper vars klass ligger närmast undantagets klass i
+  superklasskedjan vinner, oberoende av registreringsordningen. Utan mapper: en
+  `WebException` blir `toResponse(request)` (problem-svaret med dess huvuden, t.ex. `Allow`);
+  en `RequestBodyException`, eller ett undantag med en sådan i orsakskedjan, kastas vidare
+  till `spola.http`, som svarar med kroppens status och stänger anslutningen; allt annat blir
+  500 med ett problem-svar utan meddelande, loggat på `ERROR` (logger `spola.web`) med metod
+  och sökväg, escapat och kortat. En `RequestBodyException` går bara till en mapper för
+  exakt `RequestBodyException`, aldrig till en för `IOException` eller `Exception`: en
+  allmän mapper ska inte göra en 413 till en 500 (servern stänger anslutningen ändå). Kastar
+  mappern (eller `toResponse` i en subklass) blir det 500 utan att någon mapper anropas igen,
+  och felet loggas. `Error` fångas inte: det går till `spola.http` (500 utan detaljer), och
+  mappers för `Error`-klasser avvisas vid `build()`.
+- **Problem-formatet (RFC 9457).** `Content-Type: application/problem+json`, skrivet med
+  `spola.json`. Medlemmarna i ordning: `type` (standard `about:blank`), `title` (statusens
+  fras enligt RFC 9110 §15 när ingen annan anges; okända koder får `Client Error`/`Server
+  Error`), `status`, `detail` (bara när den finns), `instance` (routern sätter den avkodade
+  sökvägen, som JSON-skrivaren escapar), sedan extra medlemmar. Status 400–599 (en problem
+  är ett fel; 1xx–3xx avvisas). `title`, `detail`, `instance` och varje sträng i de extra
+  medlemmarna (på alla nivåer) kortas till högst 2 000 tecken (de sista tre `...`, aldrig mitt
+  i ett surrogatpar), och ensamma surrogat blir U+FFFD så att varje `Problem` kan skrivas som
+  JSON. Extra medlemmar med standardnamn avvisas.
+- **Loggning.** Bara 500 loggas (`ERROR`, `System.Logger` med namnet `spola.web`). Raden
+  innehåller metod och avkodad sökväg via `Text.escape` (allt utanför utskrivbar ASCII blir
+  `\xHH`/`\uHHHH`, `\` och `"` escapas, högst 200 tecken), och undantaget loggas som en
+  `LoggedThrowable`: en kopia av orsakskedjan med escapade klassnamn och meddelanden och
+  kvarvarande stackspår (samma teknik som i `spola.http`, egen kopia eftersom `spola.http`
+  inte exporterar sin). Ingen loggrad innehåller alltså styrtecken från förfrågan, även när
+  sökvägen eller ett parametervärde innehåller `%0A`, `%0D`, `%1B` eller C1-tecken (testat).
+  Testerna fångar loggen via en paketprivat `RouterBuilder.log(System.Logger)`.
+- **Inga ändringar i `spola.http`.** Allt uppdraget behöver finns i dess publika API.
+- **Tester** går genom en riktig `HttpServer` (127.0.0.1, port 0) med `HttpClient` eller en
+  rå socket (för sökvägar som `HttpClient` inte skickar oförändrade), eftersom
+  `spola.http.Request` bara skapas av servern.

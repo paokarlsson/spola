@@ -321,8 +321,46 @@
   testerna med `keytool` och `KeyStore`-API:t (`TestPki`). Totalt 281 tester i modulen,
   cirka 30 s.
 
+### Uppdrag 08a: web del 1, routing som kod, parametrar, filter och felhantering (`spola.web`)
+- Rad 08 i `PLAN.md` är delad i 08a (detta: routing, procentavkodning, sökvägs- och
+  queryparametrar, filter, attribut, felhantering, problem-svar) och 08b (JSON-kroppar via
+  `spola.json.codec`, `Content-Type`/`Accept` med 415/406, cookies, formulärkroppar); se
+  ARCHITECTURE.md ("Web del 1").
+- Modulen `spola.web` (`modules/web/`): `requires transitive spola.http`, `requires
+  transitive spola.json` (för `Problem.extensions`, se ARCHITECTURE.md), `requires static
+  java.net.http` bara för testerna, ingen reflektion, inga ändringar i `spola.http`.
+- `Router` (en `spola.http.Handler`, oföränderlig, trådsäker) byggd med `Router.builder()`:
+  `get`/`post`/`put`/`patch`/`delete`/`route`, `filter`, `group(prefix, RouteGroup ->
+  ...)` (nästlade, variabler i prefixet), `onException`, `build()`. `build()` samlar alla
+  problem (mönster, prefix, metoder, samma metod och form, dubbla mappers, mappers för
+  `Error`) i en `RouterDefinitionException`.
+- Mönster: literal, `{namn}`, `{namn...}` sist, roten `/`, strikt avslutande snedstreck.
+  Trie per segment, literal före variabel före catch-all med backtracking, oberoende av
+  registreringsordning; 404, 405 med `Allow`, `HEAD` via `GET`, automatiskt `OPTIONS`,
+  `OPTIONS *` ger 404.
+- Strikt sökväg före routing (400): delning före avkodning, strikt UTF-8, `%2F`, `%5C`,
+  kodade styrtecken, `.`/`..` (även kodade), `//`; ingen dubbelavkodning.
+- `WebRequest` (oföränderlig): avkodad sökväg och segment, `pathParam` (typad med `Param`),
+  catch-all som sträng och lista, lat query (högst en parsning, högst 1 000 par,
+  form-urlencoded), `requiredQuery`, typade attribut med `AttributeKey`.
+- `Param`: `STRING`, `INT`, `LONG`, `BOOLEAN`, `UUID`, `LOCAL_DATE`, `BIG_DECIMAL`,
+  `enumOf`, `of`, alla strikta; fel ger 400 med parameterns namn och värdet kort och escapat.
+- Filter (routerns för allt, gruppens för gruppens routes, första ytterst), undantag mappas i
+  det steg där de uppstår (närmaste klass vinner), `WebException` och `Problem` (RFC 9457,
+  `application/problem+json`, text högst 2 000 tecken), 500 utan meddelande och loggat
+  escapat på `spola.web`; `RequestBodyException` går till `spola.http`.
+- `README.md` i modulen: komplett exempel bredvid Spring Boot (kompilerat mot modulen) och
+  avvikelsetabell mot Spring MVC.
+- 288 tester i `spola.web` (cirka 2 s): avkodning mot UTF-8-gränserna, alla metoder via
+  `HttpClient`, 32 matchningsfall i två registreringsordningar och backtracking-exemplet för sig, 404/405/`HEAD`/`OPTIONS`,
+  22 felaktiga registreringar och sju problem i ett undantag, 36 felaktiga sökvägar över rå
+  socket utan att handlern anropas, `%252F`, 17 query-fall plus gränsen 1 000/1 001 och lat
+  parsning, 22 giltiga och 39 ogiltiga typade värden, filterordning och omfång, mappers,
+  `RequestBodyException` (chunked över `maxBodySize`), problem-formatet, loggrader utan
+  styrtecken, 1 000 routes och 200 samtidiga klienter, och källkodsreglerna.
+
 ## Återstår (enligt `uppdrag/PLAN.md`)
-- 08–20 enligt planen.
+- 08b (JSON-kroppar, `Content-Type`/`Accept`, cookies, formulärkroppar) och 09–20 enligt planen.
 - **Kvar från friktionsrapporten i 05c** (`modules/demo/README.md`, avsnitt "Friktion"):
   - **DI:** den typade formen av `to(...)` går inte att blanda `Class` och `Key` i; ett enda
     kvalificerat beroende gör att alla måste skrivas `Key.of(...)` (punkt 3).
@@ -339,6 +377,17 @@
     `LoggingSettings` efter bindningen, inte i `ConfigException` (punkt 7).
 
 ## Kända problem och begränsningar
+- **Web (spola.web, 08a):** queryn parsas lat, så en ogiltig query (felaktig kodning, över
+  1 000 par) ger 400 bara om något läser den. För en förfrågan som får 400 från
+  sökvägskontrollen ser filtren den råa sökvägen i `path()` och tomma `pathSegments()`.
+  Routingen avgörs före filtren; ett filter kan inte skicka förfrågan till en annan route.
+  Ett `Error` från handler eller filter går förbi filtren och mappers till `spola.http`
+  (500 i klartext). Ett undantag som omsluter en `RequestBodyException` och har en mapper
+  (t.ex. för `Exception`) mappas av den. C1-tecken och andra Unicode-tecken är tillåtna i
+  sökvägen (bara escapade i loggar). `Param.enumOf` läser konstanterna med
+  `Class.getEnumConstants()` en gång. Gruppfilter körs inte för
+  404/405 under gruppens prefix. Mönster med `;` (matrisparametrar) har ingen särskild
+  betydelse.
 - **HTTP (spola.http):** felaktiga chunked kroppar upptäcks först när kroppen läses
   (kroppen läses lat för `100 Continue`), så handlern anropas för dem; den får aldrig kroppen
   och servern svarar med kroppens status. Efter ett strömmande svar, eller med
@@ -352,7 +401,7 @@
   ledig anslutning går förlorad (klienten ser en stängd anslutning). Efterläsningen efter
   `Connection: close` håller anslutningen (och en plats i `maxConnections`) upp till 2 s om
   klienten inte stänger. Chunk-tilläggens radgräns (4 096 byte) och backlog (1 024) är fasta.
-  Ingen routing eller procentavkodning (08), ingen HTTP/2, ingen komprimering.
+  Routing och procentavkodning finns i `spola.web` (08a); ingen HTTP/2, ingen komprimering.
   Kroppen kan bara läsas på handlerns tråd medan handlern eller dess `BodyWriter` kör.
 - **HTTPS (spola.http, 07b):** ingen omladdning av certifikat i drift, ingen SNI med flera
   certifikat, ingen spärrkontroll (CRL/OCSP) av klientcertifikat utöver JDK:ns standard.

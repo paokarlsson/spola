@@ -1,0 +1,13 @@
+feat(web): add spola.web with routing as code, filters and problem errors
+
+New module on top of spola.http: an immutable router with a segment trie
+(literal > variable > catch-all, with backtracking), strict percent-decoding
+of the path (400 before routing), lazy query parsing capped at 1 000 pairs,
+strict typed parameters, typed request attributes, router and group filters,
+and closest-class exception mapping into RFC 9457 problem responses.
+
+Gauntlet-Run: 20261003-0945-web-routing-karna
+Gauntlet-Round: 1/5
+Gauntlet-Verdict: PASS (0 blocker, 0 major, 8 minor upheld)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
