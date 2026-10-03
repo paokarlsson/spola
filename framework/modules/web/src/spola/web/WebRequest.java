@@ -30,9 +30,14 @@ import spola.json.codec.JsonCodec;
  * values (they are data). Invalid encoding or more than 1 000 pairs is a {@link WebException}
  * 400, thrown by the first method that reads the query.
  *
+ * <p>The cookies ({@link #cookie(String)}, the counterpart of Spring's {@code @CookieValue}) are
+ * parsed on first use too, at most once per request, after RFC 6265 §5.4: see
+ * {@link #cookies()}.
+ *
  * <p>The body can be read once: as JSON with {@link #readJson} (the counterpart of Spring's
- * {@code @RequestBody}), or as a stream with {@link #body()} or {@link #bytes()}. Every request
- * derived with {@link #withAttribute} shares the body and that rule.
+ * {@code @RequestBody}), as a form with {@link #readForm()}, or as a stream with
+ * {@link #body()} or {@link #bytes()}. Every request derived with {@link #withAttribute} shares
+ * the body and that rule, and the parsed query and cookies.
  */
 public final class WebRequest {
 
@@ -41,16 +46,18 @@ public final class WebRequest {
     private final List<String> segments;
     private final Route route;
     private final QueryState query;
+    private final CookieState cookies;
     private final BodyState body;
     private final Map<AttributeKey<?>, Object> attributes;
 
-    WebRequest(Request http, String path, List<String> segments, Route route, QueryState query, BodyState body,
-            Map<AttributeKey<?>, Object> attributes) {
+    WebRequest(Request http, String path, List<String> segments, Route route, QueryState query, CookieState cookies,
+            BodyState body, Map<AttributeKey<?>, Object> attributes) {
         this.http = http;
         this.path = path;
         this.segments = segments;
         this.route = route;
         this.query = query;
+        this.cookies = cookies;
         this.body = body;
         this.attributes = attributes;
     }
@@ -213,6 +220,72 @@ public final class WebRequest {
     }
 
     /**
+     * The first value of a cookie, the counterpart of Spring's {@code @CookieValue}. See
+     * {@link #cookies()} for the rules.
+     *
+     * @param name the name, case-sensitive
+     * @return the value as sent (quotes kept, nothing decoded), or empty if absent
+     * @throws WebException 400 if the request has more than 200 cookies
+     */
+    public Optional<String> cookie(String name) {
+        var values = cookies.cookies().get(Objects.requireNonNull(name, "name"));
+        return values == null ? Optional.empty() : Optional.of(values.getFirst());
+    }
+
+    /**
+     * Every value of a cookie, in the order of the {@code Cookie} header. Browsers send one
+     * name more than once when cookies with different {@code Path} or {@code Domain} match;
+     * the one with the longest path comes first (RFC 6265 §5.4).
+     *
+     * @param name the name, case-sensitive
+     * @return the values, unmodifiable, empty if absent
+     * @throws WebException 400 if the request has more than 200 cookies
+     */
+    public List<String> cookieAll(String name) {
+        return cookies.cookies().getOrDefault(Objects.requireNonNull(name, "name"), List.of());
+    }
+
+    /**
+     * The first value of a cookie converted with {@code param}, as strictly as a query
+     * parameter.
+     *
+     * @param name  the name, case-sensitive
+     * @param param the conversion
+     * @param <T>   the converted type
+     * @return the value, or empty if the cookie is absent
+     * @throws WebException 400 if the value does not convert (the detail names the cookie and
+     *                      quotes the value, escaped and at most 40 characters), or if the
+     *                      request has more than 200 cookies
+     */
+    public <T> Optional<T> cookie(String name, Param<T> param) {
+        Objects.requireNonNull(param, "param");
+        return cookie(name).map(value -> param.convert("cookie", name, value));
+    }
+
+    /**
+     * Every cookie of the request, parsed on first use, at most once per request (RFC 6265
+     * §4.2.1, §5.4). Every {@code Cookie} field counts, joined as if separated by {@code "; "}.
+     * The header is split on {@code ;}; each pair is trimmed of spaces and tabs; the name is the
+     * text before the first {@code =} and must be a {@code token}; the value is
+     * {@code *cookie-octet} (visible US-ASCII without {@code "}, {@code ,}, {@code ;} and
+     * {@code \}) or the same inside {@code "}. The quotes stay part of the value, and nothing is
+     * percent-decoded: the value is opaque to the framework.
+     *
+     * <p>A pair that breaks these rules (no {@code =}, an empty or invalid name, a space, comma,
+     * backslash, control character or non-ASCII character in the value) is skipped without a
+     * trace, never a 400: other applications on the same site may set cookies the browser
+     * sends along, and a 400 would lock the user out. More than 200 valid pairs is a
+     * {@link WebException} 400 whose detail holds no names or values; the header's size is
+     * already limited by {@code HttpLimits.maxHeaderSectionSize}.
+     *
+     * @return names in the order they first appear, values in order; unmodifiable
+     * @throws WebException 400 if the request has more than 200 cookies
+     */
+    public Map<String, List<String>> cookies() {
+        return cookies.cookies();
+    }
+
+    /**
      * The header fields.
      *
      * @return the headers
@@ -320,7 +393,7 @@ public final class WebRequest {
      *
      * <p>Every one of those is a {@link WebException} and goes through the router's exception
      * mappers like any other. The body can be read once: a second {@code readJson}, or
-     * {@code readJson} after {@link #body()} or {@link #bytes()}, is a programming error
+     * {@code readJson} after {@link #readForm}, {@link #body()} or {@link #bytes()}, is a programming error
      * ({@link IllegalStateException}, so 500).
      *
      * @param codec  the codec
@@ -343,10 +416,75 @@ public final class WebRequest {
     }
 
     /**
+     * Reads the body as an {@code application/x-www-form-urlencoded} form, at most the router's
+     * {@link RouterBuilder#maxFormSize} bytes (2 MiB unless set). See {@link #readForm(int)}
+     * for the rules.
+     *
+     * @return the form
+     * @throws WebException                     415, 413 or 400, see {@link #readForm(int)}
+     * @throws IllegalStateException            if the body was already read
+     * @throws spola.http.RequestBodyException if the body is larger than
+     *                                          {@code HttpLimits.maxBodySize}, malformed or stops
+     *                                          arriving (the server answers with its status)
+     * @throws IOException                      if the connection fails
+     */
+    public FormData readForm() throws IOException {
+        return readForm(body.maxFormSize());
+    }
+
+    /**
+     * Reads the body as an {@code application/x-www-form-urlencoded} form of at most
+     * {@code maxBytes} bytes (instead of the router's limit): the counterpart of the form fields
+     * Spring binds to {@code @RequestParam} and {@code @ModelAttribute}. Checked in this order:
+     *
+     * <ol>
+     *   <li>A {@code Content-Encoding} other than {@code identity}: 415 with
+     *       {@code Accept: application/x-www-form-urlencoded} and
+     *       {@code Accept-Encoding: identity}.</li>
+     *   <li>No {@code Content-Type}, an invalid one, one given twice, one other than
+     *       {@code application/x-www-form-urlencoded}, or a {@code charset} other than UTF-8
+     *       (without regard to case): 415 with
+     *       {@code Accept: application/x-www-form-urlencoded}.</li>
+     *   <li>The body is read as it streams in, never past the limit: more than
+     *       {@code maxBytes} bytes is 413 (reading stops one byte past the limit).</li>
+     *   <li>A byte above 0x7F is 400 (a form body is percent-encoded US-ASCII). The text is then
+     *       parsed exactly as the query is (WHATWG URL Standard §5.1: {@code &} between pairs,
+     *       the first {@code =} between name and value, {@code +} is a space, strict
+     *       percent-decoding to UTF-8, empty pairs skipped). Invalid encoding or more than
+     *       1 000 pairs is 400; the detail quotes nothing from the body.</li>
+     * </ol>
+     *
+     * <p>An empty body is an empty form (an HTML form without fields is valid), unlike
+     * {@link #readJson}. The form holds only the body: query parameters are never merged in
+     * (read them with {@link #query(String)}). Every error above is a {@link WebException} and
+     * goes through the router's exception mappers. The body can be read once: {@code readForm}
+     * after {@link #readJson}, {@link #body()}, {@link #bytes()} or {@code readForm} is a
+     * programming error ({@link IllegalStateException}, so 500).
+     *
+     * @param maxBytes the largest body in bytes, at least 1
+     * @return the form
+     * @throws WebException                     415, 413 or 400 as listed
+     * @throws IllegalStateException            if the body was already read
+     * @throws IllegalArgumentException         if {@code maxBytes} is less than 1
+     * @throws spola.http.RequestBodyException if the body is larger than
+     *                                          {@code HttpLimits.maxBodySize}, malformed or stops
+     *                                          arriving (passed on unchanged, so the server
+     *                                          answers with its status)
+     * @throws IOException                      if the connection fails
+     */
+    public FormData readForm(int maxBytes) throws IOException {
+        if (maxBytes < 1) {
+            throw new IllegalArgumentException("maxBytes must be at least 1, was " + maxBytes);
+        }
+        body.claimForForm();
+        return FormBody.read(headers(), http.body(), maxBytes);
+    }
+
+    /**
      * The body as a stream (the same stream on every call); see {@link Request#body()}.
      *
      * @return the body
-     * @throws IllegalStateException if {@link #readJson} read the body
+     * @throws IllegalStateException if {@link #readJson} or {@link #readForm} read the body
      */
     public InputStream body() {
         body.claimForStream("body");
@@ -360,7 +498,7 @@ public final class WebRequest {
      * @throws IOException           if the body cannot be read
      *                               ({@link spola.http.RequestBodyException} for a body that is
      *                               too large or malformed)
-     * @throws IllegalStateException if {@link #readJson} read the body
+     * @throws IllegalStateException if {@link #readJson} or {@link #readForm} read the body
      */
     public byte[] bytes() throws IOException {
         body.claimForStream("bytes");
@@ -396,12 +534,17 @@ public final class WebRequest {
         key.type().cast(value);
         var copy = new HashMap<AttributeKey<?>, Object>(attributes);
         copy.put(key, value);
-        return new WebRequest(http, path, segments, route, query, body, Map.copyOf(copy));
+        return new WebRequest(http, path, segments, route, query, cookies, body, Map.copyOf(copy));
     }
 
     /** How many times the query was parsed, for tests. */
     int queryParses() {
         return query.parses();
+    }
+
+    /** How many times the cookies were parsed, for tests. */
+    int cookieParses() {
+        return cookies.parses();
     }
 
     /** The method and the path, escaped and short (safe for a log line). */

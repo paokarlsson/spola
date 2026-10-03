@@ -395,9 +395,46 @@
   gång, mappers för 415/400, 406 och problem-svar med `Accept: text/html`, `encode`-fel, 200
   samtidiga klienter med JSON.
 
+### Uppdrag 08c: web del 3, cookies, `Set-Cookie` och formulärkroppar (`spola.web`) — rad 08 i `PLAN.md` klar
+- Med 08a, 08b och 08c är **rad 08 i `PLAN.md` (webblagret) klar**. Multipart och
+  filuppladdning ligger utanför (se ARCHITECTURE.md, "Web del 3").
+- `WebRequest`: `cookie(name)`, `cookieAll(name)`, `cookie(name, Param)` (400 med
+  `Invalid cookie "x": ...`) och `cookies()`. Lat parsning, högst en gång per förfrågan och
+  delad av alla `withAttribute`-kopior (`CookieState`, som `QueryState`). RFC 6265 §4.2.1/§5.4:
+  flera `Cookie`-fält slås ihop, delning på `;`, trimning av mellanslag/tab, namnet en
+  `token`, värdet `*cookie-octet` eller citerat; citattecknen behålls och inget avkodas.
+  Felaktiga par hoppas över tyst; fler än 200 giltiga par ger 400 utan namn eller värden.
+- `ResponseCookie` (oföränderlig, även buildern): `of(name, value)`, `expire(name)`,
+  `path`, `domain`, `maxAge` (hela sekunder), `secure`, `httpOnly`, `sameSite`
+  (`SameSite.STRICT/LAX/NONE`). Standard `Path=/`, `HttpOnly`, `SameSite=Lax`. Validering i
+  `build()` (namn, värde, sökväg, domän, negativ `maxAge`, `SameSite=None` utan `Secure`,
+  `__Secure-`, `__Host-`) med kort escapat `IllegalArgumentException`. Fast attributordning,
+  inget `Expires`. `Responses.withCookie` ger ett eget `Set-Cookie`-fält per cookie.
+- `WebRequest.readForm()`/`readForm(maxBytes)` och `FormData` (`first`, `all`, `get`,
+  `required`, `asMap`, `isEmpty`): ordningen `Content-Encoding` (415) → `Content-Type`/
+  `charset` (415 med `Accept: application/x-www-form-urlencoded`) → strömmande läsning till
+  gränsen (413) → byte över 0x7F (400) → `Decoding.parseQuery` (400 utan text ur kroppen,
+  högst 1 000 par). Tom kropp ger tomt formulär. Formulär och query slås inte ihop.
+  `RouterBuilder.maxFormSize(int)` (standard 2 MiB). `BodyState` delas med `readJson`,
+  `body()` och `bytes()`; ett andra försök ger `IllegalStateException` (500).
+- `MediaType.APPLICATION_FORM_URLENCODED` (ny konstant). Interna ändringar: `JsonBody.checkEncoding`
+  och `JsonBody.single` tar emot 415-huvudena/används av `FormBody`, `Decoding.parseQuery` har
+  en variant med subjekt för detaljen (`The form body ...`). Inga ändringar i `spola.http`,
+  inga nya `requires`, inga befintliga tester ändrade (bara de nya sviterna registrerade i
+  `WebTests`).
+- `README.md` i `modules/web/`: formulär- och cookieexempel bredvid Spring Boot (testkällan
+  `ProfileApp.java`, kontrollerad av ett test), nya rader i jämförelsetabellen och sju nya
+  avvikelserader.
+- 591 tester i `spola.web` (cirka 2,5 s; 136 nya): 36 fall av cookieparsning, 200/201
+  cookies, parsning en gång över kopior och 24 trådar, typade cookies; 22 giltiga och 29
+  ogiltiga `ResponseCookie` med exakt text och utskrivbara meddelanden, tre `Set-Cookie`-rader
+  över rå socket, `HttpClient` med `CookieManager` genom README-exemplet; formulärflödet,
+  10 fall av 415, 8 fall av 400 med markörsträng, 1 000/1 001 par, 413 för 4 MiB chunked mot
+  1 KiB, exakt `max + 1` lästa byte, egna gränser, `maxBodySize`, läs en gång, mappers, 200
+  samtidiga klienter med formulär och cookies, och loggrader/problem-detaljer utan styrtecken.
+
 ## Återstår (enligt `uppdrag/PLAN.md`)
-- 08c (cookies in, `Set-Cookie` ut, formulärkroppar `application/x-www-form-urlencoded`) och
-  09–20 enligt planen.
+- 09–20 enligt planen (rad 08 är klar med 08a, 08b och 08c).
 - **Kvar från friktionsrapporten i 05c** (`modules/demo/README.md`, avsnitt "Friktion"):
   - **DI:** den typade formen av `to(...)` går inte att blanda `Class` och `Key` i; ett enda
     kvalificerat beroende gör att alla måste skrivas `Key.of(...)` (punkt 3).
@@ -414,6 +451,17 @@
     `LoggingSettings` efter bindningen, inte i `ConfigException` (punkt 7).
 
 ## Kända problem och begränsningar
+- **Web (spola.web, 08c):** inget `Expires` skrivs (beslut i uppdraget). JDK:ns
+  `java.net.CookieManager` tolkar ett `Set-Cookie` med `Max-Age` men utan `Expires` som RFC
+  2965 och skickar tillbaka `$Version="1"; namn="värde";$Path=...`; värdet kommer då med
+  citattecken, som Spola behåller, så `cookie(namn)` ger `"värde"`. Webbläsare följer RFC
+  6265 och berörs inte; ett test fäster beteendet. Sessionscookies (utan `maxAge`) fungerar
+  med `CookieManager`. Efter en 413 från `readForm` läser `spola.http` resten av kroppen (upp
+  till `maxBodySize`) innan svaret skickas, som för `readJson`. En formulärkropp får bara
+  innehålla synlig ASCII: råa mellanslag, tab eller radbrytningar (t.ex. ett avslutande
+  `\r\n` från ett handskrivet `curl`-anrop) ger 400. `readForm` kräver `Content-Type` också
+  för en tom kropp. Överhoppade cookies loggas inte, så en felaktig cookie syns inte i
+  serverns logg. Ingen multipart, inga sessioner, signerade cookies eller CSRF (uppdrag 11).
 - **Web (spola.web, 08b):** efter en 413 från `readJson` läser `spola.http` resten av kroppen
   (upp till `maxBodySize`, utan att buffra) innan svaret skickas; en klient som skickar en
   stor kropp får alltså vänta tills den skickats. `readJson` kan inte veta om någon läst

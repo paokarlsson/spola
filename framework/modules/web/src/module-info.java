@@ -21,6 +21,10 @@
  *       ({@code @RequestBody}), {@link spola.web.Responses} out ({@code @ResponseBody}), with
  *       strict {@link spola.web.MediaType} and {@link spola.web.AcceptHeader} parsing and
  *       content negotiation (415, 406).</li>
+ *   <li>Cookies and forms: {@code WebRequest.cookie} in ({@code @CookieValue}),
+ *       {@link spola.web.ResponseCookie} with {@code Responses.withCookie} out
+ *       ({@code ResponseCookie}), and {@code application/x-www-form-urlencoded} bodies with
+ *       {@code WebRequest.readForm} and {@link spola.web.FormData}.</li>
  * </ul>
  *
  * <p>{@code spola.http} is required transitively because the API uses its {@code Request},

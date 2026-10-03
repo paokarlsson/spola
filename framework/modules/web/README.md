@@ -11,8 +11,9 @@ med metodanrop och startas med `HttpServer.start(options, router)`.
 
 JSON-kroppar in och ut med en uttrycklig `JsonCodec` (`request.readJson(codec)`,
 `Responses.json(...)`), strikt tolkning av `Content-Type` och `Accept` (`MediaType`,
-`AcceptHeader`) och innehållsförhandling (`request.negotiate(...)`) kom i 08b. Cookies och
-formulärkroppar kommer i 08c.
+`AcceptHeader`) och innehållsförhandling (`request.negotiate(...)`) kom i 08b. Cookies in
+(`request.cookie(...)`), cookies ut (`ResponseCookie`, `Responses.withCookie`) och
+formulärkroppar (`request.readForm()`, `FormData`) kom i 08c.
 
 | Spring MVC | Spola |
 |---|---|
@@ -34,6 +35,11 @@ formulärkroppar kommer i 08c.
 | `MediaType`, `MediaType.parseMediaTypes(accept)` | `MediaType.parse`, `AcceptHeader.parse` |
 | `produces = {...}` med flera typer | `request.negotiate(MediaType.APPLICATION_JSON, MediaType.TEXT_PLAIN)` |
 | `spring.codec.max-in-memory-size`, Jacksons `StreamReadConstraints` | `RouterBuilder.jsonLimits(JsonLimits)`, `readJson(codec, limits)` |
+| `@CookieValue String session` | `request.cookie("session")` (`Optional<String>`) |
+| `@CookieValue int count` | `request.cookie("count", Param.INT)` |
+| `ResponseCookie.from(name, value)...build()` + `HttpHeaders.SET_COOKIE` | `Responses.withCookie(response, ResponseCookie.of(name, value)...build())` |
+| `@RequestParam` för ett formulärfält, `@ModelAttribute` | `request.readForm()` och `form.required("age", Param.INT)` |
+| `server.tomcat.max-http-form-post-size` (2 MB) | `RouterBuilder.maxFormSize(int)` (2 MiB), `readForm(maxBytes)` |
 
 ## Ett komplett exempel
 
@@ -415,6 +421,141 @@ JSON-typ utan `charset`: `Accept: application/json; charset=utf-8` ger 200 från
 `request.accept()` ger det tolkade huvudet (`AcceptHeader`) och
 `request.contentType()` förfrågans `MediaType`.
 
+## Formulär och cookies
+
+### Spring Boot
+
+```java
+record Profile(String name, int age, List<String> interests) {
+}
+
+@RestController
+class ProfileController {
+    private final Map<String, Profile> profiles = new ConcurrentHashMap<>();
+    private final AtomicLong ids = new AtomicLong();
+
+    @PostMapping(path = "/profile", consumes = MediaType.APPLICATION_FORM_URLENCODED_VALUE)
+    ResponseEntity<String> save(@RequestParam String name, @RequestParam int age,
+            @RequestParam(name = "interest", required = false) List<String> interests) {
+        var profile = new Profile(name, age, interests == null ? List.of() : interests);
+        var id = "p" + ids.incrementAndGet();
+        profiles.put(id, profile);
+        var cookie = ResponseCookie.from("profile", id).path("/").httpOnly(true).sameSite("Lax").build();
+        return ResponseEntity.ok().header(HttpHeaders.SET_COOKIE, cookie.toString()).body("Saved " + name + ".");
+    }
+
+    @GetMapping("/profile")
+    String show(@CookieValue(name = "profile", required = false) String id) {
+        var profile = id == null ? null : profiles.get(id);
+        if (profile == null) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "No profile.");
+        }
+        return profile.name() + ", " + profile.age() + ", " + profile.interests();
+    }
+
+    @DeleteMapping("/profile")
+    ResponseEntity<Void> forget(@CookieValue(name = "profile", required = false) String id) {
+        if (id != null) {
+            profiles.remove(id);
+        }
+        var cookie = ResponseCookie.from("profile", "").path("/").maxAge(0).httpOnly(true).sameSite("Lax").build();
+        return ResponseEntity.noContent().header(HttpHeaders.SET_COOKIE, cookie.toString()).build();
+    }
+}
+```
+
+### Spola
+
+```java
+import java.io.IOException;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
+import spola.http.HttpServer;
+import spola.http.HttpServerOptions;
+import spola.http.Response;
+import spola.web.FormData;
+import spola.web.Param;
+import spola.web.ResponseCookie;
+import spola.web.Responses;
+import spola.web.Router;
+import spola.web.WebException;
+import spola.web.WebRequest;
+
+final class ProfileApp {
+
+    record Profile(String name, int age, List<String> interests) {
+    }
+
+    private final Map<String, Profile> profiles = new ConcurrentHashMap<>();
+    private final AtomicLong ids = new AtomicLong();
+
+    // <form method="post" action="/profile"> with the fields name, age and interest (several)
+    Response save(WebRequest request) throws IOException {
+        FormData form = request.readForm();
+        var profile = new Profile(form.required("name", Param.STRING), form.required("age", Param.INT),
+                form.all("interest"));
+        var id = "p" + ids.incrementAndGet();
+        profiles.put(id, profile);
+        var cookie = ResponseCookie.of("profile", id).build(); // Path=/, HttpOnly, SameSite=Lax
+        return Responses.withCookie(Response.text(200, "Saved " + profile.name() + "."), cookie);
+    }
+
+    Response show(WebRequest request) {
+        var profile = request.cookie("profile").map(profiles::get)
+                .orElseThrow(() -> new WebException(404, "No profile."));
+        return Response.text(200, profile.name() + ", " + profile.age() + ", " + profile.interests());
+    }
+
+    Response forget(WebRequest request) {
+        request.cookie("profile").ifPresent(profiles::remove);
+        return Responses.withCookie(Responses.noContent(), ResponseCookie.expire("profile").build());
+    }
+
+    Router router() {
+        return Router.builder()
+                .post("/profile", this::save)
+                .get("/profile", this::show)
+                .delete("/profile", this::forget)
+                .build();
+    }
+
+    public static void main(String[] args) throws Exception {
+        var server = HttpServer.start(HttpServerOptions.DEFAULT.withPort(8080), new ProfileApp().router());
+        Runtime.getRuntime().addShutdownHook(new Thread(server::close));
+    }
+}
+```
+
+Exemplet ovan är `modules/web/test/spola/web/ProfileApp.java` (utan paketraden), och testerna
+kör det genom en riktig server, också med `HttpClient` och en `CookieManager`.
+
+- `POST /profile` med `name=Ada+Lovelace&age=36&interest=math&interest=po%C3%A9sie` och
+  `Content-Type: application/x-www-form-urlencoded` ger 200 och
+  `Set-Cookie: profile=p1; Path=/; HttpOnly; SameSite=Lax` (en sessionscookie). `GET /profile`
+  med `Cookie: profile=p1` ger `Ada Lovelace, 36, [math, poésie]`.
+- `readForm` kontrollerar i samma ordning som `readJson`: `Content-Encoding` som inte är
+  `identity` ger 415; ett saknat, felaktigt eller annat `Content-Type` än
+  `application/x-www-form-urlencoded`, eller en `charset` som inte är UTF-8, ger 415 med
+  `Accept: application/x-www-form-urlencoded`; en kropp över `maxFormSize` (standard 2 MiB)
+  ger 413, och läsningen avbryts vid gränsen; en byte över 0x7F, ogiltig procentkodning,
+  ogiltig UTF-8 eller fler än 1 000 par ger 400 utan text ur kroppen. Kroppen tolkas med samma
+  regler som queryn (`+` är mellanslag, strikt UTF-8).
+- `form.required("age", Param.INT)` ger 400 `Missing form field "age".` eller
+  `Invalid form field "age": expected int, got "x".`; `form.get(...)` ger `Optional`,
+  `form.all(...)` alla värden i ordning och `form.asMap()` hela formuläret.
+- `request.cookie("profile")` ger det första värdet, `cookieAll` alla (webbläsare skickar
+  samma namn flera gånger för olika `Path`), `cookie(name, Param.INT)` ett typat värde (fel
+  ger 400 med namnet) och `cookies()` alla cookies. Cookies tolkas högst en gång per
+  förfrågan.
+- `ResponseCookie.of(name, value)` har standardvärdena `Path=/`, `HttpOnly` och
+  `SameSite=Lax`; `Secure`, `domain` och `maxAge` anges uttryckligen. `build()` kontrollerar
+  namn, värde, sökväg, domän, `SameSite=None` (kräver `Secure`) och prefixen `__Secure-`
+  och `__Host-`, och ger `IllegalArgumentException` vid fel. `ResponseCookie.expire(name)`
+  tar bort en cookie (`Max-Age=0`). `Responses.withCookie` lägger till ett eget
+  `Set-Cookie`-fält per cookie.
+
 ## Mönster och matchning
 
 - Ett mönster börjar med `/`. Segment: literal (`orders`), variabel (`{id}`, ett helt
@@ -450,3 +591,10 @@ JSON-typ utan `charset`: `Accept: application/json; charset=utf-8` ger 200 från
 | Förhandling av felsvar | `ProblemDetail` skrivs som `application/problem+json` eller `application/json` (eller XML med Jackson XML) efter `Accept`; Boots `/error` ger HTML till webbläsare | Problem-svar förhandlas inte: alltid `application/problem+json`, även med `Accept: text/html`. |
 | `produces`/`consumes` | En del av routingen: fel `Content-Type` eller `Accept` ger 415/406 innan handlern väljs, och två metoder kan dela sökväg med olika `produces` | Inte en del av routingen. Handlern förhandlar själv (`readJson` ger 415, `Responses.json` och `negotiate` ger 406), och en sökväg har en handler per metod. |
 | Komprimerade kroppar | Beror på servern | `Content-Encoding` annat än `identity` ger 415 från `readJson`. |
+| Standardvärden för `ResponseCookie` | Springs `ResponseCookie` har inga: utan `path` skrivs ingen `Path`, och `HttpOnly`/`SameSite` saknas tills de anges | `Path=/`, `HttpOnly` och `SameSite=Lax` om inget annat anges. `Secure` anges uttryckligen (så att `http://localhost` fungerar). Prefixen `__Secure-`/`__Host-` och `SameSite=None` utan `Secure` ger `IllegalArgumentException` redan i `build()`. |
+| `Expires` | Spring skriver både `Max-Age` och `Expires` när `maxAge` är satt | Bara `Max-Age` (alla webbläsare i bruk förstår det, och det beror inte på serverns klocka). `maxAge` måste vara hela sekunder. |
+| Felaktiga cookies | Tomcats `Rfc6265CookieProcessor` hoppar över dem | Samma: ett par utan `=`, ett namn som inte är en token, ett värde med mellanslag, komma, `\`, `"` mitt i, styrtecken eller icke-ASCII hoppas över tyst, utan 400. Fler än 200 giltiga cookies ger 400. |
+| Citattecken i cookievärden | Beror på servlet-containern och dess inställningar (äldre cookieprocessorer tog bort dem) | Citattecknen behålls som en del av värdet (`"abc"`), och inget avkodas: värdet är opakt. |
+| Formulär och query | `@RequestParam` läser både queryn och formuläret som "request parameters" | Slås inte ihop: handlern väljer uttryckligen `request.query(...)` eller `request.readForm()`. |
+| Tom formulärkropp | Inga parametrar | Samma: ett tomt `FormData` (ett HTML-formulär utan fält är giltigt). Det skiljer sig från `readJson`, där en tom kropp ger 400. |
+| Fel `Content-Type` på formulär | `@RequestParam` hittar inga formulärfält och ger 400 för ett obligatoriskt fält; `consumes` ger 415 | `readForm` ger 415 med `Accept: application/x-www-form-urlencoded` för ett saknat eller annat `Content-Type`, en annan `charset` än UTF-8 och `Content-Encoding`. |

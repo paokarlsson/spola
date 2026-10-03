@@ -158,6 +158,14 @@ final class Decoding {
      *                      than {@link #MAX_QUERY_PAIRS} pairs
      */
     static Map<String, List<String>> parseQuery(String raw) {
+        return parseQuery(raw, "The query");
+    }
+
+    /**
+     * {@link #parseQuery(String)} for a query or a form body; {@code subject} begins the 400's
+     * detail ({@code "The query"}, {@code "The form body"}), which never quotes {@code raw}.
+     */
+    static Map<String, List<String>> parseQuery(String raw, String subject) {
         var params = new LinkedHashMap<String, List<String>>();
         int pairs = 0;
         int start = 0;
@@ -168,7 +176,7 @@ final class Decoding {
             }
             if (end > start) {
                 if (++pairs > MAX_QUERY_PAIRS) {
-                    throw new WebException(400, "Bad Request", "The query has more than " + MAX_QUERY_PAIRS
+                    throw new WebException(400, "Bad Request", subject + " has more than " + MAX_QUERY_PAIRS
                             + " parameters.");
                 }
                 var pair = raw.substring(start, end);
@@ -176,7 +184,7 @@ final class Decoding {
                 var name = decode(eq < 0 ? pair : pair.substring(0, eq), true);
                 var value = eq < 0 ? "" : decode(pair.substring(eq + 1), true);
                 if (name == null || value == null) {
-                    throw new WebException(400, "Bad Request", "The query is not valid percent-encoded UTF-8.");
+                    throw new WebException(400, "Bad Request", subject + " is not valid percent-encoded UTF-8.");
                 }
                 params.computeIfAbsent(name, k -> new ArrayList<>()).add(value);
             }

@@ -35,6 +35,10 @@ public final class WebTests {
                 CrudTests.tests(),
                 JsonBodyTests.tests(),
                 ResponsesTests.tests(),
+                CookieTests.tests(),
+                ResponseCookieTests.tests(),
+                FormTests.tests(),
+                FormTests.readme(),
                 SourceRulesTests.tests())
                 .timeout(Duration.ofSeconds(60));
     }

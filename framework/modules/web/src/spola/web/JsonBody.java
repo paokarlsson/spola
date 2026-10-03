@@ -58,12 +58,20 @@ final class JsonBody {
 
     /** Step 1: {@code Content-Encoding} must be absent or {@code identity} (RFC 9110 §8.4). */
     static void checkEncoding(Headers headers) {
+        checkEncoding(headers, ACCEPT_IDENTITY);
+    }
+
+    /**
+     * {@code Content-Encoding} must be absent or {@code identity} (RFC 9110 §8.4); otherwise 415
+     * with {@code accept} as the response's headers. Shared with {@link FormBody}.
+     */
+    static void checkEncoding(Headers headers, Headers accept) {
         for (var value : headers.all("Content-Encoding")) {
             for (var element : value.split(",", -1)) {
                 var coding = element.strip();
                 if (!coding.isEmpty() && !coding.equalsIgnoreCase("identity")) {
                     throw new WebException(415, null, "Content-Encoding " + Text.quote(coding)
-                            + " is not supported; send the body without content coding.", ACCEPT_IDENTITY);
+                            + " is not supported; send the body without content coding.", accept);
                 }
             }
         }
@@ -95,8 +103,11 @@ final class JsonBody {
         return Optional.of(single(values, detail -> new WebException(415, detail)));
     }
 
-    /** The one {@code Content-Type} in {@code values} (not empty), parsed; otherwise {@code error}'s 415. */
-    private static MediaType single(List<String> values, Function<String, WebException> error) {
+    /**
+     * The one {@code Content-Type} in {@code values} (not empty), parsed; otherwise
+     * {@code error}'s 415. Shared with {@link FormBody}.
+     */
+    static MediaType single(List<String> values, Function<String, WebException> error) {
         if (values.size() > 1) {
             throw error.apply("Content-Type is given " + values.size() + " times; send it once.");
         }

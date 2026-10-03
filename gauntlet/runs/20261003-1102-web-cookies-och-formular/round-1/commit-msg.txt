@@ -1,0 +1,13 @@
+feat(web): add cookies, ResponseCookie and form bodies to spola.web
+
+Requests can read cookies lazily and once per request. Malformed pairs are
+skipped, and more than 200 cookies give 400. ResponseCookie validates names,
+values, attributes and the __Secure-/__Host- prefixes, with safe defaults,
+and writes each cookie as its own Set-Cookie field. readForm/FormData parse
+url-encoded bodies with 415/413/400 checks and maxFormSize. Row 08 is done.
+
+Gauntlet-Run: 20261003-1102-web-cookies-och-formular
+Gauntlet-Round: 1/5
+Gauntlet-Verdict: PASS (0 blocker, 0 major, 6 minor upheld)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>

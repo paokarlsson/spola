@@ -1868,3 +1868,150 @@ Interna klasser: `MediaTypeParser` (den strikta parsern, delad av `MediaType` oc
 - **`produces`/`consumes` är inte en del av routingen.** Handlern förhandlar (`readJson` ger
   415, `negotiate`/`Responses.json` 406). Det håller routingen oberoende av huvuden och gör
   förhandlingen synlig i koden (REGLER §4).
+
+## Web del 3: cookies, `Set-Cookie` och formulärkroppar (`spola.web`)
+
+Uppdrag 08c, sista delen av rad 08 i `PLAN.md` (efter 08a och 08b). Cookies in, `Set-Cookie`
+ut och `application/x-www-form-urlencoded`-kroppar. Multipart, filuppladdning, sessioner,
+signerade cookies och CSRF ligger utanför (uppdrag 11); mappning av formulär till records med
+fel per fält kommer med validering i uppdrag 09.
+
+### API (paket `spola.web`)
+
+| Typ | Roll |
+|---|---|
+| `WebRequest` (nytt) | `cookie(name)`, `cookieAll(name)`, `cookie(name, Param)`, `cookies()`, `readForm()`, `readForm(maxBytes)` |
+| `ResponseCookie` | oföränderlig: `of(name, value)`, `expire(name)` ger en oföränderlig `Builder` (`path`, `domain`, `maxAge`, `secure`, `httpOnly`, `sameSite`, `build()`); `SameSite { STRICT, LAX, NONE }`; `headerValue()`/`toString()` |
+| `Responses` (nytt) | `withCookie(Response, ResponseCookie)` |
+| `FormData` | oföränderlig: `first`, `all`, `get(name, Param)`, `required(name, Param)`, `asMap`, `isEmpty` |
+| `RouterBuilder` (nytt) | `maxFormSize(int)` |
+| `MediaType` (nytt) | `APPLICATION_FORM_URLENCODED` |
+
+Interna klasser: `CookieState` (cookieparsningen, lat och högst en gång per förfrågan, delad
+av alla `WebRequest` från samma förfrågan som `QueryState`) och `FormBody` (reglerna i
+`readForm`). `BodyState` har fått routerns `maxFormSize` och `claimForForm`.
+`JsonBody.checkEncoding(headers, accept)` och `JsonBody.single` delas med `FormBody`, och
+`Decoding.parseQuery(raw, subject)` ger detaljen `The form body ...` i stället för
+`The query ...`. Inga ändringar i `spola.http`, inga nya `requires`, ingen reflektion.
+
+### Beslut
+
+- **Så tolkas `Cookie` (RFC 6265 §4.2.1 och §5.4).** Alla `Cookie`-fält läses i ordning och
+  behandlas som om de skilts med `"; "`. Varje fält delas på `;`; varje bit trimmas på
+  mellanslag och tab; en tom bit (`;;`, avslutande `;`) och en bit utan `=` hoppas över.
+  Namnet är texten före första `=` och måste vara en `token` (RFC 9110 §5.6.2), så ett tomt
+  namn, ett namn med mellanslag (även `a =1`), citattecken eller andra avgränsare hoppas över.
+  Värdet är resten och måste vara `*cookie-octet` (`%x21 / %x23-2B / %x2D-3A / %x3C-5B /
+  %x5D-7E`) eller detsamma inom `"`. Ett värde med mellanslag, tab, komma, `\`, `"` mitt i,
+  styrtecken eller icke-ASCII (obs-text som HTTP-parsern släpper igenom som U+0080–U+00FF)
+  hoppas över. Namn jämförs skiftlägeskänsligt. Resultatet är en oföränderlig, ordnad
+  `Map<String, List<String>>` (namn i den ordning de först förekommer, värden i ordning).
+- **Felaktiga par hoppas över, de ger inte 400.** Andra applikationer på samma webbplats
+  (en annan sökväg, en underdomän, ett analysskript) kan sätta cookies som webbläsaren
+  skickar med till Spola. En 400 för en cookie som applikationen inte ens läser skulle låsa
+  ute användaren tills cookien går ut, och användaren kan inte göra något åt det. Tomcats
+  `Rfc6265CookieProcessor` gör likadant. Överhoppade par loggas inte per förfrågan (det vore
+  en loggflod som en klient styr).
+- **Högst 200 cookies.** Fler än 200 giltiga par (efter överhoppning, alla `Cookie`-fält
+  tillsammans) ger 400 `The request has more than 200 cookies.`, utan namn eller värden.
+  Gränsen begränsar mappens storlek; huvudets storlek begränsas redan av
+  `HttpLimits.maxHeaderSectionSize` (16 KiB). 200 räcker långt över webbläsarnas gräns per
+  domän (180 i Chrome). Precis som för queryn ger en för stor `Cookie` 400 bara om något
+  läser cookies, och felet behålls för senare anrop.
+- **Citattecken behålls, ingen avkodning.** Enligt RFC 6265 §4.1.1 är citattecknen en del av
+  `cookie-value`, och servern kan inte veta om applikationen som satte cookien menade dem.
+  Värdet är opakt för ramverket: ingen procentavkodning, ingen Base64. `cookie(name,
+  Param.INT)` för `x="5"` ger därför 400. En applikation som kodar sina värden avkodar dem
+  själv.
+- **Typade cookies som queryn.** `cookie(name, Param)` använder `Param.convert` med typen
+  `cookie`: `Invalid cookie "x": expected int, got "abc".`, namn och värde escapade och
+  kortade till 40 tecken.
+- **`ResponseCookie` har säkra standardvärden.** `Path=/`, `HttpOnly` och `SameSite=Lax`;
+  utan `maxAge` en sessionscookie. `Path=/` gör att cookien gäller hela applikationen (utan
+  `Path` sätter webbläsaren sökvägen till förfrågans katalog, vilket sällan är avsikten).
+  `HttpOnly` skyddar mot att skript läser cookien (XSS), och den som vill att skript ska läsa
+  den slår av det uttryckligen. `Lax` är webbläsarnas standard och skyddar mot de flesta
+  CSRF-angrepp. `Secure` är inte standard, eftersom utveckling över `http://localhost` annars
+  inte fungerar (webbläsaren sparar inte en `Secure`-cookie från `http`); den anges med
+  `secure(true)`. Spring har inga standardvärden; avvikelsen står i README.
+- **Validering när cookien byggs.** `build()` ger `IllegalArgumentException` med ett kort
+  meddelande där namn och värden är escapade och kortade (`Text.quote`), så meddelandet är
+  utskrivbar ASCII. Namnet ska vara en `token`; värdet `*cookie-octet` eller citerat (så att
+  inget `;`, `,`, mellanslag eller CR/LF kan injicera attribut eller fält); `path` ska börja
+  med `/` och bestå av US-ASCII utan styrtecken och `;` (RFC 6265 `path-value`); `domain`
+  ska vara LDH-etiketter (bokstäver, siffror, bindestreck, inte först eller sist, 1–63 tecken)
+  med punkter, högst 253 tecken, och en inledande punkt tas bort (RFC 6265 §5.2.3 ignorerar
+  den ändå); `maxAge` får inte vara negativ och ska vara hela sekunder (`Max-Age` har inga
+  bråkdelar, och en avrundning nedåt kunde göra 500 ms till `Max-Age=0`, alltså en borttagen
+  cookie). Kontrollerna görs i `build()`, inte i varje setter, så att ordningen mellan
+  setters inte spelar roll (`__Host-` med `secure(true)` sist är giltigt).
+- **Prefixreglerna (RFC 6265bis §4.1.3).** `SameSite=None` kräver `Secure` (webbläsare
+  avvisar annars cookien). Ett namn som börjar med `__Secure-` kräver `Secure`. Ett namn som
+  börjar med `__Host-` kräver `Secure`, `Path=/` och ingen `domain`. Prefixen jämförs
+  skiftlägeskänsligt, som uppdraget anger; `__host-x` är ett vanligt namn. Felet kommer när
+  cookien byggs, inte först när webbläsaren tyst kastar den.
+- **Oföränderlig builder.** `ResponseCookie.Builder` returnerar en ny builder från varje
+  metod, så en bas (`ResponseCookie.of("s", v).secure(true)`) kan delas mellan trådar och
+  återanvändas. `expire(name)` ger tomt värde och `Max-Age=0` med samma builder (så en cookie
+  med annan `path`/`domain` går att ta bort); `maxAge(...)` på en sådan builder ger
+  `IllegalStateException`, eftersom en borttagning med en livslängd är en motsägelse.
+- **Inget `Expires`, bara `Max-Age`.** `Expires` är ett datum i serverns klocka och kräver
+  datumformatering; `Max-Age` är relativt, går före `Expires` enligt RFC 6265 §5.3 och
+  förstås av alla webbläsare i bruk. Spring skriver båda. En känd följd: JDK:ns
+  `java.net.HttpCookie` gissar RFC 2965 när `Max-Age` finns utan `Expires`, och
+  `CookieManager` skickar då tillbaka `$Version="1"; namn="värde";$Path=...`. Värdet kommer
+  med citattecken, som Spola behåller, så en Java-klient med `CookieManager` ser en annan
+  cookie än den som sattes. Webbläsare följer RFC 6265 och berörs inte, och
+  sessionscookies (utan `maxAge`) fungerar med `CookieManager`; ett test fäster beteendet och
+  README-exemplet använder en sessionscookie. Står i PROGRESS under kända problem.
+- **Fast ordning i `Set-Cookie`.** `name=value; Path=...; Domain=...; Max-Age=...; Secure;
+  HttpOnly; SameSite=...`: samma cookie ger alltid samma text, så tester kan jämföra exakt och
+  `equals` jämför texten.
+- **Ett `Set-Cookie`-fält per cookie.** `Responses.withCookie` lägger till ett fält med
+  `Response.withHeader`, och `spola.http` skriver varje fält på en egen rad (testat med rå
+  socket). Cookies slås aldrig ihop med komma (RFC 6265 §3, RFC 9110 §5.3: `Set-Cookie` är
+  undantaget från kommaregeln, eftersom `Expires` innehåller komma). Inget behövde ändras i
+  `spola.http`: `Headers` tillåter redan flera fält med samma namn.
+- **Ordningen i `readForm` och statuskoderna.** Samma ordning som `readJson`, med samma
+  hjälpare:
+  1. `Content-Encoding` som inte är `identity`: 415 med
+     `Accept: application/x-www-form-urlencoded` och `Accept-Encoding: identity`.
+  2. Saknat, felaktigt, upprepat eller annat `Content-Type` än
+     `application/x-www-form-urlencoded`, eller en `charset` som inte är UTF-8 (utan hänsyn
+     till skiftläge): 415 med `Accept: application/x-www-form-urlencoded`. Andra parametrar
+     ignoreras.
+  3. Kroppen läses strömmande genom `JsonBody.LimitedInput` till högst `maxBytes + 1` byte.
+     Över gränsen: 413 `Request body is larger than N bytes.`, och läsningen avbryts (testat
+     med en oändlig ström: exakt `max + 1` byte läses). Minnet begränsas alltså av gränsen,
+     inte av kroppen. Standard är 2 MiB (Tomcats `maxPostSize`), routerns standard ändras med
+     `RouterBuilder.maxFormSize` och `readForm(maxBytes)` går före den. En
+     `RequestBodyException` från `spola.http` (över `maxBodySize`, trasig ramning) passerar
+     oförändrad, så servern svarar med kroppens status.
+  4. En byte över 0x7F: 400 (en formulärkropp är procentkodad US-ASCII; en rå byte skulle
+     annars tolkas i fel teckenkodning). Därefter `Decoding.parseQuery` med samma regler som
+     queryn (WHATWG URL §5.1, `+` som mellanslag, strikt UTF-8, högst 1 000 par). Fel ger 400
+     med en fast detalj (`The form body is not valid percent-encoded UTF-8.`,
+     `The form body has more than 1000 parameters.`) utan text ur kroppen. Eftersom
+     `Decoding.decode` bara godtar synlig ASCII ger också råa mellanslag och radbrytningar 400.
+
+  Alla fel är `WebException` och går genom routerns mappers; `FormData.required`/`get` ger
+  400 med `form field` i detaljen (`Missing form field "age".`).
+- **En tom kropp är ett tomt formulär.** Ett HTML-formulär utan fält (eller med bara
+  avmarkerade kryssrutor) skickar en tom kropp, och det är giltigt. `readJson` ger 400 för en
+  tom kropp eftersom tom text inte är JSON; för formulär är tom text en giltig serialisering
+  av noll fält.
+- **Formulär och query slås inte ihop.** Springs `@RequestParam` läser servletens "request
+  parameters", där queryn och formuläret är sammanslagna; vilket värde som kommer först beror
+  på containern. I Spola väljer handlern uttryckligen `request.query(...)` eller
+  `request.readForm()`, och samma namn i båda ger olika värden (testat). Det gör källan till
+  varje värde synlig (REGLER §4) och hindrar att en query-parameter i en länk skuggar ett
+  formulärfält.
+- **`BodyState` delas med `readJson`.** Kroppen kan läsas en gång: `readForm` och `readJson`
+  gör anspråk på den med `compareAndExchange`, så ett andra `readForm`, `readForm` efter
+  `readJson`, `body()` eller `bytes()`, och `readJson`/`body()`/`bytes()` efter `readForm`,
+  ger `IllegalStateException` (500, loggat) oavsett vilken `withAttribute`-kopia som används.
+  Anspråket görs före kontrollerna, så ett misslyckat `readForm` (415) räknas också som
+  läsning.
+- **Trådsäkerhet.** `ResponseCookie`, dess `Builder` och `FormData` är oföränderliga.
+  `CookieState` synkroniserar som `QueryState`; inget tillstånd delas mellan förfrågningar
+  (`CookieState` och `BodyState` skapas per förfrågan i `Router.handle`).

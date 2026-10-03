@@ -43,6 +43,9 @@ public record MediaType(String type, String subtype, Map<String, String> paramet
     /** {@code application/problem+json} (RFC 9457). */
     public static final MediaType APPLICATION_PROBLEM_JSON = of("application", "problem+json");
 
+    /** {@code application/x-www-form-urlencoded}, the type of an HTML form body. */
+    public static final MediaType APPLICATION_FORM_URLENCODED = of("application", "x-www-form-urlencoded");
+
     /** {@code text/plain}. */
     public static final MediaType TEXT_PLAIN = of("text", "plain");
 

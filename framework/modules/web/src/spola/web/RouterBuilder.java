@@ -64,6 +64,7 @@ public final class RouterBuilder {
     private final List<Registration> registrations = new ArrayList<>();
     private final List<Router.MapperEntry<?>> mappers = new ArrayList<>();
     private JsonLimits jsonLimits = JsonLimits.DEFAULT;
+    private int maxFormSize = FormBody.DEFAULT_MAX_SIZE;
     private System.Logger log = System.getLogger("spola.web");
 
     RouterBuilder() {
@@ -214,6 +215,25 @@ public final class RouterBuilder {
     }
 
     /**
+     * Sets the largest form body {@link WebRequest#readForm()} reads for every route: 2 MiB
+     * ({@code 2 * 1024 * 1024} bytes, as Tomcat's {@code maxPostSize}) unless set. A larger body
+     * gets 413, and reading stops one byte past the limit. A handler can pass its own limit to
+     * {@link WebRequest#readForm(int)}. The server's {@code HttpLimits.maxBodySize} still applies
+     * to every body, whatever this says.
+     *
+     * @param maxBytes the limit in bytes, at least 1
+     * @return this builder
+     * @throws IllegalArgumentException if {@code maxBytes} is less than 1
+     */
+    public RouterBuilder maxFormSize(int maxBytes) {
+        if (maxBytes < 1) {
+            throw new IllegalArgumentException("maxFormSize must be at least 1, was " + maxBytes);
+        }
+        this.maxFormSize = maxBytes;
+        return this;
+    }
+
+    /**
      * Checks everything registered and builds the router. The builder can be used further;
      * later changes do not affect the router.
      *
@@ -259,7 +279,8 @@ public final class RouterBuilder {
         if (!problems.isEmpty()) {
             throw new RouterDefinitionException(problems);
         }
-        return new Router(new RouteTable(routes), List.copyOf(root.filters), Map.copyOf(byClass), jsonLimits, log);
+        return new Router(new RouteTable(routes), List.copyOf(root.filters), Map.copyOf(byClass), jsonLimits, maxFormSize,
+                log);
     }
 
     /** The route of a registration, or {@code null} after adding its problems. */

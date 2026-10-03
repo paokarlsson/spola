@@ -12,7 +12,7 @@ import spola.json.codec.JsonMappingException;
 
 /**
  * Responses with a JSON body, the counterpart of Spring's {@code @ResponseBody} and
- * {@code ResponseEntity}:
+ * {@code ResponseEntity}, and cookies on a response ({@link #withCookie}):
  *
  * <pre>{@code
  * Response show(WebRequest request) {
@@ -115,6 +115,26 @@ public final class Responses {
      */
     public static Response noContent() {
         return Response.status(204);
+    }
+
+    /**
+     * A copy of {@code response} with one more {@code Set-Cookie} field for {@code cookie}, the
+     * counterpart of {@code ResponseEntity.ok().header(HttpHeaders.SET_COOKIE, cookie.toString())}.
+     * Every cookie gets a field of its own: several cookies are never joined with commas (RFC
+     * 6265 §3), and the server writes each field on its own line.
+     *
+     * <pre>{@code
+     * return Responses.withCookie(Response.text(200, "ok"), ResponseCookie.of("theme", "dark").build());
+     * }</pre>
+     *
+     * @param response the response
+     * @param cookie   the cookie
+     * @return the copy
+     */
+    public static Response withCookie(Response response, ResponseCookie cookie) {
+        Objects.requireNonNull(response, "response");
+        Objects.requireNonNull(cookie, "cookie");
+        return response.withHeader("Set-Cookie", cookie.headerValue());
     }
 
     private static Response body(int status, JsonValue json) {

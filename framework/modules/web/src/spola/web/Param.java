@@ -9,8 +9,9 @@ import java.util.Objects;
 import java.util.function.Function;
 
 /**
- * A typed conversion of a path variable or a query parameter, the counterpart of the type
- * conversion Spring applies to {@code @PathVariable} and {@code @RequestParam}:
+ * A typed conversion of a path variable, a query parameter, a cookie or a form field, the
+ * counterpart of the type conversion Spring applies to {@code @PathVariable},
+ * {@code @RequestParam} and {@code @CookieValue}:
  *
  * <pre>{@code
  * long id = request.pathParam("id", Param.LONG);
@@ -112,7 +113,8 @@ public final class Param<T> {
     /**
      * Converts {@code text}.
      *
-     * @param kind  {@code "path parameter"} or {@code "query parameter"}, for the detail
+     * @param kind  {@code "path parameter"}, {@code "query parameter"}, {@code "cookie"} or
+     *              {@code "form field"}, for the detail
      * @param name  the parameter's name, for the detail
      * @param text  the decoded value
      * @return the value
