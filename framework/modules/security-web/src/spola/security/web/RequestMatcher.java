@@ -1,5 +1,6 @@
 package spola.security.web;
 
+import java.util.Locale;
 import java.util.Objects;
 import spola.web.WebRequest;
 
@@ -86,13 +87,20 @@ public interface RequestMatcher {
      * @param inner  the matcher for the rest, such as {@code under("/admin")}
      * @return the matcher
      * @throws NullPointerException     if an argument is {@code null}
-     * @throws IllegalArgumentException if {@code method} is not a token
+     * @throws IllegalArgumentException if {@code method} is not a token, or is a standard method
+     *                                  in the wrong case (such as {@code "get"}), which would never
+     *                                  match and let requests fall through to later rules
      */
     static RequestMatcher method(String method, RequestMatcher inner) {
         Objects.requireNonNull(method, "method");
         Objects.requireNonNull(inner, "inner");
         if (!Matchers.isToken(method)) {
             throw new IllegalArgumentException("method " + Text.quote(method) + " is not a token (RFC 9110 5.6.2)");
+        }
+        var upper = method.toUpperCase(Locale.ROOT);
+        if (!upper.equals(method) && Matchers.STANDARD_METHODS.contains(upper)) {
+            throw new IllegalArgumentException("method " + Text.quote(method)
+                    + " never matches: methods are case-sensitive, use " + Text.quote(upper));
         }
         return new Matchers.Method(method, inner);
     }

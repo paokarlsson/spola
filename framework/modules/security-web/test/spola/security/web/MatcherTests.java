@@ -135,6 +135,17 @@ final class MatcherTests {
                     assertThrows(NullPointerException.class, () -> RequestMatcher.method("GET", null));
                     assertSame(RequestMatcher.anyRequest(), RequestMatcher.anyRequest());
                 }),
+                test("a standard method in the wrong case is refused instead of a rule that never matches", () -> {
+                    for (var wrong : List.of("get", "Post", "dElEtE", "patch")) {
+                        var e = assertThrows(IllegalArgumentException.class,
+                                () -> RequestMatcher.method(wrong, RequestMatcher.under("/admin")));
+                        assertEquals("method \"" + wrong + "\" never matches: methods are case-sensitive, use \""
+                                + wrong.toUpperCase(java.util.Locale.ROOT) + "\"", e.getMessage());
+                    }
+                    // An extension method keeps its exact case, as the router does.
+                    RequestMatcher.method("purge", RequestMatcher.anyRequest());
+                    RequestMatcher.method("GET", RequestMatcher.anyRequest());
+                }),
                 test("method(GET, under(/admin)) with hasRole(ADMIN) before anyRequest().permitAll(): 401 for GET and HEAD",
                         () -> {
                             var security = WebSecurity.builder()

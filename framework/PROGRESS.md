@@ -565,7 +565,10 @@
 - `RequestMatcher` (`under`, `exactly` på avkodade segment, `method` där `GET` också matchar
   `HEAD`, `anyRequest`, lambdor) och `AccessRule` (`permitAll`, `denyAll`, `authenticated`,
   `hasRole`, `hasAnyRole`, lambdor). `build()` avvisar regler efter `anyRequest()` med en rad per
-  problem.
+  problem. `method` avvisar en standardmetod med fel skiftläge (`"get"`) med
+  `IllegalArgumentException`, eftersom den aldrig skulle matcha och anropet då föll igenom till
+  en senare regel (fynd BRK-1 i 10b, rättat efter körningen). Utökningsmetoder behåller sitt
+  exakta skiftläge, som i routern.
 - 401: `Problem.of(401)` med `WWW-Authenticate: Basic realm="...", charset="UTF-8"` per
   `HttpBasic`; 403: `Problem.of(403)` utan `WWW-Authenticate`; båda med
   `Cache-Control: no-store`, utan `detail` och lika oavsett orsak.
@@ -573,7 +576,7 @@
   test) bredvid Spring Security (`SecurityFilterChain`-böna med `authorizeHttpRequests`,
   `httpBasic()`, `@PreAuthorize`, `@AuthenticationPrincipal`), jämförelsetabell och
   avvikelsetabell.
-- 46 tester i `spola.security.web` (under 1 s): Basic genom en riktig server (rå socket och
+- 47 tester i `spola.security.web` (under 1 s): Basic genom en riktig server (rå socket och
   `HttpClient`), 32 felaktiga `Authorization`-värden, RFC 7617-exemplen, räknande
   `Authenticator`, lagring som kastar, matchers mot avkodade och avvisade sökvägar, `HEAD`,
   regelordning, roller, undantag i matchers/regler/mekanismer, `require`, saknat och dubbelt

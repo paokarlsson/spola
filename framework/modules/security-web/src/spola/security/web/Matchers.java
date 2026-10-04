@@ -3,6 +3,7 @@ package spola.security.web;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
+import java.util.Set;
 import spola.web.WebRequest;
 
 /** The implementations behind {@link RequestMatcher}'s factories. */
@@ -97,6 +98,10 @@ final class Matchers {
         }
         return List.copyOf(segments);
     }
+
+    /** The methods of RFC 9110 §9 and RFC 5789, in their only valid (upper) case. */
+    static final Set<String> STANDARD_METHODS =
+            Set.of("GET", "HEAD", "POST", "PUT", "DELETE", "CONNECT", "OPTIONS", "TRACE", "PATCH");
 
     /** Whether {@code text} is a {@code token} (RFC 9110 §5.6.2): one or more {@code tchar}. */
     static boolean isToken(String text) {
