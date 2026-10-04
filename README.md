@@ -101,6 +101,7 @@ finns i git och i körningsloggarna.
 | Katalog | Innehåll |
 | --- | --- |
 | `framework/` | Ramverket |
+| `docs/` | [Säljmaterial](docs/saljmaterial.md): pitch, Spring-jämförelse och ärligt läge |
 | `uppdrag/` | Färdplanen och uppdragen, klara uppdrag i `uppdrag/klara/` |
 | `gauntlet/` | `LOG.md` med en rad per iteration och körningarna i `runs/` |
 | `scripts/gauntlet.sh` | Den yttre loopen |
