@@ -25,6 +25,12 @@
  *       {@link spola.web.ResponseCookie} with {@code Responses.withCookie} out
  *       ({@code ResponseCookie}), and {@code application/x-www-form-urlencoded} bodies with
  *       {@code WebRequest.readForm} and {@link spola.web.FormData}.</li>
+ *   <li>Sessions ({@code HttpSession}, {@code server.servlet.session.*}):
+ *       {@link spola.web.Sessions} with {@link spola.web.Session} and
+ *       {@link spola.web.SessionOptions} keeps sessions in memory, identified by a random id in
+ *       a cookie, created only when something is stored, with an idle timeout, a limit (503)
+ *       and a new id on demand ({@code changeSessionId}); its filter is registered on the
+ *       router.</li>
  *   <li>Validation and binding ({@code @Valid}, {@code @ModelAttribute},
  *       {@code MethodArgumentNotValidException}): {@code WebRequest.readJson(codec, validator)},
  *       {@code readForm(binder, validator)} and {@code bindQuery(binder, validator)} with a

@@ -16,7 +16,8 @@ JSON-kroppar in och ut med en uttrycklig `JsonCodec` (`request.readJson(codec)`,
 formulärkroppar (`request.readForm()`, `FormData`) kom i 08c. Validering med
 `spola.validation` (`request.readJson(codec, validator)`) och formulärbindning till records
 (`FormBinder`, `request.readForm(binder, validator)`, `request.bindQuery(binder, validator)`)
-med fel per fält i `errors` kom i 09b.
+med fel per fält i `errors` kom i 09b. Sessioner i minnet med en sessionscookie (`Sessions`,
+`Session`, `SessionOptions`) kom i 11a.
 
 | Spring MVC | Spola |
 |---|---|
@@ -49,6 +50,16 @@ med fel per fält i `errors` kom i 09b.
 | `MethodArgumentNotValidException` → 400 | `WebException.invalid(...)`: 400 med `errors` (`path`, `message`, `code`) |
 | `FieldError.getCode()` | `Problem.FieldError.code()` (`Optional<String>`) |
 | `@ExceptionHandler(ConstraintViolationException.class)` | `onException(ValidationException.class, (e, r) -> WebException.invalid(e).toResponse(r))` |
+| `HttpSession` som parameter, `request.getSession()` | `Sessions.getOrCreate(request)` (`Session`) |
+| `request.getSession(false)` | `Sessions.find(request)` (`Optional<Session>`) |
+| `session.getAttribute("cart")` med cast | `session.get(CART)` med `AttributeKey<Cart>` (`Optional<Cart>`) |
+| `session.setAttribute("cart", cart)`, `removeAttribute` | `session.put(CART, cart)`, `session.remove(CART)` |
+| `request.changeSessionId()` | `Sessions.renew(request)` |
+| `session.invalidate()` | `Sessions.invalidate(request)` |
+| `server.servlet.session.timeout=30m` | `SessionOptions.DEFAULT.withIdleTimeout(Duration.ofMinutes(30))` |
+| `server.servlet.session.cookie.secure=true` | `withCookie(cookie -> cookie.secure(true))` |
+| `server.servlet.session.cookie.name` | `withCookieName("__Host-SESSION")` |
+| Tomcats `maxActiveSessions` | `withMaxSessions(10_000)` (standard 10 000) |
 
 ## Ett komplett exempel
 
@@ -565,6 +576,212 @@ kör det genom en riktig server, också med `HttpClient` och en `CookieManager`.
   tar bort en cookie (`Max-Age=0`). `Responses.withCookie` lägger till ett eget
   `Set-Cookie`-fält per cookie.
 
+## Sessioner
+
+Sessioner i minnet, motsvarigheten till servlet-API:ts `HttpSession` med Spring Boots
+`server.servlet.session.*`: en session per webbläsare, identifierad av ett slumpat id i en
+cookie, med typade attribut, utgång efter inaktivitet, en övre gräns för antalet sessioner, nytt
+id (`request.changeSessionId()`) och ogiltigförklaring (`session.invalidate()`). Koden är
+säkerhetskritisk, eftersom sessions-id:t kan bära en inloggning, och bör granskas av en människa
+innan den används på riktigt.
+
+### Spring Boot
+
+```properties
+# application.properties
+server.servlet.session.timeout=30m
+server.servlet.session.cookie.secure=true
+```
+
+```java
+record Cart(List<String> items) implements Serializable {
+    static final Cart EMPTY = new Cart(List.of());
+
+    Cart add(String item) {
+        var more = new ArrayList<>(items);
+        more.add(item);
+        return new Cart(List.copyOf(more));
+    }
+}
+
+@RestController
+class CartController {
+
+    @PostMapping(path = "/cart/items", consumes = MediaType.APPLICATION_FORM_URLENCODED_VALUE)
+    ResponseEntity<Void> add(@RequestParam String item, HttpSession session) { // creates the session
+        var cart = (Cart) session.getAttribute("cart");
+        session.setAttribute("cart", (cart == null ? Cart.EMPTY : cart).add(item));
+        return ResponseEntity.noContent().build();
+    }
+
+    @GetMapping("/cart")
+    String show(HttpServletRequest request) {
+        var session = request.getSession(false);
+        var cart = session == null ? null : (Cart) session.getAttribute("cart");
+        var customer = session == null ? null : (String) session.getAttribute("customer");
+        return (customer == null ? "guest" : customer) + ": " + (cart == null ? List.of() : cart.items());
+    }
+
+    @PostMapping(path = "/sign-in", consumes = MediaType.APPLICATION_FORM_URLENCODED_VALUE)
+    ResponseEntity<Void> signIn(@RequestParam String name, HttpServletRequest request) {
+        request.getSession(); // changeSessionId needs a session
+        request.changeSessionId();
+        request.getSession().setAttribute("customer", name);
+        return ResponseEntity.noContent().build();
+    }
+
+    @PostMapping("/sign-out")
+    ResponseEntity<Void> signOut(HttpServletRequest request) {
+        var session = request.getSession(false);
+        if (session != null) {
+            session.invalidate();
+        }
+        return ResponseEntity.noContent().build();
+    }
+}
+```
+
+### Spola
+
+```java
+import java.io.IOException;
+import java.time.Duration;
+import java.util.ArrayList;
+import java.util.List;
+import spola.http.HttpServer;
+import spola.http.HttpServerOptions;
+import spola.http.Response;
+import spola.web.AttributeKey;
+import spola.web.Param;
+import spola.web.Responses;
+import spola.web.Router;
+import spola.web.Session;
+import spola.web.SessionOptions;
+import spola.web.Sessions;
+import spola.web.WebRequest;
+
+final class CartApp {
+
+    record Cart(List<String> items) {
+        static final Cart EMPTY = new Cart(List.of());
+
+        Cart add(String item) {
+            var more = new ArrayList<>(items);
+            more.add(item);
+            return new Cart(List.copyOf(more));
+        }
+    }
+
+    static final AttributeKey<Cart> CART = AttributeKey.of("cart", Cart.class);
+    static final AttributeKey<String> CUSTOMER = AttributeKey.of("customer", String.class);
+
+    private final Sessions sessions;
+
+    // secure: true over HTTPS, also behind a TLS proxy (Secure is never set from the scheme)
+    CartApp(boolean secure) {
+        sessions = Sessions.inMemory(SessionOptions.DEFAULT
+                .withIdleTimeout(Duration.ofMinutes(30))
+                .withCookie(cookie -> cookie.secure(secure))); // Path=/, HttpOnly, SameSite=Lax
+    }
+
+    // <form method="post" action="/cart/items"> with the field item
+    Response add(WebRequest request) throws IOException {
+        var item = request.readForm().required("item", Param.STRING);
+        Session session = Sessions.getOrCreate(request); // request.getSession()
+        session.put(CART, session.get(CART).orElse(Cart.EMPTY).add(item));
+        return Responses.noContent();
+    }
+
+    Response show(WebRequest request) {
+        var session = Sessions.find(request); // request.getSession(false): never creates a session
+        var cart = session.flatMap(s -> s.get(CART)).orElse(Cart.EMPTY);
+        var customer = session.flatMap(s -> s.get(CUSTOMER)).orElse("guest");
+        return Response.text(200, customer + ": " + cart.items());
+    }
+
+    // a real sign-in checks a password first (spola.security); the new id is what matters here
+    Response signIn(WebRequest request) throws IOException {
+        var name = request.readForm().required("name", Param.STRING);
+        Session session = Sessions.renew(request); // request.changeSessionId(): a new id, the cart stays
+        session.put(CUSTOMER, name);
+        return Responses.noContent();
+    }
+
+    Response signOut(WebRequest request) {
+        Sessions.invalidate(request); // session.invalidate(): the session is gone, the cookie removed
+        return Responses.noContent();
+    }
+
+    Router router() {
+        return Router.builder()
+                .filter(sessions.filter())
+                .post("/cart/items", this::add)
+                .get("/cart", this::show)
+                .post("/sign-in", this::signIn)
+                .post("/sign-out", this::signOut)
+                .build();
+    }
+
+    public static void main(String[] args) throws Exception {
+        // behind a TLS proxy that forwards https://shop.example.com to port 8080
+        var server = HttpServer.start(HttpServerOptions.DEFAULT.withPort(8080), new CartApp(true).router());
+        Runtime.getRuntime().addShutdownHook(new Thread(server::close));
+    }
+}
+```
+
+Exemplet ovan är `modules/web/test/spola/web/CartApp.java` (utan paketraden), och testerna
+kör det genom en riktig server med `HttpClient` och en `CookieManager`.
+
+- **Filtret.** `sessions.filter()` registreras på routern, före filter som använder
+  sessionen. Det läser cookien, slår upp sessionen och lägger förfrågans sessionstillstånd som
+  ett attribut; på svaret lägger det till `Set-Cookie` när sessionen skapats, fått nytt id
+  eller ogiltigförklarats under förfrågan, också på svar från mappade undantag. Filtret skapar
+  aldrig en session själv: en väg som inte sparar något (`/actuator/health`) får ingen.
+  Utan filtret ger `find`, `getOrCreate`, `renew` och `invalidate` `IllegalStateException`
+  (500) med ett meddelande om att registrera `filter()`, och ett filter som når samma
+  förfrågan två gånger (registrerat två gånger, eller två `Sessions` på samma router) ger 500.
+- **Id:t.** 32 byte från en `SecureRandom` (en `new SecureRandom()` per `Sessions`), kodade som
+  Base64url utan utfyllnad: 43 tecken ur `[A-Za-z0-9_-]`, 256 bitar. Bara servern skapar id; ett
+  id som klienten hittat på blir aldrig en session. Lagringen slår upp på SHA-256 av id:t och
+  sparar aldrig själva id:t, så uppslagningen läcker ingen tid om hur mycket av ett id som är
+  rätt. `Session` har ingen `getId()`, och id:t syns aldrig i `toString()`, undantag, loggrader
+  eller problem-svar.
+- **Cookien in.** Alla värden med cookienamnet provas i ordning, och det första som pekar på en
+  levande session används. Ett värde som inte är exakt 43 tecken ur `[A-Za-z0-9_-]` slås aldrig
+  upp; ett felaktigt, okänt eller utgånget värde ger ingen session, inget 400 och inget
+  `Set-Cookie`.
+- **Cookien ut.** `SESSION=<id>; Path=/; HttpOnly; SameSite=Lax` (en sessionscookie) med de
+  attribut som `withCookie` ger: `cookie.secure(true)` ger
+  `SESSION=<id>; Path=/; Secure; HttpOnly; SameSite=Lax`. Funktionen körs en gång, i
+  `Sessions.inMemory`, så fel i inställningarna (`SameSite=None` utan `Secure`, `__Host-` med
+  `Domain`) ger `IllegalArgumentException` vid uppstart. Borttagningen är
+  `SESSION=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax` med samma `Path`, `Domain` och `Secure`.
+  Ett svar får högst ett `Set-Cookie` för sessionen, med det slutliga utfallet, och ett svar som
+  sätter eller tar bort cookien får `Cache-Control: no-store` om det saknar `Cache-Control`.
+- **Livscykeln.** `find` skapar aldrig en session. `getOrCreate` ger den levande sessionen eller
+  skapar en. `renew` ger en levande session ett nytt id atomärt (det gamla slutar gälla direkt,
+  attributen finns kvar) eller skapar en ny; använd den när sessionen får högre behörighet, till
+  exempel vid inloggning (skydd mot session fixation). `invalidate` tar bort sessionen och
+  cookien. Ett `Session`-objekt för en session som ogiltigförklarats eller gått ut ger tomt från
+  `get`, och `put` ger `IllegalStateException`.
+- **Utgång och städning.** En session går ut när `idleTimeout` (standard 30 minuter) har gått
+  sedan den senast användes, och varje förfrågan med cookien räknas som användning. En utgången
+  session tas bort när den slås upp, och filtret städar bort alla utgångna högst en gång per
+  minut. Ingen bakgrundstråd, ingen `close()`.
+- **Gränsen.** Högst `maxSessions` (standard 10 000). När gränsen är nådd även efter städningen
+  ger `getOrCreate` 503 (`application/problem+json`, utan `Set-Cookie`). Befintliga sessioner
+  tas aldrig bort för att ge plats.
+- **I produktion** rekommenderas cookienamnet `__Host-SESSION` med `secure(true)`: webbläsaren
+  behåller då cookien bara för den här värden, över HTTPS och med `Path=/`, så att en underdomän
+  inte kan sätta eller skugga den.
+
+```java
+Sessions sessions = Sessions.inMemory(SessionOptions.DEFAULT
+        .withCookieName("__Host-SESSION")
+        .withCookie(cookie -> cookie.secure(true)));
+```
+
 ## Validering av JSON och formulär
 
 `spola.web` kräver `spola.validation` transitivt, så en handler kan validera det som kommer in
@@ -883,3 +1100,11 @@ Router.builder()
 | Tomma formulärfält | `age=` blir `null` för en `Integer` (tom text omvandlas till `null`, med `StringTrimmerEditor` även blanktecken), men ett bindningsfel för en `int` | Ett tomt värde räknas som saknat för alla `Param` utom `STRING`: `optional` ger tomt, `required` ger felet `required`. För `STRING` är `""` ett värde (`notBlank()` fångar det). |
 | Flera värden för ett fält | `a=1&a=2` till en `String` blir `"1,2"`, till en `Integer` det första värdet | Fler än ett värde för `required`, `optional` och `flag` ger felet `single`. Bara `all` tar emot flera värden. |
 | `ValidationException` från egen kod | `ConstraintViolationException` från en `@Validated`-tjänst ger 500 utan en egen `@ExceptionHandler` | Samma: 500 utan mapper. 400 kräver en uttrycklig rad, `onException(ValidationException.class, (e, r) -> WebException.invalid(e).toResponse(r))`. |
+| Sessionens id | `HttpSession.getId()` ger id:t | Ingen `getId()`: id:t är en hemlighet som bara cookien bär, och applikationen behöver det inte. `Session.toString()` visar bara antalet attribut. |
+| Gräns för antalet sessioner | Ingen gräns som standard (Tomcats `maxActiveSessions` är -1). Med en gräns kastar Tomcat `TooManyActiveSessionsException` när en ny session ska skapas | Högst `maxSessions` (standard 10 000). Vid gränsen ger `getOrCreate` 503 (problem-svar utan `Set-Cookie`) i stället för att ta bort sessioner för att ge plats: befintliga sessioner tas aldrig bort, så den som kan skapa sessioner kan inte logga ut andra. |
+| Cookienamn | `JSESSIONID` (Tomcat) | `SESSION`, som Spring Session, i stället för `JSESSIONID`. I produktion rekommenderas `__Host-SESSION` med `secure(true)`. |
+| `Secure` på sessionscookien | Tomcat sätter `Secure` automatiskt när förfrågan kom över HTTPS, och `server.servlet.session.cookie.secure` tvingar det | Inget automatiskt `Secure` över HTTPS: `Secure` sätts bara med `withCookie(cookie -> cookie.secure(true))`, eftersom schemat är `http` bakom en TLS-proxy. |
+| Persistens och flera servrar | Tomcat kan spara sessioner mellan omstarter (`server.servlet.session.persistent`), och Spring Session delar dem mellan servrar med JDBC eller Redis | Ingen persistens och ingen delning: sessionerna finns bara i minnet, försvinner vid omstart och delas inte mellan servrar. Attributen sparas som referenser (ingen serialisering, inget krav på `Serializable`). |
+| Städning av utgångna sessioner | Tomcat städar i en bakgrundstråd | Ingen bakgrundstråd: en utgången session tas bort när den slås upp, filtret städar alla utgångna högst en gång per minut, och alltid innan en ny session nekas vid gränsen. `Sessions` behöver ingen `close()`. |
+| `Cache-Control` för sessionscookien | Inget särskilt utan Spring Security (som sätter `no-cache, no-store` på alla svar) | Ett svar som sätter eller tar bort sessionscookien får `Cache-Control: no-store` om det saknar `Cache-Control`, så att en delad cache aldrig sparar ett svar med ett sessions-id. |
+| Gamla id:t efter `changeSessionId` | En förfrågan som redan har `HttpSession`-objektet fortsätter att använda det | `renew` gäller direkt också för förfrågningar som redan hanteras: en förfrågan som kom med det gamla id:t ser ingen session längre (`get` ger tomt, `put` kastar). |

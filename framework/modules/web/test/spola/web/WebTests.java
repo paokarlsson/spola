@@ -44,6 +44,7 @@ public final class WebTests {
                 FormBinderTests.tests(),
                 ValidatedFormTests.tests(),
                 ValidationReadmeTests.tests(),
+                SessionTests.tests(),
                 SourceRulesTests.tests())
                 .timeout(Duration.ofSeconds(60));
     }

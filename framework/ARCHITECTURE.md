@@ -2550,3 +2550,176 @@ Interna klasser: `Matchers` och `Rules` (implementationerna bakom fabrikerna), `
   `Pbkdf2PasswordHasher.of(10_000, 16, 32)` och en räknande lagring och hasher. Varje svar och
   varje skickat `Authorization`-värde sparas, och `LeakTests` kör sist och letar efter markörer
   (`zUsr`, `zPwd`, RFC-exemplen, varje skickat värde) i alla svar och loggrader.
+
+## Sessioner (`spola.web`)
+
+Uppdrag 11a, första delen av behovet "Inloggning med sessioner och CSRF-skydd för ett JSON-API"
+(appen psykologen). HTTP-sessioner i minnet, motsvarigheten till servlet-API:ts `HttpSession`
+med Spring Boots `server.servlet.session.*`. **11b** (inloggning och utloggning med sessionen i
+`spola.security.web`) och **11c** (CSRF-skydd med `XSRF-TOKEN`) bygger på det här. Sessions-id:t
+ska bära inloggningen i 11b, så koden är säkerhetskritisk och bör granskas av en människa.
+
+### API (paket `spola.web`)
+
+| Typ | Roll |
+|---|---|
+| `Sessions` | final, oföränderlig konfiguration, trådsäker: `inMemory(SessionOptions)`, `inMemory(SessionOptions, InstantSource)`, `filter()`, `size()`; statiska `find(request)` → `Optional<Session>`, `getOrCreate(request)`, `renew(request)` → `Session`, `invalidate(request)` |
+| `Session` | final, trådsäker: `get(AttributeKey<T>)` → `Optional<T>`, `put(AttributeKey<T>, T)`, `remove(AttributeKey<?>)`; ingen `id()` |
+| `SessionOptions` | record `(idleTimeout, maxSessions, cookieName, cookie)` med `DEFAULT` (30 minuter, 10 000, `SESSION`, oförändrad builder) och `withX` |
+
+Interna klasser: `SessionEntry` (en session i lagringen: attribut, nyckel, senaste användning,
+generation), `SessionState` (förfrågans sessionstillstånd, attributet som filtret lägger på
+förfrågan), `Sessions.Key` (SHA-256 av ett id som fyra `long`) och `Sessions.Issued` (en ny
+session med sitt id, bara mellan skapandet och förfrågans tillstånd). Inga nya `requires`
+(`SecureRandom`, `MessageDigest` och `Base64` finns i `java.base`), inga ändringar i
+`spola.http` eller någon annan modul, ingen reflektion och inga loggrader.
+
+### Beslut
+
+- **I `spola.web`, inte i en ny modul eller i `spola.security.web`.** Sessioner hör till
+  webblagret i Spring (servlet-API:ts `HttpSession`, Tomcats sessionshantering), inte till Spring
+  Security, och de används också utan inloggning (en varukorg, ett formulär i flera steg).
+  `MONSTER.md` säger att en befintlig modul byggs ut före en ny, och allt som behövs finns i
+  `spola.web` (`Filter`, attribut, `cookieAll`, `ResponseCookie`, `WebException`) och i
+  `java.base`. En egen modul hade krävt en brygga till `spola.web` för samma typer. 11b kopplar
+  sessionen till `spola.security.web`, som redan kräver `spola.web`.
+- **API:ts form: statiska metoder som tar förfrågan.** Att skapa, förnya och ogiltigförklara
+  ändrar svaret (`Set-Cookie`), och tillståndet för det hör till förfrågan, inte till sessionen:
+  samma `Session` kan användas av flera samtidiga förfrågningar, men bara förfrågan vet vilken
+  cookie dess svar ska ha. Därför är `find`, `getOrCreate`, `renew` och `invalidate` statiska
+  metoder på `Sessions` som läser förfrågans tillstånd, på samma sätt som
+  `WebSecurity.identity(request)` i 10b, och `Session` har bara attributen. Tillståndet ligger
+  som attribut under en nyckel som bara `Sessions` har (`withAttribute`), inte i en
+  `ThreadLocal`: det följer förfrågan som ett värde och kan inte läcka mellan förfrågningar på
+  samma tråd. Utan filtret saknas attributet och metoderna kastar `IllegalStateException` (500)
+  med ett meddelande om att registrera `filter()`, så att en glömd registrering märks i stället
+  för att alla förfrågningar ser ut att sakna session (samma skäl som i 10b). Når filtret en
+  förfrågan som redan har tillståndet (registrerat två gånger, på routern och i en grupp, eller
+  två `Sessions` på samma router; nyckeln är gemensam för alla `Sessions`) kastar det
+  `IllegalStateException`.
+- **`Session` är en vy per förfrågan, och `renew` gäller direkt också för förfrågningar som
+  redan hanteras.** Lagringen håller en `SessionEntry` med en generation som `renew` räknar upp.
+  Filtret ger förfrågan en `Session` med generationen den hittade, och varje `get`, `put` och
+  `remove` kontrollerar under postens lås att posten lever och att generationen stämmer. När
+  en förfrågan förnyar sessionen följer dess egen vy med (samma objekt fungerar efter `renew`),
+  medan andra förfrågningars vyer, som kom med det gamla id:t, ser en avslutad session: `get`
+  ger tomt och `put` kastar. Uppdraget säger att det gamla id:t ska sluta gälla direkt. Utan
+  generationen skulle en förfrågan som kom med det gamla id:t strax före en inloggning (en
+  angripare som planterat id:t och håller en långsam förfrågan öppen) kunna läsa eller skriva i
+  sessionen efter inloggningen. Uppslagningen kontrollerar dessutom att posten fortfarande ligger
+  under nyckeln den hittades under, så en uppslagning som tävlar med `renew` inte får sessionen.
+  Följden (en känd begränsning): en samtidig förfrågan med det gamla id:t som sedan anropar
+  `getOrCreate` får en ny session och ett eget `Set-Cookie`, och det som webbläsaren tar emot
+  sist gäller. Tomcat låter en förfrågan som redan har `HttpSession`-objektet fortsätta;
+  avvikelsen står i README.
+- **Id:t och slumpkällan.** 32 byte från en `SecureRandom` per `Sessions` (`new
+  SecureRandom()`, alltså plattformens icke-blockerande standard, inte `getInstanceStrong()`
+  som kan blockera på `/dev/random`), kodade som Base64url utan utfyllnad: exakt 43 tecken ur
+  `[A-Za-z0-9_-]`, 256 bitar (behovet kräver minst 128). Bara servern skapar id; ett id som
+  klienten hittat på blir aldrig en session (ingen "adoption"). Byte-arrayen nollställs efter
+  kodningen. En ny nyckel läggs in med `putIfAbsent`, och vid en (i praktiken omöjlig)
+  krock dras ett nytt id.
+- **Uppslagningen på SHA-256.** Lagringen är en `ConcurrentHashMap<Key, SessionEntry>` där
+  nyckeln är SHA-256 av id:ts ASCII-byte (fyra `long`, så `equals` och `hashCode` är billiga).
+  Själva id:t sparas inte i lagringen, i `SessionEntry`, i `Session` eller i något annat fält som
+  lever efter att svaret byggts: förfrågans tillstånd håller ett nytt id bara tills filtret har
+  lagt `Set-Cookie` på svaret och nollar fältet då. Tiden för en uppslagning beror därför bara
+  på hashvärdet av klientens text, inte på hur stor del av ett giltigt id den har gissat rätt
+  (ingen jämförelse tecken för tecken med ett hemligt värde), och en minnesdump innehåller inga
+  giltiga id. Ett värde som inte har exakt formatet (längd 43, alfabetet, alltså inga
+  citattecken, ingen utfyllnad, inga `+` eller `/`) hashas aldrig. Id:t syns aldrig i
+  `toString()` (`Session` visar antalet attribut, `Sessions` antal, gräns, tid och cookienamn,
+  `Key` och de interna klasserna bara sitt namn), i undantag, loggrader eller problem-svar
+  (testat med alla id som testerna sett, se nedan).
+- **Cookien in.** `request.cookieAll(cookieName)`: alla värden provas i ordning och det första som
+  pekar på en levande session används, som i Tomcat; det kan finnas flera när en gammal cookie
+  med en annan `Path` eller `Domain` ligger kvar. Ett felaktigt, okänt eller utgånget värde ger
+  ingen session, inget 400 och inget `Set-Cookie`. En förfrågan med fler än 200 cookies får
+  `cookies()`-tolkningens 400 redan i filtret (fail-closed; gränsen är långt över webbläsarnas).
+- **Cookien ut, och funktionen körs en gång.** `Sessions.inMemory` tillämpar `cookie`-funktionen
+  en gång på `ResponseCookie.of(cookieName, <43 A>)` och bygger resultatet. `null`, ett fel från
+  `build()` (`SameSite=None` utan `Secure`, `__Host-` med `Domain` eller utan `Secure`,
+  felaktig `path`), en builder för ett annat namn eller värde, och `Max-Age=0` (som skulle ta
+  bort cookien direkt) ger `IllegalArgumentException`; ett annat undantag från funktionen släpps
+  igenom oförändrat. Varje sessionscookie byggs sedan som `ResponseCookie.of(cookieName, id)` med
+  mallens attribut (`Path`, `Domain`, `Max-Age`, `Secure`, `HttpOnly`, `SameSite`), och
+  borttagningen som `ResponseCookie.of(cookieName, "")` med samma attribut och sist
+  `maxAge(Duration.ZERO)`, så att `Path`, `Domain` och `Secure` stämmer med cookien som sattes.
+  Uppdraget beskriver funktionen som något som körs på `ResponseCookie.of(cookieName, id)`; för
+  en ren funktion (som `cookie -> cookie.secure(secure)`) är resultatet detsamma, men att köra
+  den en gång gör att fel märks vid uppstart och inte vid första inloggningen, att en funktion
+  med sidoeffekter eller som läser föränderlig konfiguration inte kan ge olika cookies (eller ett
+  undantag) mitt i drift, och att ingen användarkod körs per svar. Standard är `Path=/`,
+  `HttpOnly`, `SameSite=Lax`, ingen `Max-Age` (en sessionscookie). `Secure` sätts bara när
+  funktionen säger det, aldrig efter schemat, eftersom schemat är `http` bakom en TLS-proxy
+  (automatiskt `Secure` efter schemat och `X-Forwarded-Proto` är ett eget behov).
+- **Ett `Set-Cookie` med det slutliga utfallet, och `Cache-Control`.** Förfrågans tillstånd
+  håller ett nytt id (skapad eller förnyad) eller en markering för borttagning, och varje steg
+  ersätter det förra: skapad och sedan ogiltigförklarad ger bara borttagningen, ogiltigförklarad
+  och sedan skapad bara det nya id:t, skapad och förnyad bara det sista id:t. Filtret lägger till
+  fältet på svaret som kommer tillbaka från `next.proceed`, också ett svar från ett mappat
+  undantag (en handler som skapat en session och sedan kastat ger 500 med cookien, eftersom
+  sessionen finns). Ett svar som sätter eller tar bort cookien får `Cache-Control: no-store` om
+  det saknar `Cache-Control`, så att en delad cache inte sparar ett svar med ett sessions-id; ett
+  `Cache-Control` som handlern satt behålls.
+- **Undantag som går förbi filtret, och anrop efter svaret.** Ett undantag som routern inte
+  mappar (en `RequestBodyException`, som servern besvarar, eller ett `Error`) passerar filtret,
+  och då kan inget svar bära ett nytt id. En session som förfrågan skapat eller förnyat kan då
+  aldrig nås och tas bort direkt i stället för att ligga kvar till utgången. När filtret har
+  byggt svaret ger `getOrCreate` (som behöver skapa) och `renew` `IllegalStateException`: id:t
+  skulle aldrig nå webbläsaren (en tråd som lever kvar efter förfrågan). `find` och
+  `invalidate` fungerar fortfarande (`invalidate` utan `Set-Cookie`).
+- **Livscykel.** `find` skapar aldrig en session. `getOrCreate` ger förfrågans levande session
+  eller skapar en. `renew` (`changeSessionId`) ger en levande session ett nytt id under postens
+  lås: den nya nyckeln läggs in, den gamla tas bort, generationen räknas upp, så det gamla id:t
+  slutar gälla när anropet returnerar; attributen behålls och antalet sessioner är oförändrat.
+  Utan session skapar `renew` en ny. `invalidate` avslutar posten (tar bort den ur lagringen och
+  tömmer attributen) och svaret tar bort cookien; utan session gör den ingenting. En avslutad
+  post kommer aldrig tillbaka, och ett `Session`-objekt för den ger tomt från `get`, gör
+  ingenting i `remove` och kastar `IllegalStateException` i `put` (som `HttpSession`). `put`
+  kontrollerar värdet mot nyckelns typ (`ClassCastException` genom en rå nyckel, utan värdet i
+  meddelandet) och avvisar `null` (`NullPointerException`; ta bort med `remove`). Värdena sparas
+  som referenser, utan kopiering eller serialisering.
+- **Utgång och städning utan bakgrundstråd.** En session har gått ut när `nu >= senast använd +
+  idleTimeout`. Att filtret hittar sessionen räknas som användning (även om handlern aldrig
+  läser den), och det gör också att skapa och förnya den; `get` och `put` gör det inte. Tiden
+  kommer från en `InstantSource` (systemklockan om ingen anges; testerna styr den). En utgången
+  post avslutas när den slås upp (av filtret eller av en vy) och tas då bort. Filtret städar
+  dessutom bort alla utgångna poster högst en gång per minut enligt klockan, på en förfrågan som
+  passerar (den som vinner `compareAndSet` på nästa tidpunkt gör jobbet; går klockan bakåt förbi
+  förra städningen städas det direkt). Det finns ingen bakgrundstråd, så `Sessions` behöver ingen
+  `close()` och inga trådar läcker från tester eller omstarter av routern. Kostnaden är en
+  genomgång av alla sessioner på en förfrågans tråd en gång per minut (10 000 som standard).
+- **Gränsen med 503 i stället för att ta bort sessioner.** En `AtomicInteger` räknar sessionerna
+  och reserveras med `compareAndSet` innan en post skapas, så antalet aldrig går över
+  `maxSessions` ens när många förfrågningar skapar samtidigt (testat med 200 virtuella trådar mot
+  gränsen 100). Är gränsen nådd städas först, och är den fortfarande nådd ger `getOrCreate` (och
+  `renew` utan session) `WebException` 503 med den fasta detaljen `The server cannot take more
+  sessions right now.`, som blir ett problem-svar utan `Set-Cookie`. Befintliga sessioner tas
+  aldrig bort för att ge plats (ingen LRU): annars kunde den som kan skapa sessioner, alltså vem
+  som helst, logga ut alla andra. Att förnya en befintlig session räknas inte som en ny. Varje
+  städning noterar den tidigaste utgången bland sessionerna som finns kvar (eller `nu +
+  idleTimeout` för dem som skapas därefter, och användning skjuter bara utgången framåt); vid
+  gränsen hoppas städningen över så länge klockan inte har nått den tidpunkten, eftersom ingen
+  session kan ha gått ut. Annars skulle en ström av nekade förfrågningar gå igenom hela
+  lagringen var för sig. Den undre gränsen kan vara fel med den tid en städning tar när
+  sessioner skapas samtidigt med den; en sådan session tas då bort så mycket senare vid gränsen
+  (men aldrig senare än vid uppslagning eller minutstädning). Ingen loggrad när gränsen nås
+  (utanför uppdraget; `size()` finns för mätning).
+- **Kontroll av `SessionOptions`.** Den kanoniska konstruktorn (och därmed varje `withX`)
+  kontrollerar sina värden och samlar alla problem i ett `IllegalArgumentException` med en rad
+  per problem: `idleTimeout` minst 1 sekund och högst 365 dagar, `maxSessions` 1–10 000 000,
+  `cookieName` en `token` (RFC 9110 §5.6.2, citerat och escapat i meddelandet). `null` ger
+  `NullPointerException`. Övre gränsen för `maxSessions` håller minnet inom rimliga gränser även
+  vid en felskrivning; 365 dagar är längre än någon rimlig inaktivitet.
+- **Samtidighet.** Varje `SessionEntry` skyddas av sitt eget lås, och lagringens lås tas bara
+  inuti det (aldrig en entry-metod inuti en `compute` på kartan), så det finns ingen
+  låsordning att bryta. `SessionState` synkroniserar för sig (en `WebRequest` får lämnas till
+  andra trådar) och tar postens lås inuti sitt. Två samtidiga `renew` på samma session ger två
+  `Set-Cookie`, och det som webbläsaren tar emot sist gäller (känd begränsning).
+- **Tester** går genom en riktig `HttpServer` med rå socket (exakta `Set-Cookie` och
+  `Cache-Control`, konstruerade cookievärden) och `HttpClient` med `CookieManager`, och en styrd
+  `InstantSource` för utgång och städning. Alla routrar i sessionstesterna loggar till en
+  gemensam fångad logg, och varje id som setts i ett `Set-Cookie`, varje kropp, varje
+  `toString()` och varje undantagsmeddelande sparas; `SessionLeakTests` körs sist och letar
+  efter vart och ett av de över 10 000 id:na i allt det.

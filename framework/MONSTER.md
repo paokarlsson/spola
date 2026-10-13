@@ -54,7 +54,7 @@ projekten som en vanlig Spring-app drar in. Tre villkor till:
 | `spola.codegen` | Lombok `@Builder`, `@With` för records | `java Build.java codegen`, `<Record>With` | – |
 | `spola.json` | Jackson | `Json`, `JsonValue`, `JsonCodec` | – |
 | `spola.http` | Inbäddad Tomcat: HTTP/1.1, TLS | `HttpServer`, `Handler`, `Request`, `Response` | – |
-| `spola.web` | Spring MVC, `ProblemDetail` | `Router`, `Filter`, `Responses`, `Param`, `WebException` | `http`, `json`, `validation` |
+| `spola.web` | Spring MVC, `ProblemDetail`, `HttpSession` | `Router`, `Filter`, `Responses`, `Param`, `WebException`, `Sessions`, `Session` | `http`, `json`, `validation` |
 | `spola.validation` | Bean Validation | `Validator<T>`, `Constraint` | – |
 | `spola.security` | Spring Security utan HTTP: `PasswordEncoder`, `UserDetailsService` | `Pbkdf2PasswordHasher`, `Authenticator`, `UserStore` | – |
 | `spola.security.web` | Spring Security: filterkedja, HTTP Basic, åtkomstregler | `WebSecurity`, `HttpBasic`, `Rules`, `SecurityContext` | `web`, `security` |

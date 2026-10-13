@@ -1,0 +1,14 @@
+feat(web): add in-memory HTTP sessions with a session cookie
+
+spola.web gets Sessions, Session and SessionOptions, the counterpart of
+HttpSession: 256-bit ids from SecureRandom looked up by SHA-256, typed
+attributes, idle expiry with cleanup and no background thread, a cap
+that answers 503 instead of evicting, renew against session fixation,
+and invalidate. All critics passed; only MINOR findings remain.
+
+Gauntlet-Run: 20261013-2026-web-sessioner
+Gauntlet-Round: 1/5
+Gauntlet-Verdict: PASS (0 blocker, 0 major, 12 minor upheld)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_016R1SyuZe48AGwQWbo2Xdkz

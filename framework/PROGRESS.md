@@ -583,6 +583,44 @@
   filter, routerns 400/404/405/`OPTIONS`, 200 virtuella trådar, markörer i alla svar och
   loggrader, README och källregler.
 
+### Uppdrag 11a: sessioner del 1, sessioner i minnet med sessionscookie (`spola.web`)
+- **Första delen av behovet "Inloggning med sessioner och CSRF-skydd för ett JSON-API"** (appen
+  psykologen). **11b** (inloggning och utloggning med sessionen i `spola.security.web`) och
+  **11c** (CSRF-skydd med `XSRF-TOKEN`) återstår för behovet.
+- **Säkerhetskritisk kod.** Sessions-id:t ska bära inloggningen i 11b. Koden är testad med över
+  20 konstruerade cookievärden, 10 000 id, 200 samtidiga klienter och markörer för varje id i
+  loggrader, `toString()`, undantag och kroppar, men **en människa bör granska den** innan
+  ramverket används på riktigt.
+- `Sessions.inMemory(SessionOptions[, InstantSource])` i `spola.web`, motsvarigheten till
+  `HttpSession` med `server.servlet.session.*`: `filter()` registreras på routern, de statiska
+  `find` (`getSession(false)`), `getOrCreate` (`getSession()`), `renew` (`changeSessionId()`) och
+  `invalidate`, och `size()`. `Session` har `get`/`put`/`remove` med `AttributeKey<T>` och ingen
+  `id()`. `SessionOptions` (record med `DEFAULT` och `withX`): `idleTimeout` (30 minuter),
+  `maxSessions` (10 000), `cookieName` (`SESSION`) och `cookie` (funktion för cookiens
+  attribut); alla problem i ett `IllegalArgumentException` med en rad per problem.
+- Id: 32 byte från en `new SecureRandom()` per `Sessions`, Base64url utan utfyllnad (43 tecken,
+  256 bitar). Lagringen slår upp på SHA-256 av id:t och sparar aldrig id:t. Bara värden med
+  exakt formatet slås upp; felaktiga, okända och utgångna värden ger ingen session, inget 400
+  och inget `Set-Cookie`. Alla `SESSION`-värden provas i ordning.
+- Cookien: `SESSION=<id>; Path=/; HttpOnly; SameSite=Lax` med attributen från `withCookie`
+  (funktionen körs en gång, i `inMemory`, och fel i den ger `IllegalArgumentException` vid
+  uppstart); borttagningen med samma `Path`, `Domain` och `Secure` och `Max-Age=0`; högst ett
+  `Set-Cookie` per svar med det slutliga utfallet; `Cache-Control: no-store` om svaret saknar
+  `Cache-Control`. `Secure` bara uttryckligen.
+- Utgång efter `idleTimeout` sedan senaste användningen (filtrets uppslagning räknas), borttagning
+  vid uppslagning, städning högst en gång per minut i filtret, ingen bakgrundstråd. Gränsen
+  `maxSessions` gäller också vid samtidiga skapanden; vid gränsen städas först och sedan ger
+  `getOrCreate` 503 (problem-svar utan `Set-Cookie`); befintliga sessioner tas aldrig bort.
+- `renew` gäller direkt också för förfrågningar som redan hanteras med det gamla id:t (deras
+  `Session` ser en avslutad session); samma förfrågans `Session` fungerar efter `renew`. Utan
+  filtret, och med filtret två gånger, ger metoderna 500 (`IllegalStateException`).
+- `module-info.java` har en punkt om sessionerna (inga ändrade `requires` eller `exports`).
+  `README.md` i `modules/web/` har avsnittet "Sessioner": Spring Boot-kod (`HttpSession`,
+  `changeSessionId`, `invalidate`, `server.servlet.session.*`) bredvid `CartApp.java`
+  (kompilerad testkälla som ett test jämför med README), nya rader i jämförelsetabellen och
+  avvikelsetabellen, och rekommendationen `__Host-SESSION` med `secure(true)` i produktion.
+- 93 nya tester i `spola.web` (registrerade i `WebTests` via `SessionTests`), ungefär 7 s.
+
 ### Versioner och releaser (gjort för hand, utanför loopen)
 - `VERSION` i `Build.java` (nu `0.1.0`) sätts som modulversion i varje jar
   (`jar --module-version`). `java Build.java version` skriver ut den.
@@ -595,10 +633,12 @@
   `uppdrag/behov/` och står still (`IDLE`) när inget väntar. Se `MONSTER.md`.
 
 ## Återstår
-- Inget är beställt. Idéerna i `uppdrag/PLAN.md` (JWT och sessioner, PostgreSQL, pool och
+- **Behovet "Inloggning med sessioner och CSRF-skydd för ett JSON-API"** (psykologen): 11a
+  (sessioner) är klar; **11b** (inloggning och utloggning med sessionen i `spola.security.web`)
+  och **11c** (CSRF-skydd med `XSRF-TOKEN`) återstår och ligger som uppdragsfiler i `uppdrag/`.
+- Inget annat är beställt. Idéerna i `uppdrag/PLAN.md` (JWT, PostgreSQL, pool och
   transaktioner, query-DSL, migreringar, schemaläggning, observability, starter) byggs när ett
-  behov kommer. Formulärinloggning och utloggning (flyttade från rad 10) hör till idén
-  security-tokens.
+  behov kommer.
 - **Kvar från friktionsrapporten i 05c** (`modules/demo/README.md`, avsnitt "Friktion"):
   - **DI:** den typade formen av `to(...)` går inte att blanda `Class` och `Key` i; ett enda
     kvalificerat beroende gör att alla måste skrivas `Key.of(...)` (punkt 3).
@@ -615,13 +655,35 @@
     `LoggingSettings` efter bindningen, inte i `ConfigException` (punkt 7).
 
 ## Kända problem och begränsningar
+- **Sessioner (spola.web, 11a):** säkerhetskritisk; **bör granskas av en människa** innan
+  ramverket används på riktigt. **Sessionerna finns bara i minnet: de försvinner vid omstart och
+  delas inte mellan servrar** (ingen Spring Session med JDBC eller Redis, ingen serialisering,
+  inget utbytbart lagringsgränssnitt). **Ingen loggrad när gränsen nås** (bara `size()`), och
+  inga mätvärden. **Två samtidiga `renew` på samma session ger två `Set-Cookie`, och det som
+  webbläsaren tar emot sist gäller**; är det det första id:t har sessionen förlorats för
+  webbläsaren. På samma sätt får en förfrågan som kom med det gamla id:t medan en annan
+  förfrågan förnyade sessionen ingen session längre, och anropar den `getOrCreate` får den en
+  ny session med ett eget `Set-Cookie` (det som kommer sist gäller). Städningen går igenom alla
+  sessioner på en förfrågans tråd högst en gång per minut (med 10 000 sessioner snabbt, med
+  miljontals märkbart för den förfrågan). Ingen absolut maxlivstid, inget "kom ihåg mig", ingen
+  gräns per användare och inga händelser vid skapande och utgång (`HttpSessionListener`). Inget
+  automatiskt `Secure` efter schemat eller `X-Forwarded-Proto` (eget behov). Attributvärden
+  sparas som referenser: ett föränderligt värde delas mellan samtidiga förfrågningar och måste
+  vara trådsäkert. Cookie-funktionen körs en gång vid `inMemory`, så en funktion som läser
+  föränderlig konfiguration ser bara värdet vid uppstart. En förfrågan med fler än 200 cookies
+  får 400 på alla vägar bakom filtret (cookietolkningens gräns). Sätter funktionen `maxAge` (en
+  beständig cookie) skickar JDK:ns `CookieManager` tillbaka id:t inom citattecken (RFC 2965, se
+  08c nedan), och ett sådant värde slås aldrig upp; webbläsare berörs inte. Id:t finns som `String` i
+  förfrågans `Cookie`-huvud och i svarets `Set-Cookie` och kan inte nollställas. Utgången följer
+  `InstantSource`; med systemklockan förlänger en klocka som går bakåt sessionerna och en som
+  hoppar framåt avslutar dem.
 - **Säkerhet i webben (spola.security.web, 10b):** säkerhetskritisk; bör granskas av en
   människa. **Varje förfrågan med Basic-uppgifter kostar en PBKDF2-beräkning** (inga cachade
   inloggningar), så många förfrågningar med uppgifter belastar CPU:n; **ingen
   hastighetsbegränsning** och ingen låsning av konton. **Inga säkerhetshuvuden**
   (`X-Content-Type-Options`, `X-Frame-Options`, HSTS) sätts. **Ingen auditloggning** av
   inloggningar (uppdrag 18); modulen loggar ingenting. Ingen formulärinloggning, utloggning,
-  sessioner, JWT, CSRF eller CORS (uppdrag 11). Att filtret är registrerat först på routern kan
+  JWT, CSRF eller CORS; sessioner finns i `spola.web` (11a) men bär ännu ingen inloggning (11b). Att filtret är registrerat först på routern kan
   modulen inte kontrollera; ett filter före det ser också förfrågningar som sedan nekas.
   Identiteten finns bara på `WebRequest` (ingen `SecurityContextHolder` eller `ScopedValue`
   för kod utanför webblagret). Användarnamnet och `Authorization`-värdet finns som `String` och
@@ -674,7 +736,8 @@
   innehålla synlig ASCII: råa mellanslag, tab eller radbrytningar (t.ex. ett avslutande
   `\r\n` från ett handskrivet `curl`-anrop) ger 400. `readForm` kräver `Content-Type` också
   för en tom kropp. Överhoppade cookies loggas inte, så en felaktig cookie syns inte i
-  serverns logg. Ingen multipart, inga sessioner, signerade cookies eller CSRF (uppdrag 11).
+  serverns logg. Ingen multipart, inga signerade cookies och ingen CSRF (11c). Sessioner kom i
+  11a (se ovan).
 - **Web (spola.web, 08b):** efter en 413 från `readJson` läser `spola.http` resten av kroppen
   (upp till `maxBodySize`, utan att buffra) innan svaret skickas; en klient som skickar en
   stor kropp får alltså vänta tills den skickats. `readJson` kan inte veta om någon läst
