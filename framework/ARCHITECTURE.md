@@ -2462,8 +2462,10 @@ Interna klasser: `Matchers` och `Rules` (implementationerna bakom fabrikerna), `
   behandlas som anonym (som Spring, där `BasicAuthenticationFilter` svarar 401 på fel uppgifter
   oavsett väg). Annars kan en klient med ett utgånget lösenord se ut att fungera mot öppna vägar
   och få obegripliga fel längre fram, och ett fel i en mekanism skulle kunna ge anonym tillgång i
-  stället för ett tydligt nej. Uppdrag 11 lägger till JWT och sessioner som fler mekanismer. Ett
-  undantag (och ett `null`) från en mekanism går till routerns mappers, 500 utan mapper.
+  stället för ett tydligt nej. Uppdrag 11 skulle lägga till JWT och sessioner som fler
+  mekanismer; sessionen blev i 11b i stället ett eget steg före mekanismerna (se "Inloggning
+  med session"). Ett undantag (och ett `null`) från en mekanism går till routerns mappers, 500
+  utan mapper.
 - **Basic-tolkningen och dess gränser.** `Authorization` är ett singelfält (RFC 9110 §11.6.2):
   fler än ett fält ger 400 i filtret innan någon mekanism körs (och i `HttpBasic` själv, om den
   anropas utanför filtret). Schemat är den inledande följden tokentecken och jämförs
@@ -2723,3 +2725,129 @@ session med sitt id, bara mellan skapandet och förfrågans tillstånd). Inga ny
   gemensam fångad logg, och varje id som setts i ett `Set-Cookie`, varje kropp, varje
   `toString()` och varje undantagsmeddelande sparas; `SessionLeakTests` körs sist och letar
   efter vart och ett av de över 10 000 id:na i allt det.
+
+## Inloggning med session (`spola.security.web`)
+
+Uppdrag 11b, andra delen av behovet "Inloggning med sessioner och CSRF-skydd för ett JSON-API"
+(appen psykologen). Sessionerna från 11a bär inloggningen i `spola.security.web`: motsvarigheten
+till Spring Securitys `HttpSessionSecurityContextRepository` med
+`SessionCreationPolicy.IF_REQUIRED`, `request.changeSessionId()` vid inloggning och
+`session.invalidate()` vid utloggning. En JSON-inloggning är en vanlig handler som anropar
+`Authenticator` och `WebSecurity.login`. **11c** (CSRF-skydd med `XSRF-TOKEN`) bygger på det här.
+Koden är säkerhetskritisk och bör granskas av en människa.
+
+### API (paket `spola.security.web`)
+
+| Typ | Roll |
+|---|---|
+| `WebSecurity.Builder` | ny: `sessions(Sessions)`; `build()` rapporterar fler än ett anrop |
+| `WebSecurity` | nya statiska `login(WebRequest, Identity)` och `logout(WebRequest)`; `filter()` kör sessionsfiltret när sessioner är påslagna |
+
+Inga nya typer och inga nya huvudkällfiler: allt ligger i `WebSecurity`. Identiteten sparas i
+sessionen under en privat `AttributeKey<Identity>` som bara `WebSecurity` har. `requires` och
+`exports` är oförändrade (`Sessions` finns i `spola.web`, som redan krävs transitivt), och inget
+ändrades i `spola.web` eller någon annan modul: 11a:s publika API (`Sessions.filter()`, `find`,
+`renew`, `invalidate`, `Session.get`/`put`) räckte, så det lilla tillägg i `spola.web` som
+uppdraget tillät behövdes inte.
+
+### Beslut
+
+- **Säkerhetsfiltret kör sessionsfiltret självt, ytterst.** Med `sessions(sessions)` anropar
+  `security.filter()` `sessions.filter()` med resten av sina steg som kedja, så applikationen
+  registrerar bara `security.filter()`. Sessionen måste vara känd innan identiteten avgörs, och
+  säkerhetsfiltret ska ligga ytterst (10b). Två filter som båda måste ligga först, i en viss
+  ordning, är en fälla; ett filter som kör det andra går inte att registrera fel. Registrerar
+  applikationen ändå `sessions.filter()` når sessionsfiltret samma förfrågan två gånger och
+  kastar `IllegalStateException` (11a), alltså 500. Ligger `sessions.filter()` före
+  säkerhetsfiltret gäller det varje förfrågan, och säkerhetsfiltret byter då ut 11a:s meddelande
+  ("register one Sessions.filter(), once") mot ett som säger att bara `security.filter()` ska
+  registreras: det känner igen fallet på att sessionsfiltret kastade innan det kallade vidare på
+  kedjan (en flagga som kedjan sätter), och behåller det ursprungliga undantaget som orsak.
+  Ligger `sessions.filter()` efter säkerhetsfiltret ger varje förfrågan som reglerna släpper
+  igenom 500, med 11a:s meddelande (säkerhetsfiltret ser inte filtren innanför sig); nekade
+  förfrågningar får sitt 401/403. Båda fallen märks vid första försöket att logga in.
+  Säkerhetsfiltret kontrollerar först att det inte redan kört (`SecurityContext` på förfrågan,
+  10b) och kör sedan sessionsfiltret, så att "registrerat två gånger" får säkerhetsfiltrets eget
+  meddelande. `sessions(...)` två gånger (också samma instans) är en rad i `build()`s
+  `IllegalArgumentException`, efter raderna om regler: två sessionslager kan inte båda gälla, och
+  det sista anropet vinner inte tyst.
+- **Ordningen i filtret.** Sessionsfiltret, sedan 400 för flera `Authorization`-fält (10b),
+  sedan identiteten ur sessionen, sedan mekanismerna, sedan reglerna. 400-kontrollen gäller också
+  en förfrågan med en inloggad session: en tvetydig förfrågan är fel oavsett vem som skickar den
+  (fail-closed), och 11c lägger CSRF-kontrollen mellan 400 och identiteten. Ett undantag från
+  stegen efter sessionsfiltret (400, en mekanism, en regel) passerar sessionsfiltret, som då
+  överger sin förfrågan (11a); inget har skapats före handlern, så inget går förlorat. Undantag
+  från handlern mappas av routerns kedja innan de når sessionsfiltret, så en handler som har
+  loggat in och sedan kastar får ett felsvar med den nya cookien (sessionen finns).
+- **Sessionen före mekanismerna, och aldrig `Rejected`.** Finns en identitet i förfrågans levande
+  session är förfrågan autentiserad med den, och inga mekanismer provas (inte heller
+  `HttpBasic`). En webbläsare som loggat in med JSON skickar inga Basic-uppgifter, och en klient
+  som skickar båda har redan loggat in; att pröva Basic också skulle kosta en PBKDF2-beräkning
+  per förfrågan och ge två svar på samma fråga. Utan session, med en session utan identitet
+  eller med en okänd eller utgången cookie provas mekanismerna som i 10b, så Basic för
+  tjänst-till-tjänst fungerar bredvid sessionerna. Sessionen är inte en `RequestAuthentication`:
+  en mekanism kan svara `Rejected`, och en sessionscookie ska aldrig göra det. En gammal cookie
+  (utgången, utloggad, från en omstartad server) är det normala, inte ett angrepp, och om den gav
+  401 skulle inloggningen på en `permitAll`-väg aldrig gå att nå med den. Därför gör en okänd
+  cookie bara förfrågan anonym. Det är också därför sessionen läses direkt av filtret i stället
+  för att registreras som en mekanism i en viss ordning.
+- **`login` med `renew` som skydd mot session fixation.** `WebSecurity.login(request, identity)`
+  kontrollerar att förfrågan passerat filtret för en `WebSecurity` med sessioner, anropar
+  `Sessions.renew(request)` och sparar identiteten i sessionen. `renew` ger en levande session
+  ett nytt id atomärt (det gamla slutar gälla direkt, också för förfrågningar som redan
+  hanteras) och behåller attributen, som `changeSessionId()`; utan session skapar den en, som
+  `HttpSessionSecurityContextRepository` gör när den sparar. Ett id som fanns före inloggningen,
+  och som en angripare kan ha planterat, bär alltså aldrig inloggningen, och ett påhittat id blir
+  aldrig en session (11a). Identiteten sparas efter `renew`, så den finns aldrig under det gamla
+  id:t. Vid sessionsgränsen ger `renew` utan session 503 (11a), och då sparas ingenting. Förfrågans
+  eget `SecurityContext` ändras inte: det är ett oföränderligt värde på förfrågan som filtret
+  satte och som reglerna redan prövat, och att skriva om det mitt i förfrågan vore en dold
+  sidoeffekt som skulle kräva ett föränderligt tillstånd per förfrågan. Handlern vet redan vem
+  som loggade in (den har `identity`), och nästa förfrågan ser identiteten. En `WebSecurity` utan
+  sessioner, eller ingen säkerhet alls, ger `IllegalStateException` (500): en inloggning som
+  tyst inte sparades vore värre. Det gäller också när applikationen själv registrerat
+  `sessions.filter()` med en `WebSecurity` utan `sessions(...)`, eftersom den säkerheten aldrig
+  skulle läsa identiteten ur sessionen.
+- **`logout` med `invalidate`.** `WebSecurity.logout(request)` gör `Sessions.invalidate(request)`:
+  hela sessionen tas bort med alla attribut, det gamla id:t slutar gälla direkt, och svaret tar
+  bort cookien. Att bara ta bort identiteten och låta sessionen leva vore Springs
+  `SecurityContextLogoutHandler` utan `invalidateHttpSession`; uppdraget vill ha
+  `session.invalidate()`, och data från den inloggade tiden ska inte finnas kvar för nästa
+  användare i samma webbläsare. Utan session gör den ingenting (inget `Set-Cookie`). Samma
+  `IllegalStateException` som `login` utan sessioner.
+- **Ögonblicksbild.** Sessionen bär den `Identity` som `login` fick (ett oföränderligt record), och
+  filtret läser inte om användaren ur `UserStore` per förfrågan. Ändrade roller, ett avstängt
+  konto eller en borttagen användare påverkar alltså inte en inloggad session förrän utloggning
+  eller utgång, som i Springs standardinställning. Att läsa om användaren per förfrågan kostar en
+  uppslagning per förfrågan och kräver ett `UserStore` i filtret; det är utanför uppdraget och
+  står som begränsning i PROGRESS.md och Javadoc.
+- **Sessioner skapas bara vid inloggning.** Säkerhetsfiltret anropar bara `Sessions.find`, aldrig
+  `getOrCreate`, och sessionsfiltret skapar aldrig en session själv (11a). Anonyma förfrågningar,
+  401, 403 och `/actuator/health` får därför inget `Set-Cookie`, som `IF_REQUIRED`.
+- **Ingen `unauthenticated(...)`.** Behovets kod hade `.unauthenticated(Unauthenticated.status401())`
+  för Springs `HttpStatusEntryPoint(UNAUTHORIZED)`. Filtrets 401 har redan bara
+  `WWW-Authenticate` för `HttpBasic`-mekanismer (10b), så utan `HttpBasic` är svaret redan 401
+  utan `WWW-Authenticate`, exakt det `HttpStatusEntryPoint` ger. En inställning som bara upprepar
+  standardbeteendet tillför inget och vore ännu en sak att konfigurera fel (vad skulle den betyda
+  med `HttpBasic` registrerad?). Testerna visar att svaret saknar `WWW-Authenticate` utan
+  `HttpBasic` och har det med.
+- **Ingen loggning**, som i 10b. Varken lyckade eller misslyckade inloggningar loggas
+  (auditloggning är ett eget behov). Inga meddelanden eller `toString()` innehåller
+  sessions-id eller lösenord; `WebSecurity.toString()` visar bara antal och om sessioner är
+  påslagna.
+- **Exemplet tar en `RouterBuilder`.** `LoginExample.router(routes, security, authenticator)` får
+  routerns builder i stället för att anropa `Router.builder()` själv, så att testerna kan ge en
+  som loggar till deras fångade logg (kriterium 9 gäller varje loggrad routern skriver), har en
+  mapper som räknar om `/api/auth/me`-handlern kastade och har fler vägar. README säger att en
+  app skriver `Router.builder()` direkt.
+- **Tester** går genom en riktig `HttpServer` (127.0.0.1, port 0) med `HttpClient` och
+  `CookieManager` (behovets flöde och 200 samtidiga klienter) och rå socket (exakta huvuden och
+  cookievärden: gamla, påhittade och utgångna id), en `InMemoryUserStore` med
+  `Pbkdf2PasswordHasher.of(10_000, 16, 32)` och en styrd `InstantSource` för utgången. Alla
+  routrar loggar till `Support.LOG`, varje svar sparas i `Support.REPLIES` (så att 10b:s
+  `LeakTests` också ser dem), och varje sessions-id i ett `Set-Cookie`, varje påhittat id, varje
+  undantagsmeddelande och `toString()` sparas. `LoginLeakTests` körs sist bland 11b:s tester och
+  letar efter varje id och lösenord i alla svar (utom id:t i svarets eget `Set-Cookie`), loggrader
+  och texter. Mutationer av koden (ingen `renew`, mekanismerna före sessionen, ingen
+  `invalidate`, ingen kontroll av sessioner, ett id eller lösenord i ett svar eller en loggrad)
+  fångas av testerna.

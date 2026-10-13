@@ -57,7 +57,7 @@ projekten som en vanlig Spring-app drar in. Tre villkor till:
 | `spola.web` | Spring MVC, `ProblemDetail`, `HttpSession` | `Router`, `Filter`, `Responses`, `Param`, `WebException`, `Sessions`, `Session` | `http`, `json`, `validation` |
 | `spola.validation` | Bean Validation | `Validator<T>`, `Constraint` | – |
 | `spola.security` | Spring Security utan HTTP: `PasswordEncoder`, `UserDetailsService` | `Pbkdf2PasswordHasher`, `Authenticator`, `UserStore` | – |
-| `spola.security.web` | Spring Security: filterkedja, HTTP Basic, åtkomstregler | `WebSecurity`, `HttpBasic`, `Rules`, `SecurityContext` | `web`, `security` |
+| `spola.security.web` | Spring Security: filterkedja, HTTP Basic, åtkomstregler, sessionsinloggning (`HttpSessionSecurityContextRepository`, `changeSessionId`, `invalidate`) | `WebSecurity` (`sessions(...)`, `login`/`logout`), `HttpBasic`, `Rules`, `SecurityContext` | `web`, `security` |
 | `spola.test` | JUnit | `Suite`, `Assertions` | – |
 | `spola.guardrails` | – | kontrollerar reglerna i bygget | – |
 

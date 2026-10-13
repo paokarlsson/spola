@@ -75,7 +75,7 @@ jlink -p lib:out --add-modules hello --launcher hello=hello/hello.Main \
 | `spola.json` | Jackson: strikt RFC 8259-parser och explicit mappning till records |
 | `spola.validation` | Bean Validation: komponerbara validatorer |
 | `spola.security` | Spring Security: PBKDF2-hashning, autentisering |
-| `spola.security.web` | Spring Security: säkerhetsfilter, HTTP Basic, åtkomstregler |
+| `spola.security.web` | Spring Security: säkerhetsfilter, HTTP Basic, åtkomstregler, inloggning med session (`WebSecurity.login`/`logout`) |
 | `spola.config` | `application.properties`, `@Value`, profiler |
 | `spola.di` | Spring Core: explicit DI, scopes, livscykel |
 | `spola.util` | Lombok och loggning: `Log`, `Lazy`, `ToString` |

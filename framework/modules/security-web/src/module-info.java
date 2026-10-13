@@ -4,8 +4,11 @@
  * {@code authorizeHttpRequests} ({@code requestMatchers(...).hasRole(...)}, {@code permitAll()},
  * {@code authenticated()}, {@code denyAll()}, {@code anyRequest()}), {@code httpBasic()}, the
  * logged-in user per request ({@code SecurityContext}, {@code @AuthenticationPrincipal}),
- * {@code @PreAuthorize("hasRole('ADMIN')")} as a filter on a group, and the 401
- * ({@code AuthenticationEntryPoint}) and 403 ({@code AccessDeniedHandler}) responses.
+ * {@code @PreAuthorize("hasRole('ADMIN')")} as a filter on a group, the 401
+ * ({@code AuthenticationEntryPoint}, also {@code HttpStatusEntryPoint}) and 403
+ * ({@code AccessDeniedHandler}) responses, and a login kept in the HTTP session
+ * ({@code HttpSessionSecurityContextRepository}, {@code changeSessionId()} at login,
+ * {@code invalidate()} at logout).
  *
  * <ul>
  *   <li>{@link spola.security.web.WebSecurity}: built with
@@ -22,12 +25,21 @@
  *   <li>{@link spola.security.web.SecurityContext}: the identity of the request, read with
  *       {@link spola.security.web.WebSecurity#identity} and
  *       {@link spola.security.web.WebSecurity#requireIdentity}.</li>
+ *   <li>Sessions: {@link spola.security.web.WebSecurity.Builder#sessions} keeps the login in
+ *       the {@link spola.web.Sessions} of {@code spola.web}. The security filter then runs the
+ *       session filter itself, outermost (register only the security filter), and takes the
+ *       identity from the request's session before any mechanism.
+ *       {@link spola.security.web.WebSecurity#login} gives the session a new id (protection
+ *       against session fixation) and stores the identity in it, a snapshot;
+ *       {@link spola.security.web.WebSecurity#logout} removes the session. Without
+ *       {@code sessions(...)} both throw {@link java.lang.IllegalStateException} (500).</li>
  * </ul>
  *
  * <p>{@code spola.web} and {@code spola.security} are required transitively because both are
- * part of this module's API ({@code Filter}, {@code WebRequest}, {@code Authenticator},
- * {@code Identity}). Neither of them depends on this module or on each other: hashing and
- * authentication work without HTTP, and the web layer works without security.
+ * part of this module's API ({@code Filter}, {@code WebRequest}, {@code Sessions},
+ * {@code Authenticator}, {@code Identity}). Neither of them depends on this module or on each
+ * other: hashing and authentication work without HTTP, and the web layer works without
+ * security.
  * {@code requires static java.net.http} is for the module's tests only (they talk to a real
  * server with {@link java.net.http.HttpClient}); no main code uses it. The module writes no log
  * lines, uses no reflection and no {@code ThreadLocal}. This code is security critical; have a

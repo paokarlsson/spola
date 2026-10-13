@@ -621,6 +621,42 @@
   avvikelsetabellen, och rekommendationen `__Host-SESSION` med `secure(true)` i produktion.
 - 93 nya tester i `spola.web` (registrerade i `WebTests` via `SessionTests`), ungefär 7 s.
 
+### Uppdrag 11b: sessioner del 2, inloggning och utloggning med session (`spola.security.web`)
+- **Andra delen av behovet "Inloggning med sessioner och CSRF-skydd för ett JSON-API"** (appen
+  psykologen). Ett JSON-API kan nu logga in med en sessionscookie och få 401 utan
+  `WWW-Authenticate`. **11c** (CSRF-skydd med `XSRF-TOKEN`) återstår för behovet.
+- **Säkerhetskritisk kod.** Sessionen bär inloggningen. Koden är testad genom en riktig server
+  med session fixation, påhittade id, utgång, sessionsgränsen, felaktiga uppsättningar, 200
+  samtidiga klienter och markörer för varje lösenord och sessions-id i svar, loggrader och
+  undantag, men **en människa bör granska den** innan ramverket används på riktigt.
+- `WebSecurity.Builder.sessions(Sessions)`: säkerhetsfiltret kör `sessions.filter()` självt,
+  ytterst, så att bara `security.filter()` registreras. Registreras `sessions.filter()` också ger
+  förfrågan 500 (före säkerhetsfiltret: varje förfrågan, med ett meddelande om att bara
+  registrera `security.filter()`; efter det: varje förfrågan som reglerna släpper igenom).
+  `sessions(...)` två gånger ger en rad i `build()`s `IllegalArgumentException`.
+- Filtrets ordning: sessionsfiltret, 400 för flera `Authorization`-fält, identiteten ur
+  sessionen, mekanismerna (bara om sessionen inte gav någon identitet), reglerna. En
+  sessionscookie ger aldrig 401 i sig: ingen, en okänd eller utgången cookie, eller en session
+  utan identitet gör att mekanismerna provas som i 10b.
+- `WebSecurity.login(request, identity)`: `Sessions.renew` (nytt id, det gamla slutar gälla
+  direkt; utan session skapas en) och identiteten i sessionen under en nyckel som bara modulen
+  har. Vid sessionsgränsen 503 från 11a. `WebSecurity.logout(request)`: `Sessions.invalidate`
+  (sessionen tas bort och svaret tar bort cookien; utan session ingenting). Båda kastar
+  `IllegalStateException` (500) om förfrågan inte passerat filtret för en `WebSecurity` med
+  `sessions(...)`, också när appen själv registrerat `sessions.filter()`.
+- Säkerhetsfiltret skapar aldrig en session, så anonyma förfrågningar, 401, 403 och
+  `/actuator/health` får inget `Set-Cookie`. 401 utan `HttpBasic` saknar `WWW-Authenticate`
+  (som `HttpStatusEntryPoint(UNAUTHORIZED)`), så det finns ingen `unauthenticated(...)`.
+- `WebSecurity.toString()` visar `, sessions` när sessioner är påslagna. Inga ändrade
+  `requires` eller `exports`, inga nya huvudkällfiler och inga ändringar i `spola.web` eller
+  någon annan modul.
+- Klass-Javadoc för `WebSecurity` (filtrets steg, avsnittet "Login with a session"),
+  `module-info.java` och `README.md` i `modules/security-web/` (avsnittet "Inloggning med
+  session": behovets Spring-kod bredvid `LoginExample.java`, som är kompilerad testkälla och
+  jämförs med README av ett test, jämförelsetabell och avvikelsetabell).
+- 21 nya tester i `spola.security.web` (registrerade i `SecurityWebTests` via
+  `SessionLoginTests`), ungefär 3 s.
+
 ### Versioner och releaser (gjort för hand, utanför loopen)
 - `VERSION` i `Build.java` (nu `0.1.0`) sätts som modulversion i varje jar
   (`jar --module-version`). `java Build.java version` skriver ut den.
@@ -634,8 +670,9 @@
 
 ## Återstår
 - **Behovet "Inloggning med sessioner och CSRF-skydd för ett JSON-API"** (psykologen): 11a
-  (sessioner) är klar; **11b** (inloggning och utloggning med sessionen i `spola.security.web`)
-  och **11c** (CSRF-skydd med `XSRF-TOKEN`) återstår och ligger som uppdragsfiler i `uppdrag/`.
+  (sessioner) och 11b (inloggning och utloggning med sessionen i `spola.security.web`) är
+  klara; **11c** (CSRF-skydd med `XSRF-TOKEN`) återstår och ligger som uppdragsfil i
+  `uppdrag/`. Först efter 11c fungerar behovets hela flöde (inloggning med CSRF-token).
 - Inget annat är beställt. Idéerna i `uppdrag/PLAN.md` (JWT, PostgreSQL, pool och
   transaktioner, query-DSL, migreringar, schemaläggning, observability, starter) byggs när ett
   behov kommer.
@@ -655,6 +692,26 @@
     `LoggingSettings` efter bindningen, inte i `ConfigException` (punkt 7).
 
 ## Kända problem och begränsningar
+- **Inloggning med session (spola.security.web, 11b):** säkerhetskritisk; **bör granskas av en
+  människa** innan ramverket används på riktigt. **Identiteten i sessionen är en
+  ögonblicksbild:** ändrade roller, ett avstängt konto eller en borttagen användare i
+  `UserStore` påverkar inte en inloggad session förrän utloggning eller utgång (som Springs
+  standard); det finns inget sätt att logga ut alla sessioner för en användare (efter ett
+  lösenordsbyte, till exempel) och ingen gräns för samtidiga sessioner per användare.
+  **`login` ändrar inte förfrågans egen identitet:** `identity(request)` svarar i
+  inloggningsförfrågan som när filtret körde, och nästa förfrågan ser identiteten; samma för
+  `logout`. **Inloggningen loggas inte** (varken lyckade eller misslyckade inloggningar;
+  auditloggning är ett eget behov). **Inget CSRF-skydd än** (11c); till dess skyddar bara
+  `SameSite=Lax` mot förfalskade `POST` från andra webbplatser, inte från andra underdomäner på
+  samma webbplats. Har förfrågans session en identitet provas inga mekanismer, så fel
+  Basic-uppgifter bredvid en giltig session ger inte 401. Registreras `sessions.filter()` efter
+  `security.filter()` ger bara de förfrågningar som reglerna släpper igenom 500; nekade får sitt
+  vanliga 401/403. Ett undantag i handlern efter `login` (till exempel 406 från
+  `Responses.json`) ger ett felsvar som ändå sätter den nya cookien: användaren är inloggad.
+  Begränsningarna för sessioner i 11a (nedan) gäller också, till exempel att två samtidiga
+  inloggningar i samma session ger två `Set-Cookie` där det som kommer sist gäller. Ingen "kom
+  ihåg mig", ingen formulärinloggning med omdirigeringar och användaren läses inte om ur
+  `UserStore` per förfrågan.
 - **Sessioner (spola.web, 11a):** säkerhetskritisk; **bör granskas av en människa** innan
   ramverket används på riktigt. **Sessionerna finns bara i minnet: de försvinner vid omstart och
   delas inte mellan servrar** (ingen Spring Session med JDBC eller Redis, ingen serialisering,
@@ -682,8 +739,9 @@
   inloggningar), så många förfrågningar med uppgifter belastar CPU:n; **ingen
   hastighetsbegränsning** och ingen låsning av konton. **Inga säkerhetshuvuden**
   (`X-Content-Type-Options`, `X-Frame-Options`, HSTS) sätts. **Ingen auditloggning** av
-  inloggningar (uppdrag 18); modulen loggar ingenting. Ingen formulärinloggning, utloggning,
-  JWT, CSRF eller CORS; sessioner finns i `spola.web` (11a) men bär ännu ingen inloggning (11b). Att filtret är registrerat först på routern kan
+  inloggningar (uppdrag 18); modulen loggar ingenting. Inloggning och utloggning med session
+  finns sedan 11b (se nedan), men ingen formulärinloggning med HTML-formulär och
+  omdirigeringar, inget JWT, ingen CORS och ännu inget CSRF-skydd (11c). Att filtret är registrerat först på routern kan
   modulen inte kontrollera; ett filter före det ser också förfrågningar som sedan nekas.
   Identiteten finns bara på `WebRequest` (ingen `SecurityContextHolder` eller `ScopedValue`
   för kod utanför webblagret). Användarnamnet och `Authorization`-värdet finns som `String` och

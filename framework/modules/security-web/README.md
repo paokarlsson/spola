@@ -5,8 +5,10 @@ kärnan i Spring Securitys webbdel: `SecurityFilterChain` med `authorizeHttpRequ
 (`requestMatchers(...).hasRole(...)`, `permitAll()`, `authenticated()`, `denyAll()`,
 `anyRequest()`), `httpBasic()`, den inloggade användaren per förfrågan (`SecurityContext`,
 `@AuthenticationPrincipal`), `@PreAuthorize("hasRole('ADMIN')")` som ett filter på en grupp och
-svaren 401 (`AuthenticationEntryPoint`) och 403 (`AccessDeniedHandler`). Allt är vanlig
-Java-kod utan annoteringar, utan reflektion och utan `ThreadLocal`.
+svaren 401 (`AuthenticationEntryPoint`) och 403 (`AccessDeniedHandler`), och inloggning som
+bärs av en sessionscookie (`HttpSessionSecurityContextRepository`, `changeSessionId()`,
+`invalidate()`; se [Inloggning med session](#inloggning-med-session)). Allt är vanlig Java-kod
+utan annoteringar, utan reflektion och utan `ThreadLocal`.
 
 > **Säkerhetskritisk kod.** Låt en människa granska modulen innan den används på riktigt.
 
@@ -26,6 +28,11 @@ fungerar utan säkerhet.
 - `WebSecurity.identity(request)` (`Optional<Identity>`) och
   `WebSecurity.requireIdentity(request)` (`Identity` eller 401) i en handler.
 - `security.require(rule)`: ett filter för en grupp (`RouteGroup.filter(...)`).
+- `WebSecurity.builder().sessions(sessions)` med `Sessions` från `spola.web`: identiteten läses ur
+  förfrågans session, före mekanismerna. Säkerhetsfiltret kör sessionsfiltret självt, så bara
+  `security.filter()` registreras.
+- `WebSecurity.login(request, identity)` (nytt sessions-id, identiteten i sessionen) och
+  `WebSecurity.logout(request)` (sessionen tas bort) i en handler.
 
 Den första regeln vars matcher matchar avgör, och **en förfrågan som ingen regel matchar nekas**.
 Nekas en anonym förfrågan, eller är uppgifterna fel, blir svaret 401 med
@@ -199,7 +206,7 @@ svarar med samma 401 och 403 som det centrala filtret. `requireIdentity` motsvar
 
 | Avvikelse | Varför |
 |---|---|
-| Ingen formulärinloggning eller utloggning ännu | De kräver sessioner och kommer i uppdrag 11 tillsammans med sessioner, JWT, CSRF och CORS. |
+| Ingen formulärinloggning (`formLogin()`) | Inloggningen är en vanlig handler som kontrollerar lösenordet med `Authenticator` och anropar `WebSecurity.login`, och utloggningen anropar `WebSecurity.logout` (se [Inloggning med session](#inloggning-med-session)). HTML-formulär med omdirigeringar finns inte; CSRF-skydd kommer i uppdrag 11c, och JWT och CORS när ett behov kommer. |
 | Nekat som standard i stället för krav på `anyRequest()` | En förfrågan som ingen regel matchar nekas (401 eller 403). En glömd regel stänger alltså en väg i stället för att öppna den. |
 | `GET`-regler gäller även `HEAD` | Routern svarar på `HEAD` med `GET`-routen; annars skulle en regel för `GET` gå att kringgå med `HEAD`. |
 | Segmentvisa prefix i stället för Ant-mönster (`/**`, `*`, `?`) | `under("/admin")` jämför hela, avkodade segment precis som routern: `/admin/x` och `/%61dmin` matchar, `/administrator` gör det inte. Det som en regel skyddar är exakt det som routern serverar under samma prefix. |
@@ -210,3 +217,272 @@ svarar med samma 401 och 403 som det centrala filtret. `requireIdentity` motsvar
 | Samma svar oavsett orsak, utan `detail` | 401 och 403 skiljer inte på fel lösenord, okänd användare, avstängt konto eller trasig kodning, så att svaret inte hjälper någon att gissa konton. |
 | Ingen cache av lyckade Basic-inloggningar och ingen hastighetsbegränsning | Varje förfrågan med Basic-uppgifter kostar en PBKDF2-beräkning. Använd Basic för tjänst-till-tjänst eller bakom en hastighetsbegränsning. |
 | Ingen loggning av inloggningar | Auditloggning hör till uppdrag 18; modulen skriver inga loggrader alls. |
+
+## Inloggning med session
+
+Ett JSON-API där användaren loggar in med `POST /api/auth/login` och en sessionscookie sedan bär
+inloggningen: motsvarigheten till Spring Securitys `HttpSessionSecurityContextRepository` med
+`SessionCreationPolicy.IF_REQUIRED`, `request.changeSessionId()` vid inloggning och
+`session.invalidate()` vid utloggning. Sessionerna kommer från `spola.web` (`Sessions`, se
+avsnittet "Sessioner" i `modules/web/README.md`). Ett anonymt anrop till en skyddad väg får 401
+utan `WWW-Authenticate`, så att webbläsaren inte visar Basic-rutan.
+
+- `WebSecurity.builder().sessions(sessions)`: säkerhetsfiltret kör sessionsfiltret självt,
+  ytterst, och läser identiteten ur förfrågans session **före** mekanismerna. Registrera bara
+  `security.filter()`; registreras `sessions.filter()` också ger förfrågan 500.
+- `WebSecurity.login(request, identity)` i inloggningens handler: sessionen får ett nytt id
+  (`Sessions.renew`, skydd mot session fixation) och identiteten sparas i den. Utan session skapas
+  en. Svaret sätter cookien. Vid sessionsgränsen ger anropet 503.
+- `WebSecurity.logout(request)`: sessionen tas bort med alla attribut och svaret tar bort
+  cookien. Utan session händer ingenting.
+- Säkerhetsfiltret skapar aldrig en session: anonyma anrop, 401, 403 och `/actuator/health` får
+  inget `Set-Cookie`.
+- Utan `sessions(...)`, eller utan säkerhetsfiltret, ger `login` och `logout` 500
+  (`IllegalStateException`).
+
+CSRF-skydd (`XSRF-TOKEN`) kommer i uppdrag 11c. Fram till dess skyddar `SameSite=Lax` på
+sessionscookien mot förfalskade `POST` från andra webbplatser, men inte från andra
+underdomäner på samma webbplats.
+
+### Spring Security
+
+```java
+@Configuration
+@EnableWebSecurity
+class SecurityConfig {
+
+    @Bean
+    SecurityFilterChain securityFilterChain(HttpSecurity http) throws Exception {
+        http.authorizeHttpRequests(r -> r
+                        .requestMatchers("/api/auth/login", "/api/auth/logout").permitAll()
+                        .requestMatchers("/actuator/health").permitAll()
+                        .anyRequest().authenticated())
+                .sessionManagement(s -> s.sessionCreationPolicy(SessionCreationPolicy.IF_REQUIRED))
+                .exceptionHandling(h -> h.authenticationEntryPoint(new HttpStatusEntryPoint(HttpStatus.UNAUTHORIZED)))
+                .formLogin(f -> f.disable())   // formLogin().disable() in the older DSL
+                .httpBasic(b -> b.disable())   // httpBasic().disable()
+                .logout(l -> l.disable());
+        return http.build();
+    }
+}
+
+record LoginRequest(String username, String password) {
+}
+
+@RestController
+@RequestMapping("/api/auth")
+class AuthController {
+
+    private final AuthenticationManager authenticationManager;
+    private final SecurityContextRepository contexts = new HttpSessionSecurityContextRepository();
+
+    AuthController(AuthenticationManager authenticationManager) {
+        this.authenticationManager = authenticationManager;
+    }
+
+    @PostMapping("/login")
+    ResponseEntity<Map<String, Object>> login(@RequestBody LoginRequest body, HttpServletRequest request,
+            HttpServletResponse response) {
+        Authentication authentication;
+        try {
+            authentication = authenticationManager.authenticate(
+                    UsernamePasswordAuthenticationToken.unauthenticated(body.username(), body.password()));
+        } catch (AuthenticationException e) {
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(Map.of("success", false));
+        }
+        if (request.getSession(false) != null) {
+            request.changeSessionId();                         // protection against session fixation
+        }
+        var context = SecurityContextHolder.createEmptyContext();
+        context.setAuthentication(authentication);
+        SecurityContextHolder.setContext(context);
+        contexts.saveContext(context, request, response);       // creates the session if needed
+        return ResponseEntity.ok(Map.of("success", true, "username", authentication.getName()));
+    }
+
+    @PostMapping("/logout")
+    Map<String, Object> logout(HttpServletRequest request) {
+        var session = request.getSession(false);
+        if (session != null) {
+            session.invalidate();                               // the session is gone, the cookie stays
+        }
+        SecurityContextHolder.clearContext();
+        return Map.of("success", true);
+    }
+
+    @GetMapping("/me")
+    Map<String, Object> me(Authentication authentication) {
+        return Map.of("username", authentication.getName());
+    }
+}
+```
+
+```properties
+# application.properties
+server.servlet.session.timeout=30m
+server.servlet.session.cookie.secure=${COOKIE_SECURE:true}
+```
+
+### Spola
+
+```java
+import static spola.json.codec.JsonCodec.field;
+import static spola.json.codec.JsonCodecs.STRING;
+
+import java.time.Duration;
+import java.time.InstantSource;
+import spola.json.JsonBoolean;
+import spola.json.JsonObject;
+import spola.json.JsonString;
+import spola.json.codec.JsonCodec;
+import spola.security.AuthResult;
+import spola.security.Authenticator;
+import spola.security.Identity;
+import spola.web.Responses;
+import spola.web.Router;
+import spola.web.RouterBuilder;
+import spola.web.SessionOptions;
+import spola.web.Sessions;
+
+/** The README example "Inloggning med session": a JSON API whose login is kept in a session cookie. */
+public final class LoginExample {
+
+    private LoginExample() {
+    }
+
+    /**
+     * The body of {@code POST /api/auth/login}.
+     *
+     * @param username the username
+     * @param password the password
+     */
+    public record Login(String username, String password) {
+
+        /**
+         * Without the password, so that it never ends up in a log line.
+         *
+         * @return {@code Login[username=...]}
+         */
+        @Override
+        public String toString() {
+            return "Login[username=" + username + "]";
+        }
+    }
+
+    /** {@code {"username":"...","password":"..."}}, mapped explicitly (no reflection). */
+    public static final JsonCodec<Login> LOGIN = JsonCodec.object(Login::new,
+            field("username", STRING, Login::username),
+            field("password", STRING, Login::password));
+
+    /**
+     * The sessions: 30 minutes idle, the cookie {@code SESSION} with {@code Path=/},
+     * {@code HttpOnly} and {@code SameSite=Lax}.
+     *
+     * @param secure {@code config.booleanValue("cookie.secure")}: {@code true} over HTTPS, also
+     *               behind a TLS proxy ({@code Secure} is never set from the scheme)
+     * @param clock  {@code InstantSource.system()} in production; the tests move their own
+     * @return the sessions
+     */
+    public static Sessions sessions(boolean secure, InstantSource clock) {
+        return Sessions.inMemory(SessionOptions.DEFAULT
+                .withIdleTimeout(Duration.ofMinutes(30))
+                .withCookie(cookie -> cookie.secure(secure)), clock); // HttpOnly, SameSite=Lax
+    }
+
+    /**
+     * The rules: login, logout and the health check are open, everything else needs a login.
+     *
+     * @param sessions the sessions that keep the login
+     * @return the security
+     */
+    public static WebSecurity security(Sessions sessions) {
+        return WebSecurity.builder()
+                .sessions(sessions) // the identity is read from the session
+                .rule(RequestMatcher.exactly("/api/auth/login"), AccessRule.permitAll())
+                .rule(RequestMatcher.exactly("/api/auth/logout"), AccessRule.permitAll())
+                .rule(RequestMatcher.exactly("/actuator/health"), AccessRule.permitAll())
+                .rule(RequestMatcher.anyRequest(), AccessRule.authenticated())
+                .build();
+    }
+
+    /**
+     * The routes, behind the security filter alone.
+     *
+     * @param routes        {@code Router.builder()}; the tests pass one that logs to them
+     * @param security      the security
+     * @param authenticator checks usernames and passwords
+     * @return the router
+     */
+    public static Router router(RouterBuilder routes, WebSecurity security, Authenticator authenticator) {
+        return routes
+                .filter(security.filter()) // only this one: it runs sessions.filter() itself
+                .post("/api/auth/login", request -> {
+                    var body = request.readJson(LOGIN);
+                    return switch (authenticator.authenticate(body.username(), body.password())) {
+                        case AuthResult.Authenticated(Identity identity) -> {
+                            WebSecurity.login(request, identity); // a new session id with the identity
+                            yield Responses.json(request, 200, JsonObject.of("success", JsonBoolean.TRUE,
+                                    "username", JsonString.of(identity.name())));
+                        }
+                        case AuthResult.Failed failed -> Responses.json(request, 401,
+                                JsonObject.of("success", JsonBoolean.FALSE));
+                    };
+                })
+                .post("/api/auth/logout", request -> {
+                    WebSecurity.logout(request); // the session is removed, the cookie expires
+                    return Responses.json(request, 200, JsonObject.of("success", JsonBoolean.TRUE));
+                })
+                .get("/api/auth/me", request -> Responses.json(request, 200,
+                        JsonObject.of("username", JsonString.of(WebSecurity.requireIdentity(request).name()))))
+                .get("/actuator/health", request -> Responses.json(request, 200,
+                        JsonObject.of("status", JsonString.of("UP"))))
+                .build();
+    }
+}
+```
+
+I produktion startas det så här (`users` är appens `UserStore`):
+
+```java
+var sessions = LoginExample.sessions(config.booleanValue("cookie.secure"), InstantSource.system());
+var router = LoginExample.router(Router.builder(), LoginExample.security(sessions),
+        Authenticator.of(users, Pbkdf2PasswordHasher.defaults()));
+var server = HttpServer.start(HttpServerOptions.DEFAULT.withPort(8080), router);
+```
+
+`router` tar en `RouterBuilder` bara för att testerna ska kunna ge en som loggar till dem och
+har fler vägar; i en app står `Router.builder()` direkt i metoden. Testerna kör exemplet genom en
+riktig server med `HttpClient` och `CookieManager`: `/actuator/health` ger 200 utan
+`Set-Cookie`, `/api/auth/me` ger 401 utan `WWW-Authenticate`, fel lösenord ger
+`{"success":false}`, rätt lösenord ger `{"success":true,"username":"anna"}` och ett
+`Set-Cookie`, `/api/auth/me` ger sedan `{"username":"anna"}`, och efter utloggningen ger både
+cookien och det gamla id:t 401.
+
+### Spring Security och Spola, inloggning med session
+
+| Spring Security | Spola |
+|---|---|
+| `sessionManagement(s -> s.sessionCreationPolicy(IF_REQUIRED))` | `WebSecurity.builder().sessions(sessions)`; säkerhetsfiltret skapar ingen session, bara `login` gör det |
+| `HttpSessionSecurityContextRepository` (`SecurityContext` i sessionen) | identiteten i sessionen under en nyckel som bara `spola.security.web` har; filtret läser den före mekanismerna |
+| `server.servlet.session.timeout`, `server.servlet.session.cookie.*` | `SessionOptions.DEFAULT.withIdleTimeout(...).withCookie(c -> c.secure(...))` |
+| `@RequestBody LoginRequest` (Jackson) | `request.readJson(LOGIN)` med en `JsonCodec` som skrivs explicit |
+| `authenticationManager.authenticate(...)` | `authenticator.authenticate(username, password)` med `AuthResult` |
+| `request.changeSessionId()` och `saveContext(...)` | `WebSecurity.login(request, identity)` (`Sessions.renew` och identiteten i sessionen) |
+| `session.invalidate()` och `SecurityContextHolder.clearContext()` | `WebSecurity.logout(request)` (`Sessions.invalidate`) |
+| `HttpStatusEntryPoint(HttpStatus.UNAUTHORIZED)` | inget att ställa in: utan `HttpBasic` har 401 inget `WWW-Authenticate` |
+| `httpBasic(b -> b.disable())` | ingen `authentication(HttpBasic.of(...))` |
+| `authentication.getName()` | `WebSecurity.requireIdentity(request).name()` |
+
+### Avvikelser från Spring Security, inloggning med session
+
+| Avvikelse | Varför |
+|---|---|
+| Ingen `formLogin()` | Inloggningen är en vanlig handler som kontrollerar lösenordet med `Authenticator` och anropar `WebSecurity.login`, och den svarar med JSON. Det finns inget `UsernamePasswordAuthenticationFilter`, inget HTML-formulär och inga omdirigeringar, så det finns inget att stänga av. |
+| Ingen `unauthenticated(...)` (`HttpStatusEntryPoint`) | 401 har bara `WWW-Authenticate` för `HttpBasic`-mekanismer. Utan `HttpBasic` är svaret redan det som `HttpStatusEntryPoint(UNAUTHORIZED)` ger, så en inställning som bara upprepar standardbeteendet tillför inget. Med `HttpBasic` registrerad har 401 `WWW-Authenticate`, som i Spring. |
+| Identiteten i sessionen är en ögonblicksbild | Sessionen bär den `Identity` som `login` fick. Ändrade roller, ett avstängt konto eller en borttagen användare i `UserStore` påverkar inte en inloggad session förrän utloggning eller utgång, som i Springs standardinställning. Användaren läses inte om per förfrågan. |
+| Sessionen kommer före Basic | Har förfrågans session en identitet provas inga mekanismer, inte heller `HttpBasic`: fel Basic-uppgifter bredvid en giltig session ger inte 401. Utan session fungerar Basic som förut. En okänd eller utgången sessionscookie ger aldrig 401 i sig, så att inloggningen på en `permitAll`-väg fungerar med en gammal cookie. |
+| `login` ändrar inte förfrågans egen identitet | I inloggningsförfrågan svarar `WebSecurity.identity(request)` som när filtret körde (oftast anonym), och reglerna prövas inte om; nästa förfrågan ser identiteten. Identiteten är ett värde på förfrågan, inte ett `SecurityContextHolder` som går att skriva om mitt i. Svara med den `Identity` som skickades in. Samma sak gäller `logout`. |
+| Bara `security.filter()` registreras | Säkerhetsfiltret kör sessionsfiltret självt, ytterst, så att det aldrig hamnar på fel plats. Registreras `sessions.filter()` också når sessionsfiltret förfrågan två gånger och svaret blir 500. |
+| `Responses.json(request, 200, JsonObject.of(...))` i stället för `Map.of(...)` | JSON mappas explicit och utan reflektion (`spola.json`). |
+| Inget CSRF-skydd ännu | Kommer i uppdrag 11c (`XSRF-TOKEN`). Spring har CSRF-skydd påslaget som standard. |
+| Inloggningar loggas inte | Varken lyckade eller misslyckade inloggningar ger en loggrad (auditloggning är ett eget behov). |
