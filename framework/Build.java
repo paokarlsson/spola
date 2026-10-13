@@ -13,6 +13,11 @@
 //
 //     java Build.java codegen                          regenerate every generated file
 //     java Build.java codegen FILE RECORD              generate RECORD's <Record>With.java next to FILE
+//
+// Release assets (see scripts/release.sh and .github/workflows/release.yml):
+//
+//     java Build.java release                          build, then write out/release/
+//     java Build.java version                          print VERSION
 
 import module java.compiler;
 import module jdk.compiler;
@@ -83,6 +88,23 @@ static final String CODEGEN = "spola.codegen";
 /// First argument that makes `java Build.java` generate instead of building.
 static final String CODEGEN_COMMAND = "codegen";
 
+/// First argument that makes `java Build.java` write the release assets after a green build.
+static final String RELEASE_COMMAND = "release";
+
+/// First argument that makes `java Build.java` print VERSION and nothing else (for scripts).
+static final String VERSION_COMMAND = "version";
+
+/// The framework's version, semantic versioning (`0.1.0`, `1.0.0-rc.1`). Every jar records it
+/// as its module version; a release is tagged `v<version>`. Kept here rather than in a file of
+/// its own because guardrails allows only `.java` and `.md` files in framework/. Changed by
+/// scripts/release.sh only.
+static final String VERSION = "0.1.0";
+static final Pattern VERSION_FORMAT =
+        Pattern.compile("(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)(-[0-9A-Za-z]+(\\.[0-9A-Za-z]+)*)?");
+
+/// Modules that are built and tested but not part of a release (examples, not library code).
+static final Set<String> NOT_RELEASED = Set.of("spola.demo");
+
 /// Deliberately broken guardrails examples; never compiled into an artifact.
 static final Path FIXTURES = Path.of("modules/guardrails/fixtures");
 
@@ -91,6 +113,9 @@ static final Path FIXTURES = Path.of("modules/guardrails/fixtures");
 static final Path OUT = Path.of("out");
 static final Path CLASSES = OUT.resolve("classes");
 static final Path TEST_CLASSES = OUT.resolve("test-classes");
+
+/// Release assets: `<module>-<version>.jar`, `<module>-<version>-sources.jar` and `SHA256SUMS`.
+static final Path RELEASE = OUT.resolve("release");
 
 /// javac options for framework code. Lint warnings are errors; `-deprecation` and `-removal`
 /// are left out so that marking an API `@Deprecated` (also `forRemoval = true`) never breaks
@@ -144,17 +169,30 @@ void main(String[] args) {
         exitGuardProbe(args);
         return;
     }
+    if (args.length == 1 && args[0].equals(VERSION_COMMAND)) {
+        System.out.println(VERSION);
+        return;
+    }
     installExitGuard();
     var start = System.nanoTime();
     var codegen = args.length > 0 && args[0].equals(CODEGEN_COMMAND);
-    var what = codegen ? "CODEGEN" : "BUILD";
+    var release = args.length > 0 && args[0].equals(RELEASE_COMMAND);
+    var what = codegen ? "CODEGEN" : release ? "RELEASE" : "BUILD";
     int exitCode;
     try {
         if (codegen) {
             codegen(List.of(args).subList(1, args.length));
+        } else if (release) {
+            if (args.length > 1) {
+                throw new BuildFailure("`java Build.java " + RELEASE_COMMAND + "` takes no arguments; the version is"
+                        + " VERSION in Build.java");
+            }
+            release(build());
         } else if (args.length > 0) {
-            throw new BuildFailure("unknown argument " + args[0] + "; use `java Build.java` to build or `java Build.java "
-                    + CODEGEN_COMMAND + " [FILE RECORD]` to generate record builders");
+            throw new BuildFailure("unknown argument " + args[0] + "; use `java Build.java` to build, `java Build.java "
+                    + CODEGEN_COMMAND + " [FILE RECORD]` to generate record builders, `java Build.java "
+                    + RELEASE_COMMAND + "` to build the release assets or `java Build.java " + VERSION_COMMAND
+                    + "` to print the version");
         } else {
             build();
         }
@@ -179,8 +217,11 @@ void requireFrameworkDirectory() {
     }
 }
 
-void build() throws IOException {
+/// Builds and tests everything; returns the modules in build order.
+List<ModuleDir> build() throws IOException {
     requireFrameworkDirectory();
+    var version = checkedVersion();
+    System.out.println("version " + version);
     var requires = readRequires();
     var order = dependencyOrder(requires);
     System.out.println("modules in build order: " + order.stream().map(ModuleDir::name).toList());
@@ -198,7 +239,7 @@ void build() throws IOException {
         }
     }
     for (var module : order) {
-        jar(module);
+        jar(module, version);
     }
     for (var module : order) {
         compileTests(module);
@@ -206,6 +247,57 @@ void build() throws IOException {
     runGuardrails();
     runTests(order);
     checkExitGuard();
+    return order;
+}
+
+/// VERSION, checked against semantic versioning.
+String checkedVersion() {
+    if (!VERSION_FORMAT.matcher(VERSION).matches()) {
+        throw new BuildFailure("VERSION \"" + VERSION + "\" in Build.java is not a semantic version such as 0.1.0"
+                + " or 1.0.0-rc.1");
+    }
+    return VERSION;
+}
+
+/// Writes the release assets of a green build to `out/release/`: each released module's jar
+/// and sources jar, named with the version, and `SHA256SUMS` in the format `sha256sum -c` reads.
+/// Checks that every jar carries the version as its module version.
+void release(List<ModuleDir> order) throws IOException {
+    var version = checkedVersion();
+    Files.createDirectories(RELEASE);
+    var assets = new ArrayList<Path>();
+    for (var module : order) {
+        if (NOT_RELEASED.contains(module.name())) {
+            continue;
+        }
+        var jarFile = OUT.resolve(module.name() + ".jar");
+        var recorded = ModuleFinder.of(jarFile).find(module.name()).orElseThrow().descriptor().rawVersion();
+        if (!recorded.equals(Optional.of(version))) {
+            throw new BuildFailure(jarFile + " has module version " + recorded.orElse("(none)") + ", expected " + version);
+        }
+        var released = RELEASE.resolve(module.name() + "-" + version + ".jar");
+        Files.copy(jarFile, released);
+        assets.add(released);
+        var sources = RELEASE.resolve(module.name() + "-" + version + "-sources.jar");
+        runJar("sources of " + module.name(), "--create", "--file", sources.toString(),
+                "-C", module.sources().toString(), ".");
+        assets.add(sources);
+    }
+    var sums = new StringBuilder();
+    for (var asset : assets) {
+        sums.append(sha256(asset)).append("  ").append(asset.getFileName()).append('\n');
+    }
+    Files.writeString(RELEASE.resolve("SHA256SUMS"), sums, StandardCharsets.UTF_8);
+    System.out.println();
+    System.out.println("release " + version + ": " + assets.size() + " jars and SHA256SUMS in " + RELEASE);
+}
+
+String sha256(Path file) throws IOException {
+    try {
+        return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(Files.readAllBytes(file)));
+    } catch (NoSuchAlgorithmException e) {
+        throw new BuildFailure("SHA-256 is not available: " + e.getMessage());
+    }
 }
 
 /// Reads `module-info.java` of every listed module and returns name -> required modules.
@@ -371,15 +463,20 @@ void javac(String what, List<Path> sources, List<String> options) throws IOExcep
     }
 }
 
-void jar(ModuleDir module) {
-    var jarTool = ToolProvider.findFirst("jar").orElseThrow(() -> new BuildFailure("JDK jar tool not found"));
+/// Packages the module's classes as `out/<module>.jar`, with `version` as its module version.
+void jar(ModuleDir module, String version) {
     var jarFile = OUT.resolve(module.name() + ".jar");
-    int exit = jarTool.run(System.out, System.err,
-            "--create", "--file", jarFile.toString(), "-C", CLASSES.resolve(module.name()).toString(), ".");
-    if (exit != 0) {
-        throw new BuildFailure("jar for " + module.name() + " failed with exit code " + exit);
-    }
+    runJar(module.name(), "--create", "--file", jarFile.toString(), "--module-version", version,
+            "-C", CLASSES.resolve(module.name()).toString(), ".");
     System.out.println("packaged " + jarFile);
+}
+
+void runJar(String what, String... args) {
+    var jarTool = ToolProvider.findFirst("jar").orElseThrow(() -> new BuildFailure("JDK jar tool not found"));
+    int exit = jarTool.run(System.out, System.err, args);
+    if (exit != 0) {
+        throw new BuildFailure("jar for " + what + " failed with exit code " + exit);
+    }
 }
 
 /// spola.codegen from MODULES, after checking that it requires no project module (it is

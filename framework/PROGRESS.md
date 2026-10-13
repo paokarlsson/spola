@@ -583,9 +583,22 @@
   filter, routerns 400/404/405/`OPTIONS`, 200 virtuella trådar, markörer i alla svar och
   loggrader, README och källregler.
 
-## Återstår (enligt `uppdrag/PLAN.md`)
-- 11–20 enligt planen (rad 08 är klar med 08a–08c, rad 09 med 09a och 09b, rad 10 med 10a och
-  10b). Uppdrag 11 får också formulärinloggning och utloggning (flyttade från rad 10).
+### Versioner och releaser (gjort för hand, utanför loopen)
+- `VERSION` i `Build.java` (nu `0.1.0`) sätts som modulversion i varje jar
+  (`jar --module-version`). `java Build.java version` skriver ut den.
+- `java Build.java release` bygger, testar och skriver `out/release/`: `<modul>-<version>.jar`,
+  `<modul>-<version>-sources.jar` och `SHA256SUMS` för varje modul utom `spola.demo`. Bygget
+  kontrollerar att varje jar bär versionen.
+- `scripts/release.sh` taggar `v<version>` på `main`, och `.github/workflows/release.yml`
+  publicerar releasen när taggen pushas.
+- Spola växer från och med nu efter behov: planeraren tar handskrivna uppdrag och behov i
+  `uppdrag/behov/` och står still (`IDLE`) när inget väntar. Se `MONSTER.md`.
+
+## Återstår
+- Inget är beställt. Idéerna i `uppdrag/PLAN.md` (JWT och sessioner, PostgreSQL, pool och
+  transaktioner, query-DSL, migreringar, schemaläggning, observability, starter) byggs när ett
+  behov kommer. Formulärinloggning och utloggning (flyttade från rad 10) hör till idén
+  security-tokens.
 - **Kvar från friktionsrapporten i 05c** (`modules/demo/README.md`, avsnitt "Friktion"):
   - **DI:** den typade formen av `to(...)` går inte att blanda `Class` och `Key` i; ett enda
     kvalificerat beroende gör att alla måste skrivas `Key.of(...)` (punkt 3).
@@ -594,7 +607,7 @@
     en nyckel (punkt 4).
   - **Uppstart:** konfiguration, loggning, container och översättning av feltyper till
     meddelande och exitkod skrivs för hand (ingen gemensam supertyp för felen,
-    `Container.create` tar bara varargs); hör till uppdrag 19 (punkt 5).
+    `Container.create` tar bara varargs); hör till idén starter (punkt 5).
   - **Loggning:** `Logging.configure` är global för JVM:en; ett program som tar sin
     logg-ström som parameter måste konfigurera och återställa runt anropet, och två samtidiga
     anrop delar loggning (punkt 6).
