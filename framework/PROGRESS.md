@@ -586,7 +586,7 @@
 ### Uppdrag 11a: sessioner del 1, sessioner i minnet med sessionscookie (`spola.web`)
 - **Första delen av behovet "Inloggning med sessioner och CSRF-skydd för ett JSON-API"** (appen
   psykologen). **11b** (inloggning och utloggning med sessionen i `spola.security.web`) och
-  **11c** (CSRF-skydd med `XSRF-TOKEN`) återstår för behovet.
+  **11c** (CSRF-skydd med `XSRF-TOKEN`) kom sedan (se nedan).
 - **Säkerhetskritisk kod.** Sessions-id:t ska bära inloggningen i 11b. Koden är testad med över
   20 konstruerade cookievärden, 10 000 id, 200 samtidiga klienter och markörer för varje id i
   loggrader, `toString()`, undantag och kroppar, men **en människa bör granska den** innan
@@ -624,7 +624,7 @@
 ### Uppdrag 11b: sessioner del 2, inloggning och utloggning med session (`spola.security.web`)
 - **Andra delen av behovet "Inloggning med sessioner och CSRF-skydd för ett JSON-API"** (appen
   psykologen). Ett JSON-API kan nu logga in med en sessionscookie och få 401 utan
-  `WWW-Authenticate`. **11c** (CSRF-skydd med `XSRF-TOKEN`) återstår för behovet.
+  `WWW-Authenticate`. **11c** (CSRF-skydd med `XSRF-TOKEN`) kom sedan (se nedan).
 - **Säkerhetskritisk kod.** Sessionen bär inloggningen. Koden är testad genom en riktig server
   med session fixation, påhittade id, utgång, sessionsgränsen, felaktiga uppsättningar, 200
   samtidiga klienter och markörer för varje lösenord och sessions-id i svar, loggrader och
@@ -657,6 +657,52 @@
 - 21 nya tester i `spola.security.web` (registrerade i `SecurityWebTests` via
   `SessionLoginTests`), ungefär 3 s.
 
+### Uppdrag 11c: sessioner del 3, CSRF-skydd med `XSRF-TOKEN` (`spola.security.web`) — behovet levererat
+- **Sista delen av behovet "Inloggning med sessioner och CSRF-skydd för ett JSON-API"** (appen
+  psykologen). Behovet `2026-10-13-inloggning-sessioner-csrf` är därmed **levererat i sin helhet
+  (11a–11c)**: `GET` ger `XSRF-TOKEN`, inloggning utan huvudet ger 403, inloggning med huvudet ger
+  200 och en ny sessionscookie, `/api/auth/me` ger namnet, och efter utloggning ger
+  `/api/auth/me` 401. Appen kan byta Spring Securitys `csrf(...)` med
+  `CookieCsrfTokenRepository.withHttpOnlyFalse()`, `CsrfTokenRequestAttributeHandler` och
+  `CsrfCookieFilter` mot `.csrf(Csrf.cookie())`; Angulars `HttpClient` fungerar utan ändringar.
+- **Säkerhetskritisk kod.** Skyddet är testat genom en riktig server med 30 förfalskade och
+  felformade förfrågningar för fyra metoder, 200 samtidiga klienter med egna `CookieManager`,
+  mutationer av koden och markörer för varje lösenord, token och sessions-id i svar, loggrader och
+  undantag, men **en människa bör granska det** innan ramverket används på riktigt.
+- `Csrf` (ny publik klass, oföränderlig och trådsäker): `Csrf.cookie()`, `withCookie(UnaryOperator
+  <ResponseCookie.Builder>)` och konstanterna `COOKIE_NAME` (`XSRF-TOKEN`) och `HEADER_NAME`
+  (`X-XSRF-TOKEN`). `WebSecurity.Builder.csrf(Csrf)` slår på skyddet, med och utan
+  `sessions(...)`; två anrop är en rad i `build()`s `IllegalArgumentException`.
+- Dubbelinskickad cookie, tillståndslöst: servern sparar inga token. Token är 32 byte från en
+  `new SecureRandom()` per `WebSecurity`, Base64url utan utfyllnad (43 tecken). `GET`, `HEAD`,
+  `OPTIONS` och `TRACE` kontrolleras inte (exakt jämförelse, så `post` och `get` med gemener
+  kontrolleras); övriga metoder kräver exakt ett välformat `X-XSRF-TOKEN` som är lika med ett av
+  förfrågans välformade `XSRF-TOKEN`-värden (`MessageDigest.isEqual`), annars samma 403 som en
+  nekad regel. Kontrollen gäller alla vägar, också `permitAll`, inloggningen, utloggningen och
+  Basic.
+- Filtrets ordning: sessionsfiltret, 400 för flera `Authorization`-fält, CSRF-kontrollen,
+  identiteten (sessionen, sedan mekanismerna), reglerna. En förfalskad förfrågan når aldrig
+  `Authenticator`.
+- Cookien `XSRF-TOKEN=<token>; Path=/; SameSite=Lax` (utan `HttpOnly`, `Secure` med
+  `withCookie(c -> c.secure(true))`) sätts på varje svar som går ut genom säkerhetsfiltret till en
+  förfrågan utan välformad cookie (200, 401, 403, 404, 405, mappade fel), och med en ny token av
+  `WebSecurity.login` och `WebSecurity.logout`; högst ett `Set-Cookie` per svar och
+  `Cache-Control: no-store` om svaret saknar `Cache-Control`. Cookie-funktionen körs en gång, i
+  `build()`; `null`, `HttpOnly`, en annan cookie, `Max-Age=0` och en cookie som
+  `ResponseCookie.Builder.build()` avvisar (`SameSite=None` utan `Secure`) ger
+  `IllegalArgumentException`.
+- `WebSecurity.toString()` visar `, csrf` när skyddet är på. Inga ändrade `requires` eller
+  `exports`, inga ändringar i `Build.java`, `spola.web` eller någon annan modul. En ny
+  huvudkällfil (`Csrf.java`), så `SourceRulesTests` räknar 12 filer i stället för 11 (se
+  ARCHITECTURE.md).
+- Klass-Javadoc för `Csrf` och `WebSecurity` (filtrets steg, avsnittet "CSRF protection"),
+  `module-info.java` och `README.md` i `modules/security-web/` (avsnittet "CSRF-skydd för en
+  SPA": Angulars `withXsrfConfiguration`, behovets Spring-kod med `CsrfCookieFilter` bredvid
+  `CsrfExample.java`, som är kompilerad testkälla och jämförs med README av ett test,
+  jämförelsetabell och avvikelsetabell).
+- 62 nya tester i `spola.security.web` (registrerade i `SecurityWebTests` via `CsrfTests`),
+  ungefär 3 s.
+
 ### Versioner och releaser (gjort för hand, utanför loopen)
 - `VERSION` i `Build.java` (nu `0.1.0`) sätts som modulversion i varje jar
   (`jar --module-version`). `java Build.java version` skriver ut den.
@@ -669,11 +715,9 @@
   `uppdrag/behov/` och står still (`IDLE`) när inget väntar. Se `MONSTER.md`.
 
 ## Återstår
-- **Behovet "Inloggning med sessioner och CSRF-skydd för ett JSON-API"** (psykologen): 11a
-  (sessioner) och 11b (inloggning och utloggning med sessionen i `spola.security.web`) är
-  klara; **11c** (CSRF-skydd med `XSRF-TOKEN`) återstår och ligger som uppdragsfil i
-  `uppdrag/`. Först efter 11c fungerar behovets hela flöde (inloggning med CSRF-token).
-- Inget annat är beställt. Idéerna i `uppdrag/PLAN.md` (JWT, PostgreSQL, pool och
+- Inget är beställt. Behovet "Inloggning med sessioner och CSRF-skydd för ett JSON-API"
+  (psykologen) är levererat i sin helhet (11a–11c); appen byter sin Spring-konfiguration efter
+  nästa release. Idéerna i `uppdrag/PLAN.md` (JWT, PostgreSQL, pool och
   transaktioner, query-DSL, migreringar, schemaläggning, observability, starter) byggs när ett
   behov kommer.
 - **Kvar från friktionsrapporten i 05c** (`modules/demo/README.md`, avsnitt "Friktion"):
@@ -692,6 +736,29 @@
     `LoggingSettings` efter bindningen, inte i `ConfigException` (punkt 7).
 
 ## Kända problem och begränsningar
+- **CSRF-skydd (spola.security.web, 11c):** säkerhetskritiskt; **bör granskas av en människa**
+  innan ramverket används på riktigt. **Skyddet faller vid XSS:** skript på appens egna sidor kan
+  läsa `XSRF-TOKEN` och skicka huvudet. **Det faller också för origins som CORS öppnar för:** en
+  origin som får skicka `X-XSRF-TOKEN` med cookies kan, om den kan sätta cookien (en underdomän på
+  samma webbplats kan sätta den för huvuddomänen), skicka ett matchande par. Utan CORS för andra
+  origins hjälper en planterad cookie inte, eftersom huvudet inte går att skicka. **Fasta namn**
+  (`XSRF-TOKEN`, `X-XSRF-TOKEN`) och **ingen formulärparameter** (`_csrf`), så klassiska
+  HTML-formulär utan JavaScript kan inte skicka ändrande anrop med skyddet på. Ingen maskering av
+  token (BREACH-skydd, `XorCsrfTokenRequestAttributeHandler`), inga undantag per väg
+  (`ignoringRequestMatchers`) och ingen token i sessionen. Ett undantag som routern mappar utanför
+  säkerhetsfiltret (400 för flera `Authorization`-fält eller över 200 cookies, ett undantag från en
+  mekanism, en matcher eller en regel) och ett fel i förfrågans kropp får ingen cookie. Med
+  `Max-Age` i cookie-funktionen skickar JDK:ns `CookieManager` (inte en webbläsare) tillbaka värdet
+  inom citattecken, och det räknas inte som en token. Två samtidiga inloggningar eller utloggningar
+  i samma webbläsare ger två `Set-Cookie`, och det som kommer sist gäller; en flik som skickar med
+  den äldre token får 403 och måste läsa cookien igen (Angular gör det inför varje anrop). Anropas
+  `login` eller `logout` från en tråd som lever kvar efter förfrågan kastar de
+  `IllegalStateException`, och en `login` som hann förnya sessionen innan dess byter då inte token.
+  Token finns som `String` i förfrågans huvuden och svarets `Set-Cookie` och kan inte nollställas.
+  I testerna letar 10b:s `LeakTests` efter fyrteckensmarkörer (`zPwd`, `zUsr`) i hela svar;
+  11c:s tester sparar svaren med cookievärdena maskerade, men 11b:s ungefär 300 slumpade
+  sessions-id i `Set-Cookie` gör att ungefär en körning på 1 000 kan bli röd av en slump (11b:s
+  testfiler fick inte ändras i 11c).
 - **Inloggning med session (spola.security.web, 11b):** säkerhetskritisk; **bör granskas av en
   människa** innan ramverket används på riktigt. **Identiteten i sessionen är en
   ögonblicksbild:** ändrade roller, ett avstängt konto eller en borttagen användare i
@@ -701,9 +768,9 @@
   **`login` ändrar inte förfrågans egen identitet:** `identity(request)` svarar i
   inloggningsförfrågan som när filtret körde, och nästa förfrågan ser identiteten; samma för
   `logout`. **Inloggningen loggas inte** (varken lyckade eller misslyckade inloggningar;
-  auditloggning är ett eget behov). **Inget CSRF-skydd än** (11c); till dess skyddar bara
-  `SameSite=Lax` mot förfalskade `POST` från andra webbplatser, inte från andra underdomäner på
-  samma webbplats. Har förfrågans session en identitet provas inga mekanismer, så fel
+  auditloggning är ett eget behov). **CSRF-skydd finns sedan 11c men måste slås på** med
+  `csrf(Csrf.cookie())` (se ovan); utan det skyddar bara `SameSite=Lax` mot förfalskade `POST` från
+  andra webbplatser, inte från andra underdomäner på samma webbplats. Har förfrågans session en identitet provas inga mekanismer, så fel
   Basic-uppgifter bredvid en giltig session ger inte 401. Registreras `sessions.filter()` efter
   `security.filter()` ger bara de förfrågningar som reglerna släpper igenom 500; nekade får sitt
   vanliga 401/403. Ett undantag i handlern efter `login` (till exempel 406 från
@@ -741,7 +808,8 @@
   (`X-Content-Type-Options`, `X-Frame-Options`, HSTS) sätts. **Ingen auditloggning** av
   inloggningar (uppdrag 18); modulen loggar ingenting. Inloggning och utloggning med session
   finns sedan 11b (se nedan), men ingen formulärinloggning med HTML-formulär och
-  omdirigeringar, inget JWT, ingen CORS och ännu inget CSRF-skydd (11c). Att filtret är registrerat först på routern kan
+  omdirigeringar, inget JWT och ingen CORS; CSRF-skydd för en SPA finns sedan 11c
+  (`csrf(Csrf.cookie())`, se ovan), men inget för HTML-formulär. Att filtret är registrerat först på routern kan
   modulen inte kontrollera; ett filter före det ser också förfrågningar som sedan nekas.
   Identiteten finns bara på `WebRequest` (ingen `SecurityContextHolder` eller `ScopedValue`
   för kod utanför webblagret). Användarnamnet och `Authorization`-värdet finns som `String` och
@@ -794,8 +862,8 @@
   innehålla synlig ASCII: råa mellanslag, tab eller radbrytningar (t.ex. ett avslutande
   `\r\n` från ett handskrivet `curl`-anrop) ger 400. `readForm` kräver `Content-Type` också
   för en tom kropp. Överhoppade cookies loggas inte, så en felaktig cookie syns inte i
-  serverns logg. Ingen multipart, inga signerade cookies och ingen CSRF (11c). Sessioner kom i
-  11a (se ovan).
+  serverns logg. Ingen multipart och inga signerade cookies. Sessioner kom i 11a och CSRF-skydd i
+  11c, i `spola.security.web` (se ovan).
 - **Web (spola.web, 08b):** efter en 413 från `readJson` läser `spola.http` resten av kroppen
   (upp till `maxBodySize`, utan att buffra) innan svaret skickas; en klient som skickar en
   stor kropp får alltså vänta tills den skickats. `readJson` kan inte veta om någon läst

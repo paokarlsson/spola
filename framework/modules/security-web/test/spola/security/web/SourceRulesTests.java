@@ -39,7 +39,7 @@ final class SourceRulesTests {
                     try (var files = Files.walk(SOURCES)) {
                         sources = files.filter(f -> f.toString().endsWith(".java")).sorted().toList();
                     }
-                    assertEquals(11, sources.size(), "files: " + sources);
+                    assertEquals(12, sources.size(), "files: " + sources);
                     for (var file : sources) {
                         var text = Files.readString(file).replaceAll("(?s)/\\*.*?\\*/", "").replaceAll("//[^\n]*", "");
                         for (var forbidden : List.of("java.lang.reflect", "java.lang.invoke", "getDeclared", "setAccessible",

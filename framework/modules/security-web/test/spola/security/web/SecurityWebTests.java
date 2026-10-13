@@ -28,6 +28,7 @@ public final class SecurityWebTests {
                 RouterTests.tests(),
                 ConcurrencyTests.tests(),
                 SessionLoginTests.tests(),
+                CsrfTests.tests(),
                 ReadmeTests.tests(),
                 LeakTests.tests())
                 .timeout(Duration.ofSeconds(120));

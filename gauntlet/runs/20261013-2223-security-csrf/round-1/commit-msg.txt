@@ -1,0 +1,14 @@
+feat(security-web): protect against CSRF with XSRF-TOKEN
+
+WebSecurity.Builder.csrf(Csrf.cookie()) adds Angular's double-submit
+pattern: a readable XSRF-TOKEN cookie set on the first response, and
+POST/PUT/PATCH/DELETE need a matching X-XSRF-TOKEN header or get 403
+before any authentication. Login and logout get a new token. The need's
+full flow runs with HttpClient and CookieManager. Only MINOR findings left.
+
+Gauntlet-Run: 20261013-2223-security-csrf
+Gauntlet-Round: 1/5
+Gauntlet-Verdict: PASS (0 blocker, 0 major, 11 minor upheld)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_016R1SyuZe48AGwQWbo2Xdkz

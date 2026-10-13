@@ -6,9 +6,12 @@
  * logged-in user per request ({@code SecurityContext}, {@code @AuthenticationPrincipal}),
  * {@code @PreAuthorize("hasRole('ADMIN')")} as a filter on a group, the 401
  * ({@code AuthenticationEntryPoint}, also {@code HttpStatusEntryPoint}) and 403
- * ({@code AccessDeniedHandler}) responses, and a login kept in the HTTP session
+ * ({@code AccessDeniedHandler}) responses, a login kept in the HTTP session
  * ({@code HttpSessionSecurityContextRepository}, {@code changeSessionId()} at login,
- * {@code invalidate()} at logout).
+ * {@code invalidate()} at logout), and CSRF protection for a single-page application
+ * ({@code csrf()} with {@code CookieCsrfTokenRepository.withHttpOnlyFalse()},
+ * {@code CsrfTokenRequestAttributeHandler} and a filter that sets the cookie on the first
+ * response).
  *
  * <ul>
  *   <li>{@link spola.security.web.WebSecurity}: built with
@@ -33,6 +36,13 @@
  *       against session fixation) and stores the identity in it, a snapshot;
  *       {@link spola.security.web.WebSecurity#logout} removes the session. Without
  *       {@code sessions(...)} both throw {@link java.lang.IllegalStateException} (500).</li>
+ *   <li>CSRF protection: {@link spola.security.web.WebSecurity.Builder#csrf} with
+ *       {@link spola.security.web.Csrf#cookie()}, Angular's double-submit cookie. The response
+ *       sets the cookie {@code XSRF-TOKEN} (not {@code HttpOnly}) on the first response and
+ *       with a new token at login and logout, and a request with a method other than
+ *       {@code GET}, {@code HEAD}, {@code OPTIONS} and {@code TRACE} must repeat it in the
+ *       header {@code X-XSRF-TOKEN}, or it gets 403 before any authentication. The server
+ *       keeps no tokens.</li>
  * </ul>
  *
  * <p>{@code spola.web} and {@code spola.security} are required transitively because both are

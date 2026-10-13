@@ -7,8 +7,10 @@ kärnan i Spring Securitys webbdel: `SecurityFilterChain` med `authorizeHttpRequ
 `@AuthenticationPrincipal`), `@PreAuthorize("hasRole('ADMIN')")` som ett filter på en grupp och
 svaren 401 (`AuthenticationEntryPoint`) och 403 (`AccessDeniedHandler`), och inloggning som
 bärs av en sessionscookie (`HttpSessionSecurityContextRepository`, `changeSessionId()`,
-`invalidate()`; se [Inloggning med session](#inloggning-med-session)). Allt är vanlig Java-kod
-utan annoteringar, utan reflektion och utan `ThreadLocal`.
+`invalidate()`; se [Inloggning med session](#inloggning-med-session)), och CSRF-skydd för en SPA
+(`csrf()` med `CookieCsrfTokenRepository.withHttpOnlyFalse()`; se
+[CSRF-skydd för en SPA](#csrf-skydd-för-en-spa)). Allt är vanlig Java-kod utan annoteringar,
+utan reflektion och utan `ThreadLocal`.
 
 > **Säkerhetskritisk kod.** Låt en människa granska modulen innan den används på riktigt.
 
@@ -33,6 +35,9 @@ fungerar utan säkerhet.
   `security.filter()` registreras.
 - `WebSecurity.login(request, identity)` (nytt sessions-id, identiteten i sessionen) och
   `WebSecurity.logout(request)` (sessionen tas bort) i en handler.
+- `WebSecurity.builder().csrf(Csrf.cookie())`: CSRF-skydd med cookien `XSRF-TOKEN` och huvudet
+  `X-XSRF-TOKEN` (Angulars standard). Ändrande anrop utan matchande huvud får 403, och
+  `login`/`logout` ger en ny token.
 
 Den första regeln vars matcher matchar avgör, och **en förfrågan som ingen regel matchar nekas**.
 Nekas en anonym förfrågan, eller är uppgifterna fel, blir svaret 401 med
@@ -206,7 +211,7 @@ svarar med samma 401 och 403 som det centrala filtret. `requireIdentity` motsvar
 
 | Avvikelse | Varför |
 |---|---|
-| Ingen formulärinloggning (`formLogin()`) | Inloggningen är en vanlig handler som kontrollerar lösenordet med `Authenticator` och anropar `WebSecurity.login`, och utloggningen anropar `WebSecurity.logout` (se [Inloggning med session](#inloggning-med-session)). HTML-formulär med omdirigeringar finns inte; CSRF-skydd kommer i uppdrag 11c, och JWT och CORS när ett behov kommer. |
+| Ingen formulärinloggning (`formLogin()`) | Inloggningen är en vanlig handler som kontrollerar lösenordet med `Authenticator` och anropar `WebSecurity.login`, och utloggningen anropar `WebSecurity.logout` (se [Inloggning med session](#inloggning-med-session)). HTML-formulär med omdirigeringar finns inte. CSRF-skydd för en SPA finns (se [CSRF-skydd för en SPA](#csrf-skydd-för-en-spa)); JWT och CORS byggs när ett behov kommer. |
 | Nekat som standard i stället för krav på `anyRequest()` | En förfrågan som ingen regel matchar nekas (401 eller 403). En glömd regel stänger alltså en väg i stället för att öppna den. |
 | `GET`-regler gäller även `HEAD` | Routern svarar på `HEAD` med `GET`-routen; annars skulle en regel för `GET` gå att kringgå med `HEAD`. |
 | Segmentvisa prefix i stället för Ant-mönster (`/**`, `*`, `?`) | `under("/admin")` jämför hela, avkodade segment precis som routern: `/admin/x` och `/%61dmin` matchar, `/administrator` gör det inte. Det som en regel skyddar är exakt det som routern serverar under samma prefix. |
@@ -236,13 +241,14 @@ utan `WWW-Authenticate`, så att webbläsaren inte visar Basic-rutan.
 - `WebSecurity.logout(request)`: sessionen tas bort med alla attribut och svaret tar bort
   cookien. Utan session händer ingenting.
 - Säkerhetsfiltret skapar aldrig en session: anonyma anrop, 401, 403 och `/actuator/health` får
-  inget `Set-Cookie`.
+  ingen sessionscookie (och utan `csrf(...)` inget `Set-Cookie` alls).
 - Utan `sessions(...)`, eller utan säkerhetsfiltret, ger `login` och `logout` 500
   (`IllegalStateException`).
 
-CSRF-skydd (`XSRF-TOKEN`) kommer i uppdrag 11c. Fram till dess skyddar `SameSite=Lax` på
-sessionscookien mot förfalskade `POST` från andra webbplatser, men inte från andra
-underdomäner på samma webbplats.
+Exemplet här har inget CSRF-skydd, så att inloggningen syns för sig. Med `csrf(Csrf.cookie())`
+skyddas också ändrande anrop mot CSRF (se [CSRF-skydd för en SPA](#csrf-skydd-för-en-spa)); utan
+det skyddar bara `SameSite=Lax` på sessionscookien mot förfalskade `POST` från andra webbplatser,
+men inte från andra underdomäner på samma webbplats.
 
 ### Spring Security
 
@@ -484,5 +490,250 @@ cookien och det gamla id:t 401.
 | `login` ändrar inte förfrågans egen identitet | I inloggningsförfrågan svarar `WebSecurity.identity(request)` som när filtret körde (oftast anonym), och reglerna prövas inte om; nästa förfrågan ser identiteten. Identiteten är ett värde på förfrågan, inte ett `SecurityContextHolder` som går att skriva om mitt i. Svara med den `Identity` som skickades in. Samma sak gäller `logout`. |
 | Bara `security.filter()` registreras | Säkerhetsfiltret kör sessionsfiltret självt, ytterst, så att det aldrig hamnar på fel plats. Registreras `sessions.filter()` också når sessionsfiltret förfrågan två gånger och svaret blir 500. |
 | `Responses.json(request, 200, JsonObject.of(...))` i stället för `Map.of(...)` | JSON mappas explicit och utan reflektion (`spola.json`). |
-| Inget CSRF-skydd ännu | Kommer i uppdrag 11c (`XSRF-TOKEN`). Spring har CSRF-skydd påslaget som standard. |
+| CSRF-skyddet slås på uttryckligen | Spring har CSRF-skydd påslaget som standard; här krävs `csrf(Csrf.cookie())` (se [CSRF-skydd för en SPA](#csrf-skydd-för-en-spa)). Exemplet ovan har det inte, så att det visar inloggningen för sig. |
 | Inloggningar loggas inte | Varken lyckade eller misslyckade inloggningar ger en loggrad (auditloggning är ett eget behov). |
+
+## CSRF-skydd för en SPA
+
+En Angular-app som pratar med sitt JSON-API på samma origin skyddas mot CSRF med Angulars
+standardmönster, en dubbelinskickad cookie: motsvarigheten till Spring Securitys `csrf(...)` med
+`CookieCsrfTokenRepository.withHttpOnlyFalse()` och `CsrfTokenRequestAttributeHandler`, plus ett
+`CsrfCookieFilter` som sätter cookien redan på första svaret. Servern sätter cookien `XSRF-TOKEN`,
+som appens JavaScript kan läsa, och Angular skickar värdet i huvudet `X-XSRF-TOKEN` på varje
+anrop som kan ändra något. Ett sådant anrop utan matchande huvud får 403.
+
+- `WebSecurity.builder().csrf(Csrf.cookie())` slår på skyddet, med och utan `sessions(...)`.
+  Cookien är `XSRF-TOKEN=<token>; Path=/; SameSite=Lax`, utan `HttpOnly` (Angular måste kunna
+  läsa den) och utan `Secure`. Bakom en TLS-proxy skrivs
+  `Csrf.cookie().withCookie(c -> c.secure(true))`; `Secure` sätts aldrig efter schemat.
+- `GET`, `HEAD`, `OPTIONS` och `TRACE` kontrolleras inte. Alla andra metoder, också `PURGE` och
+  `post` med gemener, kräver exakt ett `X-XSRF-TOKEN`-fält med en välformad token (43 tecken
+  Base64url) som är lika med en av förfrågans `XSRF-TOKEN`-cookies, jämförd i konstant tid.
+  Annars blir svaret 403, samma svar som en nekad regel, och varken handlern eller filtren
+  innanför säkerhetsfiltret körs. Kontrollen gäller varje väg: `permitAll`-vägar, inloggningen,
+  utloggningen och förfrågningar med Basic-uppgifter.
+- Ordningen i säkerhetsfiltret: sessionsfiltret, 400 för flera `Authorization`-fält,
+  CSRF-kontrollen, identiteten (sessionen och sedan mekanismerna), reglerna. En förfalskad
+  förfrågan når alltså aldrig `Authenticator` och kostar ingen PBKDF2-beräkning.
+- Saknar förfrågan en välformad `XSRF-TOKEN`-cookie sätter svaret en ny token, vilket svar det än
+  är (handlerns, 401, 403, 404, mappade fel), så att Angular har cookien före sitt första
+  `POST`. En förfrågan som har en får ingen ny, så token byts inte vid varje anrop.
+- `WebSecurity.login` och `WebSecurity.logout` ger svaret en ny token. Webbläsaren byter ut
+  cookien, och den gamla token slutar fungera.
+- Servern sparar inga token, varken i minnet eller i sessionen: huvudet jämförs med cookien i
+  samma förfrågan.
+- Skyddet bygger på att en annan origin inte kan läsa cookien och inte kan sätta ett eget huvud
+  utan CORS. Det skyddar inte mot XSS (skript på appens egna sidor kan läsa cookien) och inte mot
+  en origin som CORS släpper igenom med huvudet.
+
+### Angular
+
+```ts
+// app.config.ts
+export const appConfig: ApplicationConfig = {
+  providers: [
+    provideHttpClient(withXsrfConfiguration({ cookieName: 'XSRF-TOKEN', headerName: 'X-XSRF-TOKEN' })),
+  ],
+};
+```
+
+Namnen är Angulars standard, så `withXsrfConfiguration` kan också utelämnas. Angular skickar
+huvudet på anrop som inte är `GET` eller `HEAD` till relativa URL:er (samma origin), och läser
+cookien inför varje anrop, så den nya token efter inloggningen används direkt.
+
+### Spring Security
+
+```java
+@Configuration
+@EnableWebSecurity
+class SecurityConfig {
+
+    @Bean
+    SecurityFilterChain securityFilterChain(HttpSecurity http) throws Exception {
+        http.csrf(csrf -> csrf
+                        .csrfTokenRepository(CookieCsrfTokenRepository.withHttpOnlyFalse())
+                        .csrfTokenRequestHandler(new CsrfTokenRequestAttributeHandler()))
+                .addFilterAfter(new CsrfCookieFilter(), CsrfFilter.class)
+                .authorizeHttpRequests(r -> r
+                        .requestMatchers("/api/auth/login", "/api/auth/logout").permitAll()
+                        .requestMatchers("/actuator/health").permitAll()
+                        .anyRequest().authenticated())
+                .sessionManagement(s -> s.sessionCreationPolicy(SessionCreationPolicy.IF_REQUIRED))
+                .exceptionHandling(h -> h.authenticationEntryPoint(new HttpStatusEntryPoint(HttpStatus.UNAUTHORIZED)))
+                .formLogin(f -> f.disable())
+                .httpBasic(b -> b.disable())
+                .logout(l -> l.disable());
+        return http.build();
+    }
+}
+
+/** Loads the deferred token on every request, so that the repository sets XSRF-TOKEN on the first response. */
+final class CsrfCookieFilter extends OncePerRequestFilter {
+
+    @Override
+    protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain chain)
+            throws ServletException, IOException {
+        CsrfToken token = (CsrfToken) request.getAttribute(CsrfToken.class.getName());
+        token.getToken();                                       // renders the cookie
+        chain.doFilter(request, response);
+    }
+}
+```
+
+`AuthController` är densamma som i [Inloggning med session](#inloggning-med-session).
+
+### Spola
+
+```java
+import static spola.json.codec.JsonCodec.field;
+import static spola.json.codec.JsonCodecs.STRING;
+
+import java.time.Duration;
+import java.time.InstantSource;
+import spola.json.JsonBoolean;
+import spola.json.JsonObject;
+import spola.json.JsonString;
+import spola.json.codec.JsonCodec;
+import spola.security.AuthResult;
+import spola.security.Authenticator;
+import spola.security.Identity;
+import spola.web.Responses;
+import spola.web.Router;
+import spola.web.RouterBuilder;
+import spola.web.SessionOptions;
+import spola.web.Sessions;
+
+/** The README example "CSRF-skydd för en SPA": a JSON API for Angular with a session login and CSRF protection. */
+public final class CsrfExample {
+
+    private CsrfExample() {
+    }
+
+    /**
+     * The body of {@code POST /api/auth/login}.
+     *
+     * @param username the username
+     * @param password the password
+     */
+    public record Login(String username, String password) {
+
+        /**
+         * Without the password, so that it never ends up in a log line.
+         *
+         * @return {@code Login[username=...]}
+         */
+        @Override
+        public String toString() {
+            return "Login[username=" + username + "]";
+        }
+    }
+
+    /** {@code {"username":"...","password":"..."}}, mapped explicitly (no reflection). */
+    public static final JsonCodec<Login> LOGIN = JsonCodec.object(Login::new,
+            field("username", STRING, Login::username),
+            field("password", STRING, Login::password));
+
+    /**
+     * The sessions: 30 minutes idle, the cookie {@code SESSION} with {@code Path=/},
+     * {@code HttpOnly} and {@code SameSite=Lax}.
+     *
+     * @param secure {@code config.booleanValue("cookie.secure")}: {@code true} over HTTPS, also
+     *               behind a TLS proxy ({@code Secure} is never set from the scheme)
+     * @param clock  {@code InstantSource.system()} in production; the tests move their own
+     * @return the sessions
+     */
+    public static Sessions sessions(boolean secure, InstantSource clock) {
+        return Sessions.inMemory(SessionOptions.DEFAULT
+                .withIdleTimeout(Duration.ofMinutes(30))
+                .withCookie(cookie -> cookie.secure(secure)), clock); // HttpOnly, SameSite=Lax
+    }
+
+    /**
+     * The rules: login, logout and the health check are open, everything else needs a login, and
+     * every request that changes something needs the CSRF header.
+     *
+     * @param sessions the sessions that keep the login
+     * @return the security
+     */
+    public static WebSecurity security(Sessions sessions) {
+        return WebSecurity.builder()
+                .sessions(sessions) // the identity is read from the session
+                .csrf(Csrf.cookie()) // XSRF-TOKEN / X-XSRF-TOKEN, 403 on a mismatch
+                .rule(RequestMatcher.exactly("/api/auth/login"), AccessRule.permitAll())
+                .rule(RequestMatcher.exactly("/api/auth/logout"), AccessRule.permitAll())
+                .rule(RequestMatcher.exactly("/actuator/health"), AccessRule.permitAll())
+                .rule(RequestMatcher.anyRequest(), AccessRule.authenticated())
+                .build();
+    }
+
+    /**
+     * The routes, behind the security filter alone.
+     *
+     * @param routes        {@code Router.builder()}; the tests pass one that logs to them
+     * @param security      the security
+     * @param authenticator checks usernames and passwords
+     * @return the router
+     */
+    public static Router router(RouterBuilder routes, WebSecurity security, Authenticator authenticator) {
+        return routes
+                .filter(security.filter()) // only this one: it runs sessions.filter() itself
+                .post("/api/auth/login", request -> {
+                    var body = request.readJson(LOGIN);
+                    return switch (authenticator.authenticate(body.username(), body.password())) {
+                        case AuthResult.Authenticated(Identity identity) -> {
+                            WebSecurity.login(request, identity); // a new session id and a new CSRF token
+                            yield Responses.json(request, 200, JsonObject.of("success", JsonBoolean.TRUE,
+                                    "username", JsonString.of(identity.name())));
+                        }
+                        case AuthResult.Failed failed -> Responses.json(request, 401,
+                                JsonObject.of("success", JsonBoolean.FALSE));
+                    };
+                })
+                .post("/api/auth/logout", request -> {
+                    WebSecurity.logout(request); // the session is removed, the cookie expires, a new CSRF token
+                    return Responses.json(request, 200, JsonObject.of("success", JsonBoolean.TRUE));
+                })
+                .get("/api/auth/me", request -> Responses.json(request, 200,
+                        JsonObject.of("username", JsonString.of(WebSecurity.requireIdentity(request).name()))))
+                .get("/actuator/health", request -> Responses.json(request, 200,
+                        JsonObject.of("status", JsonString.of("UP"))))
+                .build();
+    }
+}
+```
+
+I produktion startas det som `LoginExample` i [Inloggning med session](#inloggning-med-session),
+med `CsrfExample` i stället. Bakom en TLS-proxy blir raden
+`.csrf(Csrf.cookie().withCookie(cookie -> cookie.secure(true)))`. Testerna kör exemplet genom en
+riktig server med `HttpClient` och `CookieManager`, där huvudet `X-XSRF-TOKEN` sätts från cookien
+i `CookieManager` som Angular gör: `/actuator/health` ger 200 och en `XSRF-TOKEN` men ingen
+session, inloggning utan huvudet ger 403 utan att handlern eller `Authenticator` anropas,
+inloggning med huvudet ger 200, en `SESSION`-cookie och en ny `XSRF-TOKEN`, `/api/auth/me` ger
+`{"username":"anna"}`, utloggning med token från före inloggningen ger 403 och med den aktuella
+200, och därefter ger `/api/auth/me` 401.
+
+### Spring Security och Spola, CSRF
+
+| Spring Security | Spola |
+|---|---|
+| `csrf(c -> c.csrfTokenRepository(CookieCsrfTokenRepository.withHttpOnlyFalse()))` | `WebSecurity.builder().csrf(Csrf.cookie())` |
+| `CsrfTokenRequestAttributeHandler` (token utan maskering) | huvudet jämförs med cookiens värde som det är |
+| `CsrfCookieFilter` efter `CsrfFilter` | inget eget filter: säkerhetsfiltret sätter cookien på första svaret |
+| `CookieCsrfTokenRepository.setCookieCustomizer(c -> c.secure(true))` | `Csrf.cookie().withCookie(c -> c.secure(true))` |
+| `CsrfFilter` med 403 från `AccessDeniedHandler` | kontrollen i `security.filter()`, samma 403 som en nekad regel |
+| `CsrfFilter.DEFAULT_CSRF_MATCHER` (`GET`, `HEAD`, `TRACE`, `OPTIONS` kontrolleras inte) | samma metoder, jämförda exakt |
+| `CsrfAuthenticationStrategy` och `CsrfLogoutHandler` | `WebSecurity.login` och `WebSecurity.logout` ger en ny token |
+
+### Avvikelser från Spring Security, CSRF
+
+| Avvikelse | Varför |
+|---|---|
+| Fasta namn | Cookien heter alltid `XSRF-TOKEN` och huvudet `X-XSRF-TOKEN` (`Csrf.COOKIE_NAME` och `Csrf.HEADER_NAME`), Angulars och Springs standard. Spring har `setCookieName` och `setHeaderName`; egna namn byggs när ett behov kommer. |
+| Ingen `_csrf`-formulärparameter | Token läses bara ur huvudet, aldrig ur en formulärkropp eller en query. Spring godtar också parametern `_csrf` för HTML-formulär; en SPA skickar huvudet. |
+| Ingen maskering av token | Huvudet ska vara exakt cookiens värde, som med `CsrfTokenRequestAttributeHandler`. Springs standard sedan 6.0, `XorCsrfTokenRequestAttributeHandler`, maskerar token per svar mot BREACH, men Angular skickar cookiens råa värde; därför väljer behovet bort maskeringen också i Spring. |
+| Inga undantag per väg | Ingen `ignoringRequestMatchers(...)`: kontrollen gäller varje väg och varje metod utom `GET`, `HEAD`, `OPTIONS` och `TRACE`, också `permitAll`-vägar, inloggningen och utloggningen. En klient utan webbläsare (tjänst-till-tjänst) skickar samma värde i cookien och huvudet. |
+| Ingen token i sessionen | Ingen `HttpSessionCsrfTokenRepository`: servern sparar inga token alls, bara cookien bär dem (som `CookieCsrfTokenRepository`). Skyddet fungerar utan sessioner och tar inget minne. |
+| Kontrollen före autentiseringen | Kontrollen kommer före både sessionens identitet och mekanismerna. I Spring ligger `CsrfFilter` också före autentiseringsfiltren (`BasicAuthenticationFilter`, inloggningsfiltren), men sessionens `SecurityContext` laddas av ett filter före det. Här når en förfalskad förfrågan aldrig `Authenticator` och får 403 också anonymt på en skyddad väg. |
+| Cookien sätts på första svaret utan ett eget filter | Spring laddar token lat sedan 6.0, så cookien sätts bara när något läser token, och behovet behöver ett `CsrfCookieFilter`. Här sätter säkerhetsfiltret cookien på varje svar till en förfrågan som saknar en välformad cookie, också 401, 403 och 404. |
+| Ny token också med en egen inloggningshandler | Springs `CsrfAuthenticationStrategy` och `CsrfLogoutHandler` körs av Springs egna inloggnings- och utloggningsfilter; behovets `AuthController` (med `logout(l -> l.disable())`) byter alltså inte token. Här gör `WebSecurity.login` och `WebSecurity.logout` det alltid. |
+| Strikt format | Ett huvud- eller cookievärde som inte är exakt 43 tecken ur `[A-Za-z0-9_-]` räknas som saknat, och två `X-XSRF-TOKEN`-fält ger 403. Spring jämför vilka värden som helst. |

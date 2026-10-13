@@ -2851,3 +2851,160 @@ uppdraget tillät behövdes inte.
   och texter. Mutationer av koden (ingen `renew`, mekanismerna före sessionen, ingen
   `invalidate`, ingen kontroll av sessioner, ett id eller lösenord i ett svar eller en loggrad)
   fångas av testerna.
+
+## CSRF-skydd (`spola.security.web`)
+
+Uppdrag 11c, sista delen av behovet "Inloggning med sessioner och CSRF-skydd för ett JSON-API"
+(appen psykologen). Ändrande anrop skyddas mot CSRF med Angulars standardmönster, motsvarigheten
+till Spring Securitys `csrf(...)` med `CookieCsrfTokenRepository.withHttpOnlyFalse()` och
+`CsrfTokenRequestAttributeHandler` plus ett `CsrfCookieFilter` som sätter cookien på första
+svaret. Med 11a och 11b fungerar nu behovets hela flöde. Koden är säkerhetskritisk och bör
+granskas av en människa.
+
+### API (paket `spola.security.web`)
+
+| Typ | Roll |
+|---|---|
+| `Csrf` | ny, final, oföränderlig och trådsäker: `cookie()`, `withCookie(UnaryOperator<ResponseCookie.Builder>)`, konstanterna `COOKIE_NAME` (`XSRF-TOKEN`) och `HEADER_NAME` (`X-XSRF-TOKEN`) |
+| `WebSecurity.Builder` | ny: `csrf(Csrf)`; `build()` rapporterar fler än ett anrop och en felaktig cookie-funktion |
+| `WebSecurity` | `filter()` kontrollerar förfrågan och sätter cookien; `login` och `logout` ger en ny token; `toString()` visar `, csrf` |
+
+Interna klasser: `Csrf.Protection` (en per `WebSecurity`: cookiens attribut och slumpkällan) och
+`Csrf.Exchange` (förfrågans CSRF-tillstånd, ett attribut under en nyckel som bara `WebSecurity`
+har). `requires` och `exports` är oförändrade (`SecureRandom`, `MessageDigest` och `Base64` finns
+i `java.base`, `ResponseCookie` och `Responses` i `spola.web`), och inget ändrades i
+`Build.java`, `spola.web` eller någon annan modul: 11a:s och 08c:s publika API räckte.
+
+### Beslut
+
+- **Dubbelinskickad cookie, och servern sparar inga token.** Svaret sätter cookien `XSRF-TOKEN`
+  med en slumpad token, utan `HttpOnly`, så att appens JavaScript kan läsa den; Angular kopierar
+  den till huvudet `X-XSRF-TOKEN` på ändrande anrop, och filtret jämför huvudet med cookien i
+  samma förfrågan. Skyddet vilar på två saker som webbläsaren garanterar: en sida från en annan
+  origin kan få webbläsaren att skicka cookien men kan inte läsa den (cookies är per domän och
+  `Set-Cookie` syns aldrig för skript), och den kan inte sätta ett eget huvud på ett anrop till en
+  annan origin utan en CORS-förfrågan som servern godkänner. En förfalskad förfrågan har alltså
+  cookien men aldrig ett matchande huvud. Eftersom förfrågan bär båda kopiorna behöver servern
+  inte spara något, som Springs `CookieCsrfTokenRepository`: ingen token i minnet eller i
+  sessionen, inget att städa, dela mellan servrar eller förlora vid omstart, och skyddet fungerar
+  likadant med och utan `sessions(...)` (också med bara `HttpBasic`). En token i sessionen
+  (`HttpSessionCsrfTokenRepository`) hade krävt en session redan för anonyma besökare, alltså en
+  session per `GET /actuator/health`, vilket behovet uttryckligen inte vill ha (11a).
+- **Vad skyddet inte täcker.** Skript på appens egna sidor (XSS) kan läsa cookien och skicka
+  huvudet; det går inte att skydda mot med en token som JavaScript måste kunna läsa. En origin som
+  CORS släpper igenom med `X-XSRF-TOKEN` och cookies kan skicka huvudet; om den dessutom kan sätta
+  cookien (en underdomän på samma webbplats kan sätta en cookie för huvuddomänen, "cookie
+  tossing") kan den skicka ett matchande par. Utan CORS för andra origins ger en planterad cookie
+  ingenting, eftersom huvudet inte går att skicka. CORS är utanför uppdraget; begränsningarna står
+  i Javadoc, README och PROGRESS.md.
+- **Token.** 32 byte från en `SecureRandom` per `WebSecurity` (`new SecureRandom()`, plattformens
+  icke-blockerande standard, inte `getInstanceStrong()`), kodade som Base64url utan utfyllnad:
+  exakt 43 tecken ur `[A-Za-z0-9_-]`, 256 bitar, samma form som sessions-id i 11a. Byte-arrayen
+  nollställs efter kodningen. Ett cookie- eller huvudvärde med en annan form (citattecken,
+  utfyllnad, `+` eller `/`, en annan längd) räknas som saknat: det jämförs aldrig och ger, för
+  cookien, en ny token på svaret. Token finns inte i något fält som lever efter svaret
+  (`Exchange` håller bara tre flaggor) och syns aldrig i `toString()` (`Csrf`,
+  `Csrf.Protection`, `Csrf.Exchange` och `WebSecurity` visar bara namn och antal), undantag,
+  loggrader eller problem-svar.
+- **Jämförelsen i konstant tid.** Huvudets ASCII-byte jämförs med varje välformat
+  `XSRF-TOKEN`-värde med `MessageDigest.isEqual`, som är konstanttid för lika långa arrayer (alla
+  är 43 byte), och resultaten ELLER-as utan att avbryta vid första träff. Tiden avslöjar alltså
+  inte hur stor del av en token som stämmer. Det finns ingen hemlighet på servern att läcka, men
+  en angripare som kan mäta tiden för en förfrågan med offrets cookie ska inte kunna gissa token
+  tecken för tecken. Exakt ett `X-XSRF-TOKEN`-fält krävs: två fält (också två lika) är tvetydiga
+  och ger 403, som två `Authorization`-fält ger 400 i 10b. Flera `XSRF-TOKEN`-cookies godtas (det
+  räcker att huvudet matchar en av dem), eftersom en webbläsare skickar två när en gammal cookie
+  med en annan `Path` eller `Domain` ligger kvar (samma skäl som för sessionscookien i 11a).
+- **Metoderna som inte kontrolleras.** `GET`, `HEAD`, `OPTIONS` och `TRACE`, de säkra metoderna i
+  RFC 9110 §9.2.1 och Springs `CsrfFilter.DEFAULT_CSRF_MATCHER`. Metoden jämförs exakt, som i
+  routern (där `get` inte är `GET`): annars skulle `get` med gemener slippa kontrollen men ändå
+  kunna nå en route som registrerats för `get`. Alla andra metoder kontrolleras, också egna
+  (`PURGE`). Säkra metoder får inte ändra något; det är applikationens ansvar, som i Spring.
+- **Ordningen i filtret, och varför kontrollen kommer före autentiseringen.** Sessionsfiltret
+  (ytterst, 11b), 400 för flera `Authorization`-fält (10b), CSRF-kontrollen, identiteten (sessionen
+  och sedan mekanismerna), reglerna. Kontrollen kommer efter sessionsfiltret eftersom det ska ligga
+  ytterst och cookien ska sättas på svaret innanför det, och efter 400-kontrollen eftersom en
+  tvetydig förfrågan är fel oavsett token. Den kommer före identiteten av tre skäl: en förfalskad
+  förfrågan ska aldrig nå `Authenticator` (ingen PBKDF2-beräkning per förfalskning, och inga
+  inloggningsförsök med offrets Basic-uppgifter i webbläsaren), svaret ska vara detsamma oavsett
+  vem som skickar (403 också anonymt på en skyddad väg, som i Spring där `CsrfFilter` ligger före
+  autentiseringsfiltren) och kontrollen behöver ingen identitet. Svaret är filtrets befintliga
+  403 (`Problem.of(403)`, ingen `detail`, `Cache-Control: no-store`, byggt en gång): en förfalskad
+  förfrågan ska inte lära sig något mer än att den nekades, och en egen status eller detalj hade
+  skilt "fel token" från "nekad av en regel" i onödan.
+- **När cookien sätts.** Saknar förfrågan en välformad `XSRF-TOKEN`-cookie lägger filtret ett
+  `Set-Cookie` med en ny token på svaret som kommer tillbaka, vilket svar det än är: handlerns,
+  401, 403 (också kontrollens eget), 404, 405 och mappade fel, eftersom routern mappar undantag
+  innan filtret ser svaret. Angular har då cookien före sitt första `POST`, oavsett vad appen
+  hämtar först, och det behövs inget eget filter som Springs `CsrfCookieFilter` (Spring laddar
+  token lat sedan 6.0 och sätter cookien bara när något läser den). En förfrågan som har en
+  välformad cookie får ingen ny, så token byts inte vid varje förfrågan (det skulle bryta
+  parallella anrop från samma sida). Undantag som routern mappar utanför säkerhetsfiltret (400
+  för flera `Authorization`-fält eller över 200 cookies, ett undantag från en mekanism, en matcher
+  eller en regel) och ett fel i förfrågans kropp går förbi filtret och får ingen cookie; att fånga
+  dem i filtret hade gått förbi applikationens exception mappers.
+- **När cookien byts.** `WebSecurity.login` och `WebSecurity.logout` markerar förfrågans
+  `Exchange`, och svaret får en ny token (Springs `CsrfAuthenticationStrategy` och
+  `CsrfLogoutHandler`). Webbläsaren ersätter cookien, och en token från före inloggningen matchar
+  sedan ingenting: en token som en angripare lyckats lära sig eller plantera före inloggningen
+  gäller inte efter den. `login` förnyar sessionen först och markerar sedan, så en inloggning som
+  får 503 vid sessionsgränsen inte byter token; `logout` byter alltid, också utan session.
+  Markeras förfrågan efter att svaret byggts (en tråd som lever kvar) kastar den
+  `IllegalStateException`, som `Sessions.renew` i 11a. Ett svar får högst ett `Set-Cookie` för
+  `XSRF-TOKEN`: första svaret och en inloggning i samma förfrågan (möjligt bara på en säker
+  metod) ger ett.
+- **`Cache-Control`.** Ett svar som sätter `XSRF-TOKEN` får `Cache-Control: no-store` om det
+  saknar `Cache-Control`, som sessionscookien i 11a, så att en delad cache aldrig lämnar ut en
+  annan besökares token. Ett `Cache-Control` som handlern satt behålls.
+- **Cookien och cookie-funktionen.** Cookien är `ResponseCookie.of("XSRF-TOKEN", token)
+  .httpOnly(false)` ändrad av `withCookie`-funktionen; standard är
+  `XSRF-TOKEN=<token>; Path=/; SameSite=Lax`, utan `HttpOnly` och `Secure`. `Secure` sätts bara
+  när funktionen säger det, aldrig efter schemat (som är `http` bakom en TLS-proxy). Som i 11a
+  körs funktionen en gång, i `build()`, på en platshållare med samma form som en token, och dess
+  attribut (`Path`, `Domain`, `Max-Age`, `Secure`, `SameSite`) används för varje ny token: fel
+  märks vid uppstart, och ingen användarkod körs per svar. `build()` provbygger cookien och
+  rapporterar, en rad per problem i samma `IllegalArgumentException` som övriga
+  konfigurationsfel: `null`, `HttpOnly` påslaget (Angular skulle inte kunna läsa cookien och varje
+  ändrande anrop skulle få 403), en builder för en annan cookie, `Max-Age=0` (cookien skulle tas
+  bort direkt) och en cookie som `ResponseCookie.Builder.build()` avvisar (`SameSite=None` utan
+  `Secure`, felaktig `Path` eller `Domain`). Ett annat undantag från funktionen släpps igenom
+  oförändrat. `withCookie` ersätter funktionen (som `SessionOptions.withCookie`).
+- **Fasta namn och inga tillval.** Namnen är Angulars och Springs standard och finns som
+  konstanter. Egna namn, en `_csrf`-parameter i formulärkroppar, maskerade token (BREACH-skydd)
+  och undantag per väg (`ignoringRequestMatchers`) är utanför uppdraget och byggs när ett behov
+  kommer. Utan maskering är kontrollen exakt `CsrfTokenRequestAttributeHandler`, som behovet
+  använder i Spring eftersom Angular skickar cookiens råa värde.
+- **Var koden ligger.** Kontrollen och cookien ligger i `Csrf.java` (en ny huvudkällfil, eftersom
+  `Csrf` är en publik klass i paketet enligt uppdragets beslut och Java kräver en egen fil för den)
+  med de paketprivata `Csrf.Protection` och `Csrf.Exchange` som nästlade klasser, så att
+  `WebSecurity` bara får några rader: `secure` kör `Protection.begin` efter 400-kontrollen, ger
+  403 eller går vidare med `Exchange` som attribut, och lägger cookien på svaret med
+  `Exchange.finish`. Tillståndet per förfrågan är ett attribut, inte en `ThreadLocal`, av samma
+  skäl som `SecurityContext` (10b) och sessionstillståndet (11a). `Exchange` synkroniserar,
+  eftersom en `WebRequest` får lämnas till andra trådar.
+- **Ett tillägg i en befintlig testfil.** Uppdraget säger att befintliga testfiler är oförändrade
+  utom registreringen i `SecurityWebTests`. `SourceRulesTests` (10b) räknar huvudkällfilerna och
+  väntade sig 11; med `Csrf.java` är de 12, så siffran ändrades från 11 till 12. Testets kontroller
+  (inga förbjudna API:er i någon huvudkällfil) är oförändrade och gäller nu också `Csrf.java`.
+  Alternativet, att lägga `Csrf` som en nästlad klass i `WebSecurity`, hade brutit mot uppdragets
+  beslut om en klass `Csrf` i `spola.security.web` och gett `WebSecurity.Csrf.cookie()` i appens
+  kod.
+- **Tester** går genom en riktig `HttpServer` (127.0.0.1, port 0) med `HttpClient` och en
+  `CookieManager` per klient, där huvudet sätts från cookien i `CookieManager` som Angular gör
+  (behovets flöde och 200 samtidiga klienter), och rå socket (exakta `Set-Cookie`- och
+  `Cache-Control`-rader och 30 förfalskade eller felformade förfrågningar för `POST`, `PUT`,
+  `PATCH` och `DELETE`, var och en med rätt Basic-uppgifter så att en förfrågan som slank igenom
+  skulle nå både `Authenticator` och handlern). Alla routrar loggar till `Support.LOG`, och varje
+  token och sessions-id i ett `Set-Cookie`, varje påhittad token, varje undantagsmeddelande och
+  `toString()` sparas. Varje svar sparas i `Support.REPLIES` (så att 10b:s `LeakTests` också ser
+  det) som en kopia där värdet i svarets egen `XSRF-TOKEN`- och `SESSION`-cookie är utbytt mot
+  `<own value>`: värdena är slumpade, och bland flera hundra token per körning skulle någon gång en
+  innehålla en av de fyrteckensmarkörer (`zPwd`, `zUsr`) som `LeakTests` letar efter, så att
+  bygget blev rött av en slump (det hände en gång under utvecklingen). Testet som får svaret ser
+  det oförändrat och kontrollerar värdets form; `CsrfLeakTests` körs sist bland
+  11c:s tester och letar efter dem och efter lösenorden i alla svar (utom värdet i svarets eget
+  `Set-Cookie`), loggrader och texter. Mutationer av koden (ingen kontroll, skiftlägesokänsliga
+  metoder, första av flera huvuden godtas, autentisering före kontrollen, inget byte vid
+  inloggning eller utloggning, cookie på varje svar eller aldrig, `HttpOnly`, standard-Base64,
+  skiftlägesokänslig jämförelse, 401 i stället för 403, inget `Cache-Control`) fångas av
+  testerna.

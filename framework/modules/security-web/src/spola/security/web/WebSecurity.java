@@ -16,11 +16,12 @@ import spola.web.WebException;
 import spola.web.WebRequest;
 
 /**
- * The security of a router: authentication, access rules and the 401 and 403 responses, the
- * counterpart of Spring Security's {@code SecurityFilterChain} bean with
- * {@code authorizeHttpRequests}, {@code httpBasic()} and a login kept in the HTTP session
- * ({@code HttpSessionSecurityContextRepository}). Immutable and thread-safe; build it with
- * {@link #builder()}:
+ * The security of a router: authentication, access rules, CSRF protection and the 401 and 403
+ * responses, the counterpart of Spring Security's {@code SecurityFilterChain} bean with
+ * {@code authorizeHttpRequests}, {@code httpBasic()}, a login kept in the HTTP session
+ * ({@code HttpSessionSecurityContextRepository}) and {@code csrf()} with a cookie for a
+ * single-page application ({@code CookieCsrfTokenRepository.withHttpOnlyFalse()}). Immutable and
+ * thread-safe; build it with {@link #builder()}:
  *
  * <pre>{@code
  * WebSecurity security = WebSecurity.builder()
@@ -47,6 +48,11 @@ import spola.web.WebRequest;
  *       "Login with a session");</li>
  *   <li>answers 400 if the request has more than one {@code Authorization} field (RFC 9110
  *       §11.6.2), before any mechanism runs;</li>
+ *   <li>with {@linkplain Builder#csrf CSRF protection}, checks the request: a method other than
+ *       {@code GET}, {@code HEAD}, {@code OPTIONS} and {@code TRACE} needs an
+ *       {@code X-XSRF-TOKEN} header equal to its {@code XSRF-TOKEN} cookie, or the answer is
+ *       403 at once, before the identity, so no mechanism runs for a forged request (see "CSRF
+ *       protection");</li>
  *   <li>with sessions, takes the identity that {@link #login} put in the request's session, if
  *       the request has a live session with one. The session comes <b>before</b> the
  *       mechanisms: then no mechanism is tried, not even {@link HttpBasic}. A session cookie
@@ -66,6 +72,9 @@ import spola.web.WebRequest;
  *       401 or 403. Neither the handler nor any filter inside this one runs for a denied
  *       request.</li>
  * </ol>
+ * With CSRF protection, the response that comes back (the handler's, 401, 403, 404, a mapped
+ * error) gets a {@code Set-Cookie} with a new {@code XSRF-TOKEN} when the request had no
+ * well-formed one, or when {@link #login} or {@link #logout} ran.
  * An exception from a mechanism, a matcher or a rule is not caught: the router maps it (500
  * without a mapper), so an error never lets a request through.
  *
@@ -76,7 +85,8 @@ import spola.web.WebRequest;
  * ({@code Basic realm="app", charset="UTF-8"}; none without such a mechanism, so a JSON API
  * that logs in with a session gets a plain 401 and the browser shows no login box). A denied
  * authenticated request gets <b>403</b>: {@code Problem.of(403)}, no detail, no
- * {@code WWW-Authenticate}. Both carry {@code Cache-Control: no-store}. The responses are
+ * {@code WWW-Authenticate}; a request that fails the CSRF check gets the same 403, also when it
+ * is anonymous. Both carry {@code Cache-Control: no-store}. The responses are
  * exactly the same whatever the reason (wrong password, unknown user, disabled account,
  * malformed Base64, a missing role), and they never hold the username, the password or the
  * field's value: a client learns that it must (re)authenticate, or that it may not, and
@@ -125,11 +135,12 @@ import spola.web.WebRequest;
  *       can put the session filter in the wrong place. Registering {@code sessions.filter()}
  *       as well makes the session filter reach the request twice, which is a programming error:
  *       500 ({@link IllegalStateException}).</li>
- *   <li><b>The session before the mechanisms.</b> See step 3 above. A request without a session
+ *   <li><b>The session before the mechanisms.</b> See step 4 above. A request without a session
  *       is authenticated by the mechanisms as without sessions, so {@link HttpBasic} next to
  *       sessions keeps working for clients that do not log in.</li>
  *   <li><b>Sessions only at login.</b> The security filter never creates a session: anonymous
- *       requests, 401, 403 and open paths get no {@code Set-Cookie}. {@link #login} creates or
+ *       requests, 401, 403 and open paths get no session cookie (with CSRF protection they can
+ *       get an {@code XSRF-TOKEN} cookie, which is not a session). {@link #login} creates or
  *       renews it.</li>
  *   <li><b>A snapshot.</b> The session holds the {@link Identity} that {@link #login} got.
  *       Changed roles, a disabled account or a removed user in the {@code UserStore} do not
@@ -139,6 +150,36 @@ import spola.web.WebRequest;
  *       ({@code SessionOptions.idleTimeout}); every request with its cookie counts as a use. An
  *       expired session makes the request anonymous, so a login on a {@code permitAll} path
  *       works with an expired cookie.</li>
+ * </ul>
+ *
+ * <h2>CSRF protection</h2>
+ * With {@link Builder#csrf(Csrf) csrf(Csrf.cookie())} the filter protects requests that change
+ * something against cross-site request forgery with Angular's pattern, a double-submit cookie
+ * (see {@link Csrf}): the response sets the cookie {@code XSRF-TOKEN}, which the application's
+ * JavaScript can read, and a request with a method other than {@code GET}, {@code HEAD},
+ * {@code OPTIONS} and {@code TRACE} must repeat it in the header {@code X-XSRF-TOKEN}:
+ *
+ * <pre>{@code
+ * WebSecurity security = WebSecurity.builder()
+ *         .sessions(sessions)
+ *         .csrf(Csrf.cookie())                           // XSRF-TOKEN / X-XSRF-TOKEN, 403 on a mismatch
+ *         .rule(RequestMatcher.exactly("/api/auth/login"), AccessRule.permitAll())
+ *         .rule(RequestMatcher.anyRequest(), AccessRule.authenticated())
+ *         .build();
+ * }</pre>
+ *
+ * <ul>
+ *   <li><b>The check comes before the identity</b> (step 3 above), on every path, the login and
+ *       logout included: a request without exactly one matching header gets 403, the same
+ *       response as a denied rule, and no mechanism, no handler and no filter inside this one
+ *       runs.</li>
+ *   <li><b>The cookie on the first response.</b> A request without a well-formed
+ *       {@code XSRF-TOKEN} cookie gets one with a new token on whatever response leaves the
+ *       filter; a request with one gets none.</li>
+ *   <li><b>A new token at login and logout.</b> {@link #login} and {@link #logout} give the
+ *       response a new token, so the token from before stops working.</li>
+ *   <li><b>No stored tokens.</b> The server compares the header with the cookie of the same
+ *       request and keeps nothing, so the protection works with and without sessions.</li>
  * </ul>
  */
 public final class WebSecurity {
@@ -152,6 +193,9 @@ public final class WebSecurity {
     /** The session attribute with the identity that {@link #login} stored; only this module has the key. */
     private static final AttributeKey<Identity> LOGGED_IN = AttributeKey.of("spola.security.web.identity",
             Identity.class);
+    /** The request's CSRF state, with {@link Builder#csrf}; only this module has the key. */
+    private static final AttributeKey<Csrf.Exchange> CSRF = AttributeKey.of("spola.security.web.csrf",
+            Csrf.Exchange.class);
 
     private static final String MISSING_FILTER = "the request has no SecurityContext: register WebSecurity.filter()"
             + " on the router, first";
@@ -164,15 +208,19 @@ public final class WebSecurity {
     private final List<Rule> rules;
     /** The sessions whose filter this security runs, or {@code null} without {@link Builder#sessions}. */
     private final Sessions sessions;
+    /** The CSRF protection, or {@code null} without {@link Builder#csrf}. */
+    private final Csrf.Protection csrf;
     private final Headers challenges;
     private final Response unauthorized;
     private final Response forbidden;
     private final Filter filter;
 
-    private WebSecurity(List<RequestAuthentication> mechanisms, List<Rule> rules, Sessions sessions) {
+    private WebSecurity(List<RequestAuthentication> mechanisms, List<Rule> rules, Sessions sessions,
+            Csrf.Protection csrf) {
         this.mechanisms = mechanisms;
         this.rules = rules;
         this.sessions = sessions;
+        this.csrf = csrf;
         var challenges = new ArrayList<Headers.Field>();
         for (var mechanism : mechanisms) {
             if (mechanism instanceof HttpBasic basic) {
@@ -292,7 +340,10 @@ public final class WebSecurity {
      *       new one is created;</li>
      *   <li>the identity is stored in the session under a key only this module has;</li>
      *   <li>the response sets the session cookie with the new id (the session filter adds the
-     *       {@code Set-Cookie}).</li>
+     *       {@code Set-Cookie});</li>
+     *   <li>with {@linkplain Builder#csrf CSRF protection}, the response also sets a new
+     *       {@code XSRF-TOKEN} (Spring's {@code CsrfAuthenticationStrategy}): the token from
+     *       before the login stops working once the browser has the new cookie.</li>
      * </ol>
      * From the <b>next</b> request with the cookie on, the security filter takes the identity
      * from the session, before any mechanism. The session holds a <b>snapshot</b>: later changes
@@ -321,8 +372,9 @@ public final class WebSecurity {
     public static void login(WebRequest request, Identity identity) {
         Objects.requireNonNull(request, "request");
         Objects.requireNonNull(identity, "identity");
-        requireSessions(request, "login");
+        var owner = requireSessions(request, "login");
         Sessions.renew(request).put(LOGGED_IN, identity);
+        owner.renewToken(request, "login");
     }
 
     /**
@@ -330,30 +382,44 @@ public final class WebSecurity {
      * {@code SecurityContextLogoutHandler}): the request's session is removed with all its
      * attributes ({@link Sessions#invalidate}), the old id stops working at once, and the
      * response removes the session cookie ({@code Max-Age=0}). Without a live session nothing
-     * happens and the response gets no {@code Set-Cookie}. As with {@link #login}, this
-     * request's own {@link SecurityContext} does not change.
+     * happens to the session and the response gets no {@code Set-Cookie} for it. With
+     * {@linkplain Builder#csrf CSRF
+     * protection} the response sets a new {@code XSRF-TOKEN} in either case (Spring's
+     * {@code CsrfLogoutHandler}), so the token from before stops working. As with
+     * {@link #login}, this request's own {@link SecurityContext} does not change.
      *
      * @param request the request, as a handler or a filter inside the security filter gets it
      * @throws IllegalStateException if the request has not passed the filter of a
      *                               {@code WebSecurity} built with
      *                               {@link Builder#sessions(Sessions) sessions(...)}: a
-     *                               programming error, 500
+     *                               programming error, 500; with CSRF protection also if it is
+     *                               called after the response was built
      * @throws NullPointerException  if {@code request} is {@code null}
      */
     public static void logout(WebRequest request) {
         Objects.requireNonNull(request, "request");
-        requireSessions(request, "logout");
+        var owner = requireSessions(request, "logout");
         Sessions.invalidate(request);
+        owner.renewToken(request, "logout");
     }
 
-    /** Fails unless the request passed the filter of a security with sessions. */
-    private static void requireSessions(WebRequest request, String method) {
+    /** The security whose filter the request passed; fails unless it has sessions. */
+    private static WebSecurity requireSessions(WebRequest request, String method) {
         var owner = request.attribute(OWNER).orElseThrow(() -> new IllegalStateException("WebSecurity." + method
                 + " needs a request that passed the security filter: register WebSecurity.filter() on the router,"
                 + " first, for a WebSecurity built with sessions(...)"));
         if (owner.sessions == null) {
             throw new IllegalStateException("WebSecurity." + method + " needs sessions: build the WebSecurity with"
                     + " WebSecurity.builder().sessions(sessions) and register only security.filter()");
+        }
+        return owner;
+    }
+
+    /** With CSRF protection, the response to {@code request} gets a new token. */
+    private void renewToken(WebRequest request, String method) {
+        if (csrf != null) {
+            request.attribute(CSRF).orElseThrow(() -> new IllegalStateException("the request has no CSRF state: pass"
+                    + " WebSecurity." + method + " the request the handler got")).renew(method);
         }
     }
 
@@ -393,6 +459,22 @@ public final class WebSecurity {
         if (request.headers().all("Authorization").size() > 1) {
             throw duplicateAuthorization();
         }
+        if (csrf == null) {
+            return authorize(request, next);
+        }
+        var exchange = csrf.begin(request);
+        Response response;
+        try {
+            response = exchange.allowed() ? authorize(request.withAttribute(CSRF, exchange), next) : forbidden;
+        } catch (Throwable failure) {
+            exchange.abandon();
+            throw failure;
+        }
+        return exchange.finish(response);
+    }
+
+    /** The identity and the rules; see the class documentation. */
+    private Response authorize(WebRequest request, Filter.Chain next) throws Exception {
         var identity = sessionIdentity(request);
         for (int i = 0; identity.isEmpty() && i < mechanisms.size(); i++) {
             var outcome = Objects.requireNonNull(mechanisms.get(i).authenticate(request),
@@ -438,15 +520,17 @@ public final class WebSecurity {
     }
 
     /**
-     * Rules, mechanisms and whether there are sessions, never credentials or session ids.
+     * Rules, mechanisms and whether there are sessions and CSRF protection, never credentials,
+     * session ids or tokens.
      *
-     * @return {@code WebSecurity[n mechanisms, m rules]}, with {@code , sessions} at the end
-     *         when it was built with {@link Builder#sessions}
+     * @return {@code WebSecurity[n mechanisms, m rules]}, with {@code , sessions} when it was
+     *         built with {@link Builder#sessions} and {@code , csrf} when it was built with
+     *         {@link Builder#csrf}
      */
     @Override
     public String toString() {
         return "WebSecurity[" + mechanisms.size() + " mechanisms, " + rules.size() + " rules"
-                + (sessions == null ? "" : ", sessions") + "]";
+                + (sessions == null ? "" : ", sessions") + (csrf == null ? "" : ", csrf") + "]";
     }
 
     /** The 401 of {@link #requireIdentity}: the security filter's own 401 response. */
@@ -478,6 +562,8 @@ public final class WebSecurity {
         private final List<Rule> rules = new ArrayList<>();
         /** Every {@link #sessions} call; more than one is a problem for {@link #build()}. */
         private final List<Sessions> sessions = new ArrayList<>();
+        /** Every {@link #csrf} call; more than one is a problem for {@link #build()}. */
+        private final List<Csrf> csrf = new ArrayList<>();
 
         private Builder() {
         }
@@ -527,6 +613,53 @@ public final class WebSecurity {
         }
 
         /**
+         * Turns on CSRF protection with {@code csrf}, the counterpart of Spring Security's
+         * {@code csrf(c -> c.csrfTokenRepository(CookieCsrfTokenRepository.withHttpOnlyFalse())
+         * .csrfTokenRequestHandler(new CsrfTokenRequestAttributeHandler()))} with a
+         * {@code CsrfCookieFilter}; usually {@code csrf(Csrf.cookie())}. It is a double-submit
+         * cookie, Angular's standard pattern (see {@link Csrf}):
+         * <ul>
+         *   <li><b>The pattern and what it rests on.</b> The response sets the cookie
+         *       {@code XSRF-TOKEN}, which is not {@code HttpOnly}, so the application's JavaScript
+         *       can read it and send it back in the header {@code X-XSRF-TOKEN}. Another origin
+         *       can make the browser send the cookie but cannot read it, and cannot set the
+         *       header without CORS. Script on the application's own pages (XSS) and an origin
+         *       that CORS lets send the header are not stopped.</li>
+         *   <li><b>No stored tokens.</b> The server compares the header with the cookie of the
+         *       same request and keeps nothing, not in memory and not in the session; it works
+         *       with and without {@link #sessions}.</li>
+         *   <li><b>The methods that are not checked</b> are {@code GET}, {@code HEAD},
+         *       {@code OPTIONS} and {@code TRACE}, compared exactly. Every other method needs
+         *       exactly one {@code X-XSRF-TOKEN} field with a well-formed token equal to one of
+         *       the request's well-formed {@code XSRF-TOKEN} cookies, compared in constant time;
+         *       otherwise the answer is 403 ({@code Problem.of(403)}, no detail,
+         *       {@code Cache-Control: no-store}), on every path, the login and logout
+         *       included.</li>
+         *   <li><b>The order in the filter:</b> the session filter, the 400 for several
+         *       {@code Authorization} fields, this check, the identity (session, then mechanisms),
+         *       the rules. A forged request never reaches an {@code Authenticator}.</li>
+         *   <li><b>When the cookie is set and replaced:</b> on the first response that leaves the
+         *       security filter for a request without a well-formed cookie (handler, 401, 403,
+         *       404, mapped errors), with {@code Cache-Control: no-store} unless the response has
+         *       a {@code Cache-Control}; and with a new token by {@link WebSecurity#login} and
+         *       {@link WebSecurity#logout}. A request with a well-formed cookie gets none, and a
+         *       response gets at most one.</li>
+         * </ul>
+         * {@link #build()} applies the cookie function of {@code csrf} once and reports a bad
+         * one (see {@link Csrf#withCookie}). Call it once: a second call is a problem that
+         * {@link #build()} reports.
+         *
+         * @param csrf the protection, such as {@code Csrf.cookie()} or
+         *             {@code Csrf.cookie().withCookie(c -> c.secure(true))}
+         * @return this builder
+         * @throws NullPointerException if {@code csrf} is {@code null}
+         */
+        public Builder csrf(Csrf csrf) {
+            this.csrf.add(Objects.requireNonNull(csrf, "csrf"));
+            return this;
+        }
+
+        /**
          * Adds an access rule. Rules are looked at in this order and the first whose matcher
          * matches decides; a request that no rule matches is denied. End with
          * {@code rule(RequestMatcher.anyRequest(), ...)} to decide for the rest.
@@ -548,7 +681,13 @@ public final class WebSecurity {
          * @return the security
          * @throws IllegalArgumentException with one line per problem: a rule after a rule with
          *                                  {@link RequestMatcher#anyRequest()} (it can never
-         *                                  match), and {@link #sessions} called more than once
+         *                                  match), {@link #sessions} called more than once,
+         *                                  {@link #csrf} called more than once, and a cookie
+         *                                  function of {@link #csrf} that returns {@code null} or
+         *                                  a builder for another cookie, turns {@code HttpOnly}
+         *                                  on, sets {@code Max-Age=0} or gives a cookie that
+         *                                  {@code ResponseCookie.Builder.build()} rejects (such as
+         *                                  {@code SameSite=None} without {@code Secure})
          */
         public WebSecurity build() {
             var problems = new ArrayList<String>();
@@ -565,11 +704,15 @@ public final class WebSecurity {
                 problems.add("sessions(...) is called " + sessions.size() + " times; call it once, with the one"
                         + " Sessions of the router");
             }
+            if (csrf.size() > 1) {
+                problems.add("csrf(...) is called " + csrf.size() + " times; call it once");
+            }
+            var protection = csrf.size() == 1 ? csrf.getFirst().protection(problems) : null;
             if (!problems.isEmpty()) {
                 throw new IllegalArgumentException(String.join("\n", problems));
             }
             return new WebSecurity(List.copyOf(mechanisms), List.copyOf(rules),
-                    sessions.isEmpty() ? null : sessions.getFirst());
+                    sessions.isEmpty() ? null : sessions.getFirst(), protection);
         }
     }
 }
