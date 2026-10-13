@@ -123,26 +123,23 @@ Spola passar team som vill äga sin kod helt och hållet och som hellre skriver 
 | Team med många nya utvecklare | Ingen dold magi att lära ut. "Go to definition" leder hela vägen, och felmeddelanden pekar på rätt rad. |
 | Arkitekter som vill ha modern Java | Records, sealed interfaces, virtuella trådar och scoped values används fullt ut, inte som tillägg till ett äldre ramverk. |
 
-Priset är lite mer kod på de ställen där Spring gissar, till exempel i kopplingen mellan komponenter och i JSON-mappningen. Integrationstestet visade var det blir ordrikt, och de punkterna står på färdplanen.
+Priset är lite mer kod på de ställen där Spring gissar, till exempel i kopplingen mellan komponenter och i JSON-mappningen. Integrationstestet visade var det blir ordrikt, och de punkterna byggs bort när ett projekt behöver det.
 
-## Ärligt läge och färdplan
+## Ärligt läge och hur det växer
 
-Spola är halvvägs: 10 av 20 rader i färdplanen är klara, och ramverket är inte redo för produktion än.
+Spola är version 0.x och inte redo för produktion än. Ramverket byggs efter behov: när ett projekt som använder Spola behöver något som Spring eller Lombok har, beställs det med koden projektet vill kunna skriva, och loopen bygger det.
 
-| Område | Färdplan | Läge |
-| --- | --- | --- |
-| Bygge, test, DI, konfiguration, util, JSON | 01–06 | Klart |
-| HTTP-server med TLS, web, validering | 07–09 | Klart |
-| Säkerhet: hashning, filter, Basic, åtkomstregler | 10 | Klart, väntar på mänsklig granskning |
-| JWT, sessioner, CSRF, CORS | 11 | Nästa |
-| PostgreSQL-protokoll, pool, transaktioner, query-DSL, migreringar | 12–16 | Planerat |
-| Schemaläggning, händelser, observability | 17–18 | Planerat |
-| Starter (motsvarar Spring Boot) och exempelapp | 19–20 | Planerat |
+| Område | Läge |
+| --- | --- |
+| Bygge, test, DI, konfiguration, util, JSON | Klart |
+| HTTP-server med TLS, web, validering | Klart |
+| Säkerhet: hashning, filter, Basic, åtkomstregler | Klart, väntar på mänsklig granskning |
+| JWT, sessioner, PostgreSQL, schemaläggning, observability, starter | Idéer, byggs när ett projekt behöver dem |
 
 Kända begränsningar:
 
-- **Säkerhetskoden (10–13) ska granskas av en människa** innan den används på riktigt. Loopen har redan hittat och rättat ett sådant fel: en metodregel med gemener, som `method("get")`, matchade aldrig och släppte igenom anropet till nästa regel.
-- **Ingen leverans till externa projekt än.** Modulerna byggs som vanliga modulära jar-filer, men versionering, publicering och ett `jlink`-exempel saknas.
+- **Säkerhetskoden ska granskas av en människa** innan den används på riktigt. Loopen har redan hittat och rättat ett sådant fel: en metodregel med gemener, som `method("get")`, matchade aldrig och släppte igenom anropet till nästa regel.
+- **Leverans via GitHub-releaser.** Varje version publiceras med en jar och en källkods-jar per modul och `SHA256SUMS`. Det finns inget Maven-repo, så projekten hämtar jar-filerna själva.
 - **DI blir ordrik** när ett beroende har en kvalificerare, eftersom alla beroenden då måste skrivas som `Key`. En API-förbättring är planerad.
 - **Bygget tar ungefär 90 sekunder** och växer med testerna.
 

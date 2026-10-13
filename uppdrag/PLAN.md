@@ -1,9 +1,12 @@
-# Färdplan
+# Plan
 
-Varje rad blir en egen uppdragsfil. Skriv nästa fil först när föregående uppdrag är klart,
-så att "Bakgrund / kontext" kan bygga på det som faktiskt levererades (se `PROGRESS.md`).
+Spola byggs **efter behov** (se `framework/MONSTER.md`). Planen styr inte längre vad loopen
+bygger. Loopen tar handskrivna uppdrag i `uppdrag/` och behov från appprojekt i
+`uppdrag/behov/`, och står still när inget väntar.
 
-| # | Uppdrag | Mål i korthet |
+## Levererat
+
+| # | Uppdrag | Innehåll |
 |---|---|---|
 | 01 | bygge-och-guardrails | `java Build.java`, regelkontroller för annoteringar och beroenden |
 | 02 | testkorare | Ersätter JUnit, tester som lambdas |
@@ -15,16 +18,26 @@ så att "Bakgrund / kontext" kan bygga på det som faktiskt levererades (se `PRO
 | 08 | web-routing | Routing som kod, request/response-modell, felhantering, JSON-integration |
 | 09 | validation | Komponerbara validatorer, felrapporter som går att returnera via web |
 | 10 | security-grund | PBKDF2-hashning, filterkedja, autentisering, auktoriseringsregler |
-| 11 | security-tokens | JWT (HS256/RS256/ES256), sessioner, CSRF, CORS |
-| 12 | postgres-protokoll | Wire-protokoll v3: uppstart, SCRAM-SHA-256, simple query, fel |
-| 13 | postgres-utokat | Extended query, prepared statements, typer, TLS |
-| 14 | data-pool-tx | Anslutningspool, transaktioner, isolationsnivåer |
-| 15 | data-dsl | Typsäker query-DSL och mappning till records |
-| 16 | migreringar | Versionerade SQL-migreringar med kontrollsummor |
-| 17 | scheduling-events | Schemalagda jobb, händelsebuss |
-| 18 | observability | Metrics, health checks, strukturerad loggning |
-| 19 | starter | En main-metod som startar allt, motsvarighet till Spring Boot |
-| 20 | exempelapp | CRUD-app med inloggning som använder alla moduler end-to-end |
 
-Uppdrag 10–13 rör säkerhetskritisk kod. Låt en människa granska dem innan ramverket
-används på riktigt.
+Nya uppdrag får nästa lediga nummer efter det högsta i `uppdrag/` och `uppdrag/klara/`.
+
+## Idélista
+
+Det här är skisser, inte beställningar. Planeraren bygger aldrig något härifrån på eget
+initiativ. När ett behov motsvarar en idé får skissen fungera som utgångspunkt för uppdraget.
+
+| Idé | Motsvarar | Skiss |
+|---|---|---|
+| security-tokens | Spring Security | JWT (HS256/RS256/ES256), sessioner, CSRF, CORS |
+| postgres-protokoll | PostgreSQL-drivrutinen | Wire-protokoll v3: uppstart, SCRAM-SHA-256, simple query, fel |
+| postgres-utokat | PostgreSQL-drivrutinen | Extended query, prepared statements, typer, TLS |
+| data-pool-tx | HikariCP, `@Transactional` | Anslutningspool, transaktioner, isolationsnivåer |
+| data-dsl | Spring Data JDBC, jOOQ | Typsäker query-DSL och mappning till records |
+| migreringar | Flyway | Versionerade SQL-migreringar med kontrollsummor |
+| scheduling-events | `@Scheduled`, `ApplicationEventPublisher` | Schemalagda jobb, händelsebuss |
+| observability | Actuator, Micrometer | Metrics, health checks, strukturerad loggning |
+| starter | Spring Boot | En main-metod som startar allt |
+| build | Maven/Gradle för appar | `spola.build`: läsa `deps.txt`, hämta och kontrollera jar-filer, kompilera, testa, jlink |
+
+Säkerhetskritiska moduler (security, tokens, postgres) ska granskas av en människa innan
+ramverket används på riktigt.

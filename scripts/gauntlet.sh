@@ -2,7 +2,7 @@
 # Endless gauntlet loop. Every iteration is a fresh `claude -p "/gauntlet"`:
 # plan the next mission -> build -> critics -> judge -> commit green rounds.
 #
-#   scripts/gauntlet.sh                 run until COMPLETE, stop, or too many failures
+#   scripts/gauntlet.sh                 run until nothing is waiting (IDLE), stop, or too many failures
 #   scripts/gauntlet.sh --max-fail 5    stop after 5 failed iterations in a row (default 3)
 #   scripts/gauntlet.sh --iterations 2  at most 2 iterations, then stop
 #   scripts/gauntlet.sh once            exactly one iteration
@@ -15,7 +15,7 @@
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
-FINAL='^(PASS|EXHAUSTED|STALLED|COMPLETE)$'
+FINAL='^(PASS|EXHAUSTED|STALLED)$'
 max_fail=3
 max_iter=0   # 0 = no limit
 
@@ -81,7 +81,7 @@ fi
 export CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0
 
 mkdir -p gauntlet/logs
-rm -f gauntlet/STOP
+rm -f gauntlet/STOP gauntlet/IDLE
 trap 'echo; echo "Interrupted. Run scripts/gauntlet.sh again to continue where it left off."; exit 130' INT TERM
 
 fails=0
@@ -95,9 +95,6 @@ while :; do
   fi
 
   before=$(latest_run); before_status=$(run_status "$before")
-  if [[ "$before_status" == "COMPLETE" ]]; then
-    echo "The framework is declared complete ($before). Nothing more to do."; exit 0
-  fi
   if [[ -n "$before" && ! "$before_status" =~ $FINAL ]]; then
     prompt="/gauntlet --resume $(basename "$before")"
   else
@@ -118,11 +115,17 @@ while :; do
     continue
   fi
 
+  # The planner found no mission and no need: Spola grows on demand, so there is nothing to do.
+  if [[ -f gauntlet/IDLE ]]; then
+    rm -f gauntlet/IDLE
+    echo "=== Nothing is waiting (no mission in uppdrag/, no need in uppdrag/behov/). Stopping."
+    exit 0
+  fi
+
   after=$(latest_run); after_status=$(run_status "$after")
   echo "=== Iteration $iter done: ${after_status:-?} ($(basename "${after:-–}")), exit code $rc"
 
   case "$after_status" in
-    COMPLETE) echo "The framework is declared complete."; exit 0 ;;
     STOPPED)  rm -f gauntlet/STOP; echo "Stopped on request. Run again to continue."; exit 0 ;;
     PASS)   # a resumed run that now passes counts; a PASS that was already there does not
       if [[ "$after" == "$before" && "$before_status" == "PASS" ]]; then fails=$((fails + 1)); else fails=0; fi ;;

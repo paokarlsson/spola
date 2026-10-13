@@ -1,6 +1,6 @@
 ---
 name: gauntlet
-description: Run ONE iteration of the endless gauntlet loop. The planner picks the next mission (uppdrag/ → PLAN.md → its own steps toward a complete Spring replacement), the builder implements it, critics try to sink it, the judge rules, green rounds are committed. scripts/gauntlet.sh runs it over and over. Use when the user runs /gauntlet.
+description: Run ONE iteration of the gauntlet loop. The planner picks the next mission (hand-written mission in uppdrag/, broken build, or a need in uppdrag/behov/ with a counterpart in Spring or Lombok) or replies IDLE, the builder implements it, critics try to sink it, the judge rules, green rounds are committed. scripts/gauntlet.sh runs it over and over. Use when the user runs /gauntlet.
 argument-hint: "[--rounds N] | --resume <run-id>"
 ---
 
@@ -19,7 +19,7 @@ Arguments: `$ARGUMENTS`
 
 ## 1. Plan
 Start a `gauntlet-planner` with the run directory path. It writes `mission.md` and replies with the step's title.
-- **If the planner replies `COMPLETE`**: rename the directory to `<YYYYMMDD-HHMM>-complete`, set `status: COMPLETE` and `next_step: done`, append a line to `gauntlet/LOG.md`, commit the run directory + LOG as `chore(gauntlet): framework declared complete`, and finish. The outer loop stops on this.
+- **If the planner replies `IDLE`** (nothing is waiting): print `mission.md`, then delete the run directory (`rm -r`, it holds only `state.md` and `mission.md`). If the planner rejected needs (`git status --porcelain uppdrag/` is non-empty), commit `git add -A uppdrag/` as `chore(gauntlet): reject needs` with the rejected file names in the body. Then create the empty file `gauntlet/IDLE` and finish. The outer loop stops on `gauntlet/IDLE` and deletes it; nothing goes into `gauntlet/LOG.md`.
 - Rename the run directory to `gauntlet/runs/<YYYYMMDD-HHMM>-<slug of the title>/` (if the rename fails, keep the name).
 - Record `title:`, `mission_source:` (the `Source:` line in `mission.md`, otherwise `planner`) and `max_rounds:` in `state.md`.
 

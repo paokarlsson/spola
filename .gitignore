@@ -5,3 +5,4 @@ framework/out/
 *.class
 .idea/
 gauntlet/STOP
+gauntlet/IDLE
