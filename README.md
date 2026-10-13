@@ -6,7 +6,8 @@ beroende utanför JDK:n.
 *A Java 25 framework that replaces Spring Boot and Lombok with explicit code and zero
 third-party dependencies. Documentation is in Swedish.*
 
-> **Status: under utveckling, inte redo för produktion.** 10 av 20 steg i färdplanen är klara.
+> **Status: version 0.x, inte redo för produktion.** Spola växer efter behov: en modul byggs när
+> ett riktigt projekt behöver något som Spring eller Lombok hade gett det.
 > Säkerhetsmodulerna (`spola.security`, `spola.security.web`) är inte granskade av en människa
 > än. Använd dem inte för att skydda något på riktigt.
 
@@ -27,7 +28,11 @@ cd framework
 java Build.java          # kompilerar, kör guardrails och alla tester, ca 90 s
 ```
 
-Jar-filerna hamnar i `framework/out/`, en per modul. En minimal app utanför ramverket:
+Jar-filerna hamnar i `framework/out/`, en per modul. Du kan också hämta dem från en
+[release](https://github.com/paokarlsson/spola/releases), där varje modul finns som
+`<modul>-<version>.jar` med en källkods-jar och `SHA256SUMS` (se
+[`framework/MONSTER.md`](framework/MONSTER.md#använda-spola-i-ett-projekt)). En minimal app
+utanför ramverket:
 
 ```java
 // src/hello/module-info.java
@@ -84,12 +89,25 @@ gäller all kod står i [`framework/REGLER.md`](framework/REGLER.md), läget i
 [`framework/PROGRESS.md`](framework/PROGRESS.md) och designbesluten i
 [`framework/ARCHITECTURE.md`](framework/ARCHITECTURE.md).
 
-## Färdplan
+## Hur Spola växer
+
+Spola byggs efter behov, inte mot en komplett kopia av Spring. När ett projekt som använder
+Spola behöver något som Spring eller Lombok har, skrivs ett behov till `uppdrag/behov/` med
+koden projektet vill kunna skriva. Loopen bygger modulen och den släpps i en ny version. Regeln
+för vad som hör hemma i Spola, modulkatalogen och API-mönstren står i
+[`framework/MONSTER.md`](framework/MONSTER.md). Mallen för `CLAUDE.md` i ditt eget projekt finns
+i [`docs/app-claude.md`](docs/app-claude.md).
 
 Klart: bygge, testkörare, DI, konfiguration, util, JSON, HTTP med TLS, web, validering och
-grundläggande säkerhet. Kvar: JWT och sessioner, PostgreSQL-protokoll, anslutningspool och
-transaktioner, query-DSL, migreringar, schemaläggning, observability, en starter som motsvarar
-Spring Boot och en exempelapp. Hela planen finns i [`uppdrag/PLAN.md`](uppdrag/PLAN.md).
+grundläggande säkerhet. Idéer som byggs när de behövs, till exempel JWT, PostgreSQL och
+schemaläggning, står i [`uppdrag/PLAN.md`](uppdrag/PLAN.md).
+
+## Versioner och releaser
+
+Versionen står i konstanten `VERSION` i `framework/Build.java`. `scripts/release.sh <version>` på `main` bygger, testar,
+committar och taggar `v<version>`. När taggen pushas publicerar
+`.github/workflows/release.yml` en GitHub-release med jar-filerna. Så länge versionen är `0.x`
+kan API:er ändras mellan MINOR-versioner.
 
 ## Hur ramverket byggs
 
@@ -101,10 +119,11 @@ finns i git och i körningsloggarna.
 | Katalog | Innehåll |
 | --- | --- |
 | `framework/` | Ramverket |
-| `docs/` | [Säljmaterial](docs/saljmaterial.md): pitch, Spring-jämförelse och ärligt läge |
-| `uppdrag/` | Färdplanen och uppdragen, klara uppdrag i `uppdrag/klara/` |
+| `docs/` | [Säljmaterial](docs/saljmaterial.md) och [mallen för appars `CLAUDE.md`](docs/app-claude.md) |
+| `uppdrag/` | Uppdragen, behoven i `uppdrag/behov/` och idélistan i `PLAN.md` |
 | `gauntlet/` | `LOG.md` med en rad per iteration och körningarna i `runs/` |
 | `scripts/gauntlet.sh` | Den yttre loopen |
+| `scripts/release.sh` | Sätter versionen, bygger och taggar en release |
 | `.claude/` | Agenterna och orkestreraren |
 | `.devcontainer/` | Sandlådan som loopen körs i, med brandvägg |
 

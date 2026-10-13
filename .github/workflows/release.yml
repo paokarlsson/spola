@@ -1,0 +1,53 @@
+# Publishes a GitHub release when a tag v<version> is pushed (see scripts/release.sh).
+# Only shell steps and tools that GitHub's Ubuntu image already has (git, gh, apt): no actions
+# from the marketplace, in the spirit of framework/REGLER.md §1.
+name: release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      TAG: ${{ github.ref_name }}
+    steps:
+      - name: Check out the tag
+        run: |
+          git init -q .
+          git remote add origin "https://github.com/$GH_REPO.git"
+          auth=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)
+          git -c http.extraHeader="Authorization: Basic $auth" \
+              fetch -q --depth 1 origin "+refs/tags/$TAG:refs/tags/$TAG"
+          git checkout -q "$TAG"
+
+      - name: Install JDK 25 (Ubuntu package)
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q openjdk-25-jdk-headless
+          echo /usr/lib/jvm/java-25-openjdk-amd64/bin >> "$GITHUB_PATH"
+
+      - name: Check that the tag matches VERSION in framework/Build.java
+        working-directory: framework
+        run: |
+          version=$(java Build.java version)
+          if [[ "v$version" != "$TAG" ]]; then
+            echo "::error::tag $TAG does not match VERSION in framework/Build.java ($version)"; exit 1
+          fi
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+
+      - name: Build, test and write the release assets
+        working-directory: framework
+        run: java -version && java Build.java release
+
+      - name: Publish the release
+        run: |
+          flags=(--verify-tag --generate-notes --title "Spola $VERSION")
+          [[ "$VERSION" == *-* ]] && flags+=(--prerelease)
+          gh release create "$TAG" framework/out/release/* "${flags[@]}"

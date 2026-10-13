@@ -1,9 +1,11 @@
 # Gauntlet loop
 
-Riggen bygger ett Java 25-ramverk som ersätter Spring och Lombok. Det sker i en loop som
-kör tills ramverket är komplett eller tills du stoppar den. Varje iteration väljer nästa
-uppdrag. En byggare gör jobbet, oberoende kritiker försöker sänka det, en domare väger
-fynden, och varje runda med grönt bygge committas.
+Riggen bygger ett Java 25-ramverk som ersätter Spring och Lombok **efter behov**. Ramverket
+byggs inte mot en komplett ersättare i förväg. Det växer när ett riktigt projekt behöver något
+som Spring eller Lombok hade gett det (se `framework/MONSTER.md`). Loopen kör så länge det finns
+uppdrag eller behov att ta. Varje iteration väljer nästa uppdrag. En byggare gör jobbet,
+oberoende kritiker försöker sänka det, en domare väger fynden, och varje runda med grönt bygge
+committas.
 
 ## Namn
 Ramverket heter **Spola**. JPMS-moduler heter `spola.<modul>` (t.ex. `spola.di`, `spola.guardrails`), och paketen börjar med `spola.<modul>`.
@@ -12,9 +14,12 @@ Ramverket heter **Spola**. JPMS-moduler heter `spola.<modul>` (t.ex. `spola.di`,
 | Fil | Vad |
 |---|---|
 | `framework/REGLER.md` | Grundreglerna. De är lag och går före allt annat. |
-| `uppdrag/PLAN.md` | Färdplanen (01–20). |
+| `framework/MONSTER.md` | Hur en Spola-modul ser ut, modulkatalogen och vad som hör hemma i Spola. |
+| `uppdrag/PLAN.md` | Levererade steg och en idélista. Idéerna byggs bara när ett behov kommer. |
 | `uppdrag/NN-*.md` | Uppdrag. Lägsta numret körs först. Klara uppdrag flyttas till `uppdrag/klara/`. |
-| `uppdrag/MALL.md` | Mall för uppdrag. |
+| `uppdrag/behov/*.md` | Behov från appprojekt. Planeraren gör om dem till uppdrag eller avvisar dem. |
+| `uppdrag/MALL.md`, `uppdrag/BEHOV-MALL.md` | Mallar för uppdrag och behov. |
+| `docs/app-claude.md` | Mall för `CLAUDE.md` i projekt som använder Spola. |
 | `framework/PROGRESS.md`, `ARCHITECTURE.md` | Läget och designbesluten (underhålls av byggaren). |
 | `gauntlet/LOG.md` | En rad per iteration. |
 
@@ -35,7 +40,7 @@ Hårt stopp: Ctrl+C. Startar du igen fortsätter en avbruten iteration automatis
 (`--resume`). Ett steg som avbröts mitt i görs om från början.
 
 Loopen stannar av sig själv när:
-- planeraren förklarar ramverket komplett (`COMPLETE`), eller
+- inget uppdrag eller behov väntar (planeraren svarar `IDLE`), eller
 - 3 iterationer i rad har misslyckats (`--max-fail N`).
 
 Loopen hanterar själv:
@@ -53,20 +58,35 @@ Att tänka på medan loopen kör:
 
 ## Ordningen planeraren väljer i
 1. Handskrivna uppdrag i `uppdrag/NN-*.md`. Ett bokstavssuffix (`05c-...`) skjuter in ett
-   uppdrag mellan två rader i planen.
+   uppdrag mellan två andra.
 2. Trasigt bygge eller blockerande kända problem.
-3. Nästa rad i `PLAN.md`. Planeraren skriver då uppdraget i samma stil som 01–03 och
-   sparar det i `uppdrag/`, så att du kan läsa och redigera.
-4. När planen är klar: det största återstående glappet mot Spring och Lombok.
-5. Inget kvar: `COMPLETE`.
+3. Behov i `uppdrag/behov/`, äldst först. Planeraren prövar varje behov mot regeln i
+   `MONSTER.md`: **finns motsvarigheten i Spring eller Lombok, går det inom REGLER.md och
+   täcks det inte redan, då byggs det i Spola.** Annars avvisas behovet med en motivering och
+   flyttas till `uppdrag/behov/avvisade/`. Ett godkänt behov blir ett uppdrag i samma stil som
+   01–03, sparas i `uppdrag/` och behovsfilen flyttas till `uppdrag/behov/klara/`. Appens
+   användningsfall, alltså koden den vill kunna skriva, blir ett acceptanskriterium.
+4. Inget väntar: `IDLE`. Loopen stannar utan att räknas som misslyckad. Planeraren hittar aldrig
+   på arbete, varken från idélistan i `PLAN.md` eller från glapp mot Spring som ingen bett om.
 
-En rad som är för stor delas upp i delar (`07a`, `07b`). Ett steg som misslyckats två gånger
-delas alltid upp.
+Ett uppdrag som är för stort delas upp i delar (`11a`, `11b`). Ett steg som misslyckats två
+gånger delas alltid upp.
+
+## Behov från appprojekt
+1. AI:n i appen behöver något. Den läser `framework/MONSTER.md` och använder en befintlig modul
+   om det finns en.
+2. Saknas det skriver den ett behov enligt `uppdrag/BEHOV-MALL.md` till
+   `uppdrag/behov/<ÅÅÅÅ-MM-DD>-<namn>.md` i det här repot. Om repot inte finns lokalt skriver
+   den behovet som ett GitHub-issue med samma innehåll, och du flyttar in det.
+3. Appen bygger under tiden en minimal lösning lokalt, i Spolas stil, och fortsätter arbeta.
+4. Loopen bygger modulen. Efter en release byter appen sin lokala lösning mot Spola-modulen.
+
+Mallen för appens `CLAUDE.md` finns i `docs/app-claude.md`.
 
 ## Agenter (`.claude/agents/`)
 | Agent | Modell | Roll |
 |---|---|---|
-| planner | opus | Väljer och skriver nästa uppdrag |
+| planner | opus | Väljer nästa uppdrag, prövar behov och skriver uppdrag |
 | builder | opus | Gör jobbet. Den enda som ändrar i `framework/`. |
 | breaker | opus | Försöker bevisa att det inte fungerar |
 | auditor | sonnet | Bockar av kriterier och regler |
@@ -92,6 +112,22 @@ Utan den regeln jagade kritikerna specialfall i det oändliga.
 ## Bygge och verifiering
 - `java Build.java` i `framework/`. Inga byggverktyg från tredje part (se REGLER.md §1).
 - Verifieringskommandot ska gå grönt för att en runda ska committas.
+
+## Versioner och releaser
+- Versionen står i konstanten `VERSION` i `framework/Build.java` (semver), eftersom guardrails
+  bara tillåter `.java`- och `.md`-filer i `framework/`. `java Build.java version` skriver ut den.
+  Varje jar bär den som modulversion. Så länge Spola är `0.x` får API:er ändras:
+  MINOR för en ny modul eller en ändring som bryter, PATCH för rättningar.
+- `java Build.java release` bygger, testar och skriver `framework/out/release/` med
+  `<modul>-<version>.jar`, `<modul>-<version>-sources.jar` och `SHA256SUMS`. `spola.demo`
+  släpps inte.
+- `scripts/release.sh 0.2.0` på `main` sätter versionen, bygger, committar
+  `chore(release): v0.2.0` och skapar taggen. Lägg till `--push` eller pusha själv:
+  `git push origin main v0.2.0`.
+- En pushad tagg `v*` startar `.github/workflows/release.yml`. Det bygger om från taggen och
+  publicerar en GitHub-release med jar-filerna och `SHA256SUMS`. Workflowet använder bara
+  skalsteg och verktyg som redan finns i GitHubs Ubuntu-image, inga actions från marketplace.
+- Loopen gör aldrig releaser. Kör inte `release.sh` medan loopen kör (skriptet vägrar).
 
 ## Git
 - Rundor med grönt bygge committas (Conventional Commits och `Gauntlet-*`-trailers).

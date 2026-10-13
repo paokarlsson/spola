@@ -7,6 +7,7 @@ Grundreglerna i `REGLER.md` går före allt i detta dokument.
 ```
 framework/
   REGLER.md                 grundreglerna (lag)
+  MONSTER.md                modulkatalog, API-mönster och vad som hör hemma i Spola
   Build.java                bygget, körs med `java Build.java` (source launcher)
   modules/<modul>/src/      källkod för en modul, med module-info.java överst
   modules/<modul>/test/     modulens tester, i modulens egna paket, utan module-info.java
@@ -26,6 +27,7 @@ framework/
     <modulnamn>.jar         en jar per modul (utan tester)
     test-classes/<modulnamn>/   modulen kompilerad igen tillsammans med sina tester
     codegen/spola.codegen/  generatorn, kompilerad av `java Build.java codegen`
+    release/                `java Build.java release`: <modul>-<version>.jar, -sources.jar, SHA256SUMS
 ```
 
 ## Bygget (`Build.java`)
@@ -67,12 +69,24 @@ framework/
   kräva JDK-moduler; bygget stoppar annars med ett meddelande.
 - **`java Build.java codegen [FIL RECORD]`** kompilerar bara `spola.codegen` (till
   `out/codegen/`) och kör `regenerate` (utan argument) eller `generate FIL RECORD`. Ett annat
-  första argument än `codegen` är ett fel i stället för att ignoreras.
+  första argument än `codegen`, `release` och `version` är ett fel i stället för att ignoreras.
 - **Ordning:** kompilera alla moduler, packa jar-filerna, kompilera alla moduler igen med
   sina tester (`out/test-classes/`), kör guardrails (som därmed också ser testkällorna och
   testklassernas bytekod), kör till sist testerna för alla moduler. Testerna för alla moduler
   körs även om en tidigare modul fick rött; bygget blir sedan rött och listar modulerna.
 - Inga inkrementella byggen: `out/` raderas och byggs om varje gång.
+- **Version:** konstanten `VERSION` i `Build.java` (semver, kontrolleras mot ett mönster vid
+  varje bygge) blir modulversion i varje jar (`jar --module-version`), så att
+  `java --describe-module` och `ModuleDescriptor.rawVersion()` visar den. Den ligger i
+  `Build.java` och inte i en egen fil, eftersom guardrails bara tillåter `.java`- och `.md`-filer
+  i `framework/` (`LauncherCheck`). `java Build.java version` skriver ut den åt skripten.
+- **Release:** `java Build.java release` kör hela bygget och skriver sedan `out/release/`:
+  modulens jar under namnet `<modul>-<version>.jar`, en källkods-jar av `src/` och
+  `SHA256SUMS` i det format `sha256sum -c` läser. `spola.demo` (`NOT_RELEASED`) är ett
+  exempel och släpps inte. Publiceringen sker utanför bygget: `scripts/release.sh` taggar och
+  `.github/workflows/release.yml` bygger om från taggen och laddar upp med `gh`. Workflowet
+  installerar JDK 25 från Ubuntus paket och använder inga actions från marketplace
+  (REGLER §1 i andan). Inget Maven-repo: konsumenter hämtar jar-filerna från releasen.
 - Exitkod 0 = grönt, 1 = rött.
 
 ## Modulen `spola.guardrails`

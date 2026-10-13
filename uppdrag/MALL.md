@@ -3,8 +3,8 @@
 <!--
 Mall för uppdrag. Uppdragsfiler heter NN-namn.md (t.ex. 04-config.md).
 Loopen tar lägsta numret först; klara uppdrag flyttas till uppdrag/klara/.
-Finns ingen handskriven fil skriver planeraren nästa uppdrag från PLAN.md själv,
-i den här formen, och sparar det här så du kan läsa/redigera innan det körs.
+Behov från appprojekt (uppdrag/behov/, se BEHOV-MALL.md) gör planeraren om till
+uppdrag i den här formen och sparar dem här, så att du kan läsa och redigera dem.
 -->
 
 ## Mål
