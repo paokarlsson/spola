@@ -23,3 +23,4 @@
 - 2026-10-13 23:32 · 20261013-2223-security-csrf · PASS · 1 rounds · Sessions part 3: CSRF protection with XSRF-TOKEN (spola.security.web) · commits: b00240b
 - 2026-10-14 01:19 · 20261013-2333-security-bcrypt · PASS · 2 rounds · BCrypt hashes and a delegating {id} password hasher (spola.security) · commits: a83d0bc, fff56cd
 - 2026-10-14 02:34 · 20261014-0119-web-proxyhuvuden · PASS · 1 rounds · Proxy part 1: client scheme and address from X-Forwarded-* (spola.web) · commits: 25fc491
+- 2026-10-14 03:32 · 20261014-0234-cookies-secure-efter-schemat · PASS · 1 rounds · Proxy part 2: Secure on session and CSRF cookies from the scheme · commits: cbc1140
