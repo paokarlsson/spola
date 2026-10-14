@@ -87,22 +87,34 @@ import java.util.Objects;
  * hasher's, like Spring's {@code upgradeEncoding}. The version ({@code $2a$}, {@code $2b$} or
  * {@code $2y$}) and a higher cost give {@code false}. That differs on purpose from
  * {@link Pbkdf2PasswordHasher}, which asks for a rehash on any difference in its settings.
+ *
+ * <p><b>Give the hasher at least the highest stored cost.</b> A stored hash with a higher cost
+ * than this hasher's is kept as it is, and it is never rehashed down. {@link Authenticator}
+ * checks an unknown username against a dummy hash made by this hasher, so with this hasher's
+ * cost, while a known user is checked with the stored cost. With hashes from Spring's
+ * {@code new BCryptPasswordEncoder(12)} and {@link #defaults()} (cost 10), a known user with a
+ * wrong password therefore takes about four times as long as an unknown username. Since such a
+ * hash is never replaced, the difference lasts for good, and an attacker can tell from the time
+ * which usernames exist. Use {@code BCryptPasswordHasher.of(12)} for those hashes. The other
+ * way round, after the cost is raised, users with a lower stored cost are faster than unknown
+ * usernames until they log in and their hash is replaced, as when users move from one
+ * algorithm to another.
  */
 public final class BCryptPasswordHasher implements PasswordHasher {
 
     /** The lowest cost {@link #of} accepts, and the lowest a stored hash may have. */
-    public static final int MIN_COST = 4;
+    public static final int MIN_COST = BCrypt.MIN_COST;
     /** The highest cost {@link #of} accepts, and the highest a stored hash may have. */
-    public static final int MAX_COST = 31;
+    public static final int MAX_COST = BCrypt.MAX_COST;
     /** The cost of {@link #defaults()}, as in Spring's {@code BCryptPasswordEncoder()}. */
     public static final int DEFAULT_COST = 10;
     /** The longest password, in bytes of UTF-8: all that bcrypt reads. */
     public static final int MAX_PASSWORD_BYTES = 72;
 
-    /** The length of a stored hash, in characters. */
-    static final int ENCODED_CHARS = 60;
-    /** Where the 53 characters of salt and hash start. */
+    /** Where the salt starts: after {@code $2a$}, the cost's two digits and {@code $}. */
     private static final int SALT_START = 7;
+    /** The length of a stored hash: 60 characters. */
+    private static final int ENCODED_CHARS = SALT_START + BCrypt.SALT_CHARS + BCrypt.HASH_CHARS;
     private static final String MALFORMED = "malformed stored password hash: ";
 
     private final int cost;
@@ -113,7 +125,9 @@ public final class BCryptPasswordHasher implements PasswordHasher {
     }
 
     /**
-     * A hasher with cost {@value #DEFAULT_COST}.
+     * A hasher with cost {@value #DEFAULT_COST}, like {@code new BCryptPasswordEncoder()}. For
+     * stored hashes with a higher cost, such as those from {@code new BCryptPasswordEncoder(12)},
+     * use {@link #of(int) of(12)} instead (see "Rehashing" above).
      *
      * @return a new hasher
      */
@@ -130,9 +144,7 @@ public final class BCryptPasswordHasher implements PasswordHasher {
      *                                  {@value #MAX_COST}
      */
     public static BCryptPasswordHasher of(int cost) {
-        if (cost < MIN_COST || cost > MAX_COST) {
-            throw new IllegalArgumentException("cost must be " + MIN_COST + " to " + MAX_COST);
-        }
+        BCrypt.checkCost(cost);
         return new BCryptPasswordHasher(cost);
     }
 
@@ -149,7 +161,7 @@ public final class BCryptPasswordHasher implements PasswordHasher {
     @Override
     public String hash(CharSequence password) {
         Objects.requireNonNull(password, "password");
-        var bytes = encode(password);
+        var bytes = acceptedBytes(password);
         if (bytes == null) {
             throw new IllegalArgumentException("password must be 1 to " + MAX_PASSWORD_BYTES
                     + " bytes of UTF-8 without U+0000 (and no lone surrogate)");
@@ -174,7 +186,7 @@ public final class BCryptPasswordHasher implements PasswordHasher {
     public boolean matches(CharSequence password, String encoded) {
         Objects.requireNonNull(password, "password");
         var stored = Stored.parse(encoded);
-        var bytes = encode(password);
+        var bytes = acceptedBytes(password);
         if (bytes == null) {
             return false;
         }
@@ -194,7 +206,9 @@ public final class BCryptPasswordHasher implements PasswordHasher {
      * {@inheritDoc}
      *
      * <p>{@code true} only when the stored cost is lower than this hasher's. The version and a
-     * higher cost give {@code false}. No bcrypt is computed.
+     * higher cost give {@code false}, so a higher cost is never lowered; that is why this
+     * hasher's cost should be at least the highest stored one (see "Rehashing" above). No bcrypt
+     * is computed.
      */
     @Override
     public boolean needsRehash(String encoded) {
@@ -216,7 +230,7 @@ public final class BCryptPasswordHasher implements PasswordHasher {
      * {@code char}s (checked before encoding), not valid UTF-16, more than 72 bytes, or with
      * U+0000. The caller clears the result.
      */
-    private static byte[] encode(CharSequence password) {
+    private static byte[] acceptedBytes(CharSequence password) {
         int length = password.length();
         if (length == 0 || length > MAX_PASSWORD_BYTES) {
             return null;
@@ -270,11 +284,11 @@ public final class BCryptPasswordHasher implements PasswordHasher {
             if (cost < MIN_COST || cost > MAX_COST) {
                 throw malformed("cost must be " + MIN_COST + " to " + MAX_COST);
             }
-            var salt = BCrypt.decode(encoded, SALT_START, BCrypt.SALT_BYTES);
+            var salt = BCrypt.fromBase64(encoded, SALT_START, BCrypt.SALT_BYTES);
             if (salt == null) {
                 throw malformed("salt is not canonical bcrypt Base64");
             }
-            var hash = BCrypt.decode(encoded, SALT_START + BCrypt.SALT_CHARS, BCrypt.HASH_BYTES);
+            var hash = BCrypt.fromBase64(encoded, SALT_START + BCrypt.SALT_CHARS, BCrypt.HASH_BYTES);
             if (hash == null) {
                 throw malformed("hash is not canonical bcrypt Base64");
             }

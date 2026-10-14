@@ -107,15 +107,18 @@ final class BlowfishTests {
                     assertThrows(IllegalArgumentException.class, () -> BCrypt.rounds(32));
                 }),
                 test("the primitive runs exactly rounds(cost) rounds, counted in a long", () -> {
-                    var source = mainCode("BCrypt.java");
-                    assertTrue(source.contains("long rounds = rounds(cost);"), "BCrypt.hash takes its count from rounds(cost)");
-                    assertTrue(source.contains("for (long round = 0; round < rounds; round++) {"), "the loop counts in a long");
-                    assertEquals(1, count(source, "round < rounds"), "one expensive loop");
+                    // Cost 31 cannot be run, so this reads the code; whitespace and comments do not count.
+                    var code = withoutComments(mainCode("BCrypt.java")).replaceAll("\\s+", "");
+                    assertTrue(code.contains("longrounds=rounds(cost);"), "BCrypt.hash takes its count from rounds(cost)");
+                    assertTrue(code.contains("for(longround=0;round<rounds;round++){"), "the loop counts in a long");
+                    assertEquals(1, count(code, "round<rounds"), "one expensive loop");
                     // Costs 4 and 5 differ exactly by one doubling of the loop: their vectors pass.
                     assertEquals("$2a$04$C/CQCvOTDfaWEPmZF/ycFuUeA49K0sshzyZIXUTBmHM4.xmgxaWVq",
                             BCryptVectorTests.crypt("hemligt".getBytes(UTF_8), "$2a$04$C/CQCvOTDfaWEPmZF/ycFu"));
                 }),
                 test("the main code uses no Cipher, no reflection and no table of Blowfish constants", () -> {
+                    // The other rules for the main code (forbidden strings, file count) are in SourceRulesTests;
+                    // these are the ones that only concern the new bcrypt files (crit. 2 and 16).
                     List<Path> sources;
                     try (var files = Files.walk(SourceRulesTests.SOURCES)) {
                         sources = files.filter(f -> f.toString().endsWith(".java")).sorted().toList();
@@ -127,7 +130,7 @@ final class BlowfishTests {
                     var hexWord = Pattern.compile("0[xX][0-9a-fA-F_]{8,}");
                     for (var file : sources) {
                         var text = Files.readString(file);
-                        var code = text.replaceAll("(?s)/\\*.*?\\*/", "").replaceAll("//[^\n]*", "");
+                        var code = withoutComments(text);
                         assertFalse(code.contains("Cipher"), file + " uses Cipher");
                         assertFalse(code.contains("java.lang.reflect") || code.contains("java.lang.invoke"), file + " reflects");
                         var lower = text.toLowerCase(Locale.ROOT).replace("_", "");
@@ -146,6 +149,11 @@ final class BlowfishTests {
 
     static String mainCode(String file) throws java.io.IOException {
         return Files.readString(SourceRulesTests.SOURCES.resolve("spola/security").resolve(file));
+    }
+
+    /** The source without its comments, as SourceRulesTests reads it. */
+    static String withoutComments(String source) {
+        return source.replaceAll("(?s)/\\*.*?\\*/", "").replaceAll("//[^\n]*", "");
     }
 
     static int count(String text, String part) {

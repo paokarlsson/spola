@@ -24,7 +24,7 @@ final class DelegatingTests {
     static final BCryptPasswordHasher BCRYPT = BCryptPasswordHasher.of(4);
     static final Pbkdf2PasswordHasher PBKDF2 = Support.fast();
     static final String PASSWORD = "correct horse battery staple";
-    static final String BCRYPT_HASH = BCryptVectorTests.LIBXCRYPT.get(10).expected();   // "hemligt", $2a$04$
+    static final String BCRYPT_HASH = BCryptVectorTests.HEMLIGT_COST_4.expected();
 
     static PasswordHasher hasher() {
         return PasswordHasher.delegating("bcrypt", Map.of("bcrypt", BCRYPT, "pbkdf2", PBKDF2));

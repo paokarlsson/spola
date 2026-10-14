@@ -24,6 +24,9 @@ final class Blowfish {
     /** Words in the four S-boxes together, S0 to S3 one after the other. */
     static final int S_WORDS = 4 * 256;
 
+    /** The salt of Blowfish's ordinary key schedule: four words of zeros. Never written. */
+    private static final int[] NO_SALT = new int[4];
+
     private final int[] p;
     private final int[] s;
 
@@ -52,7 +55,7 @@ final class Blowfish {
         var state = initial();
         var words = keyWords(key, false);
         try {
-            state.expand(words, null);
+            state.expandKey(words);
             return state;
         } finally {
             Arrays.fill(words, 0);
@@ -88,48 +91,50 @@ final class Blowfish {
     }
 
     /**
-     * One key expansion: XORs {@code keyWords} into the P-array, then replaces the P-array and
-     * the S-boxes, two words at a time, with the encryption of a running block that starts at
-     * zero. With {@code saltWords}, the running block is first XORed with the next two salt
-     * words (cyclically) before each encryption: bcrypt's {@code ExpandKey(state, salt, key)}.
-     * Without, this is Blowfish's ordinary key schedule ({@code ExpandKey(state, 0, key)}).
+     * Blowfish's ordinary key schedule, {@code ExpandKey(state, 0, key)}: bcrypt's
+     * {@link #expandKey(int[], int[])} with a salt of zeros, which leaves the running block as it
+     * is.
+     *
+     * @param keyWords the 18 words from {@link #keyWords}
+     */
+    void expandKey(int[] keyWords) {
+        expandKey(keyWords, NO_SALT);
+    }
+
+    /**
+     * bcrypt's key expansion, {@code ExpandKey(state, salt, key)}: XORs {@code keyWords} into the
+     * P-array, then replaces the P-array and after it the S-boxes, two words at a time, with the
+     * encryption of a running block that starts at zero. Before each encryption the block is
+     * XORed with the next two salt words, cyclically: words 0 and 1, then 2 and 3, then 0 and 1
+     * again.
      *
      * @param keyWords  the 18 words from {@link #keyWords}
-     * @param saltWords the four words of a 16-byte salt, or {@code null}
+     * @param saltWords the four words of a 16-byte salt
      */
-    void expand(int[] keyWords, int[] saltWords) {
-        int[] p = this.p;
-        int[] s = this.s;
+    void expandKey(int[] keyWords, int[] saltWords) {
         for (int i = 0; i < P_WORDS; i++) {
             p[i] ^= keyWords[i];
         }
-        int l = 0;
-        int r = 0;
-        int salt = 0;
-        for (int i = 0; i < P_WORDS; i += 2) {
-            if (saltWords != null) {
-                l ^= saltWords[salt];
-                r ^= saltWords[salt + 1];
-                salt ^= 2;
-            }
-            long block = encrypt(l, r);
-            l = (int) (block >>> 32);
-            r = (int) block;
-            p[i] = l;
-            p[i + 1] = r;
+        long block = replace(p, 0L, saltWords, 0);
+        replace(s, block, saltWords, P_WORDS);
+    }
+
+    /**
+     * Replaces {@code target} two words at a time with the next encryption of the running
+     * {@code block}, XORed first with the two salt words for its position. {@code position} is
+     * where {@code target} starts when the P-array and the S-boxes are counted as one sequence,
+     * so the salt words carry on from the P-array into the S-boxes.
+     *
+     * @return the last block, to carry on with
+     */
+    private long replace(int[] target, long block, int[] saltWords, int position) {
+        for (int i = 0; i < target.length; i += 2) {
+            int salt = (position + i) & 3;          // 0 or 2: the pair of salt words for this block
+            block = encrypt((int) (block >>> 32) ^ saltWords[salt], (int) block ^ saltWords[salt + 1]);
+            target[i] = (int) (block >>> 32);
+            target[i + 1] = (int) block;
         }
-        for (int i = 0; i < S_WORDS; i += 2) {
-            if (saltWords != null) {
-                l ^= saltWords[salt];
-                r ^= saltWords[salt + 1];
-                salt ^= 2;
-            }
-            long block = encrypt(l, r);
-            l = (int) (block >>> 32);
-            r = (int) block;
-            s[i] = l;
-            s[i + 1] = r;
-        }
+        return block;
     }
 
     /**
@@ -199,11 +204,11 @@ final class Blowfish {
      */
     private static final class Pi {
 
-        /** The P-array's 18 words followed by the S-boxes' 1024: 33 344 bits of π. */
-        static final int[] WORDS = fraction(P_WORDS + S_WORDS);
-
         /** Extra bits below the last needed one, so that rounding errors never reach it. */
         private static final int GUARD_BITS = 64;
+
+        /** The P-array's 18 words followed by the S-boxes' 1024: 33 344 bits of π. */
+        static final int[] WORDS = fraction(P_WORDS + S_WORDS);
 
         private Pi() {
         }

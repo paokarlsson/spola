@@ -42,8 +42,10 @@ public interface PasswordHasher {
     boolean matches(CharSequence password, String encoded);
 
     /**
-     * Whether a stored hash was made with other settings than this hasher's, so that it should
-     * be replaced by {@link #hash} of the password the next time the password is known.
+     * Whether this hasher wants a stored hash replaced by {@link #hash} of the password the next
+     * time the password is known. Each implementation says when: {@link Pbkdf2PasswordHasher}
+     * for any difference from its settings, {@link BCryptPasswordHasher} only for a lower cost,
+     * and {@link #delegating} for another id than the default or when that id's hasher says so.
      *
      * @param encoded a hash produced by {@link #hash}
      * @return {@code true} if the hash should be replaced
@@ -97,7 +99,10 @@ public interface PasswordHasher {
      *       directly.</li>
      *   <li>{@code needsRehash(encoded)} parses the prefix the same way and always asks the
      *       id's hasher about the rest, so a malformed rest throws for every id. It is
-     *       {@code true} if the id is not the default id or that hasher says so.</li>
+     *       {@code true} if the id is not the default id or that hasher says so. Within the
+     *       default id the hasher decides: {@link BCryptPasswordHasher} keeps a higher stored
+     *       cost, so give it at least the highest stored cost, or known users take longer than
+     *       unknown ones for good (see its "Rehashing").</li>
      *   <li>{@code null} arguments give {@link NullPointerException}.</li>
      *   <li>{@code toString()} shows the default id and the sorted ids, never a hash:
      *       {@code DelegatingPasswordHasher[default=bcrypt, ids=[bcrypt, pbkdf2]]}.</li>

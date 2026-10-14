@@ -38,13 +38,16 @@ final class BCryptMalformedTests {
         return GOOD.substring(0, index) + replacement + GOOD.substring(index + 1);
     }
 
+    /** 10 000 characters: refused by the length check before anything else is read. */
+    static final Case TEN_THOUSAND = new Case("10 000 characters", GOOD + ".".repeat(10_000 - 60));
+
     static final List<Case> CASES = List.of(
             new Case("the empty string", ""),
             new Case("59 characters", GOOD.substring(0, 59)),
             new Case("61 characters", GOOD + "."),
             new Case("a trailing \\n (61 characters)", GOOD + "\n"),
             new Case("a \\n as the last of 60 characters", GOOD.substring(0, 59) + "\n"),
-            new Case("10 000 characters", GOOD + ".".repeat(10_000 - 60)),
+            TEN_THOUSAND,
             new Case("$2$ (no version letter)", "$2$06$" + TAIL + "."),
             new Case("$2x$", "$2x$06$" + TAIL),
             new Case("$2c$", "$2c$06$" + TAIL),
@@ -98,9 +101,11 @@ final class BCryptMalformedTests {
                     assertTrue(hasher.matches("U*U", "$2a$05$CCCCCCCCCCCCCCCCCCCCC.E5YPO9kmyuRGyh0XouQYb4YMJKvyOeW"));
                     // Upper and lower bounds of the cost are accepted.
                     assertFalse(hasher.needsRehash("$2a$04$" + TAIL));
-                    assertFalse(hasher.needsRehash("$2a$31$" + TAIL));
+                    BCryptHasherTests.withoutBcrypt("needsRehash of a cost-31 hash",
+                            () -> assertFalse(hasher.needsRehash("$2a$31$" + TAIL)));
                     assertTrue(CASES.size() >= 30, "cases: " + CASES.size());
-                    assertEquals(10_000, CASES.get(5).encoded().length());
+                    assertEquals(10_000, TEN_THOUSAND.encoded().length());
+                    assertTrue(CASES.contains(TEN_THOUSAND));
                 }),
                 parameterized("matches and needsRehash throw IllegalArgumentException without the string", CASES, c -> {
                     var thrown = new ArrayList<IllegalArgumentException>();

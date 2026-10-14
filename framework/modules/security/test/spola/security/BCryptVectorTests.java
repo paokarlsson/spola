@@ -94,18 +94,22 @@ final class BCryptVectorTests {
     static final String L72_DIGITS = "0123456789".repeat(7) + "ab";
     static final String COMPOSED = "\u00e9";            // é as one code point, 2 bytes
     static final String DECOMPOSED = "e\u0301";         // e + combining acute accent, 3 bytes
+    static final Vector LIBXCRYPT_COMPOSED = Vector.of(COMPOSED, "$2b$05$Ro0CUfOqk6cXEKf3dyaM7OrPiNk.sCjPBJgB586DXbvR7BCyIeK4u");
+    static final Vector LIBXCRYPT_DECOMPOSED = Vector.of(DECOMPOSED, "$2b$05$Ro0CUfOqk6cXEKf3dyaM7OxTExh/ADjMJUTgkLPpLHB9EL0C7gukq");
+    /** The use case's "hemligt" with cost 04 and the salt 0x10..0x1f. */
+    static final Vector HEMLIGT_COST_4 = Vector.of("hemligt", "$2a$04$C/CQCvOTDfaWEPmZF/ycFuUeA49K0sshzyZIXUTBmHM4.xmgxaWVq");
     static final List<Vector> LIBXCRYPT = List.of(
             Vector.of("p\u00e5ssw\u00f6rd\u20ac", "$2b$05$Ro0CUfOqk6cXEKf3dyaM7O.S2ZSxjNS5nuoViyt6yOY7ibmQwDI9q"),
             Vector.of("\u5bc6\u7801", "$2b$05$Ro0CUfOqk6cXEKf3dyaM7ODF6gsKUXq4Djycywf7GhU9udo5XTFB2"),
             Vector.of("\ud83d\udd11", "$2b$05$Ro0CUfOqk6cXEKf3dyaM7Ohl9xa58bNl6EQFRekkrSqQExcldbnyi"),
-            Vector.of(COMPOSED, "$2b$05$Ro0CUfOqk6cXEKf3dyaM7OrPiNk.sCjPBJgB586DXbvR7BCyIeK4u"),
-            Vector.of(DECOMPOSED, "$2b$05$Ro0CUfOqk6cXEKf3dyaM7OxTExh/ADjMJUTgkLPpLHB9EL0C7gukq"),
+            LIBXCRYPT_COMPOSED,
+            LIBXCRYPT_DECOMPOSED,
             Vector.of("0123456789".repeat(7) + "a", "$2b$05$Ro0CUfOqk6cXEKf3dyaM7O6.RPl6KXlZILu4rgREbR4cKEWJAEJO2"),
             Vector.of(L72_DIGITS, "$2b$05$Ro0CUfOqk6cXEKf3dyaM7ODEomjXJBnwUsayvMT.y0r2XwXzL7pLm"),
             Vector.of("\u20ac".repeat(24), "$2b$05$Ro0CUfOqk6cXEKf3dyaM7OBEbxJMKi50s1SLoOuLvN/iq/buH/sla"),
             Vector.of("\u20ac".repeat(23) + "ab", "$2b$05$Ro0CUfOqk6cXEKf3dyaM7OAaksHpP8MpJaZejZlDtYT0IoDUyo31m"),
             Vector.of("hemligt", "$2a$10$C/CQCvOTDfaWEPmZF/ycFuvu6miZtNk3jj/4zDoWuN3Icm9TmKt9e"),
-            Vector.of("hemligt", "$2a$04$C/CQCvOTDfaWEPmZF/ycFuUeA49K0sshzyZIXUTBmHM4.xmgxaWVq"),
+            HEMLIGT_COST_4,
             Vector.of("hunter2hunter2", "$2a$10$C/CQCvOTDfaWEPmZF/ycFuijXL7x1mYyENSqiAN9JavcgfCUlLFPC"));
     static final String L73_DIGITS = L72_DIGITS + "c";
     static final String L72_DIGITS_HASH = "$2b$05$Ro0CUfOqk6cXEKf3dyaM7ODEomjXJBnwUsayvMT.y0r2XwXzL7pLm";
@@ -131,7 +135,7 @@ final class BCryptVectorTests {
     static String crypt(byte[] password, String setting) {
         char version = setting.charAt(2);
         int cost = Integer.parseInt(setting.substring(4, 6));
-        var salt = assertNotNull(BCrypt.decode(setting, 7, BCrypt.SALT_BYTES));
+        var salt = assertNotNull(BCrypt.fromBase64(setting, 7, BCrypt.SALT_BYTES));
         return BCrypt.format(version, cost, salt, password);
     }
 
@@ -198,8 +202,8 @@ final class BCryptVectorTests {
                     assertThrows(IllegalArgumentException.class, () -> hasher.hash(L73_DIGITS));
                 }),
                 test("\"\\u00e9\" and \"e\\u0301\" give different hashes and do not verify each other", () -> {
-                    var composed = LIBXCRYPT.get(3);
-                    var decomposed = LIBXCRYPT.get(4);
+                    var composed = LIBXCRYPT_COMPOSED;
+                    var decomposed = LIBXCRYPT_DECOMPOSED;
                     assertEquals(COMPOSED, composed.text());
                     assertEquals(DECOMPOSED, decomposed.text());
                     assertEquals(2, composed.password().length);

@@ -3112,6 +3112,21 @@ Fyra nya huvudkällfiler, så `SourceRulesTests` räknar 17 filer i stället fö
   `upgradeEncoding`: versionen och en högre kostnad ger `false`, och ingen bcrypt räknas. Det
   skiljer sig medvetet från `Pbkdf2PasswordHasher`, som vill ha en ny hash vid varje skillnad; en
   högre bcrypt-kostnad är starkare och ska inte sänkas av en inloggning.
+- **Hasharens kostnad ska vara minst den högsta lagrade.** Följden av att en högre kostnad aldrig
+  sänks: `Authenticator` kontrollerar en okänd användare mot en dummyhash som hasharen gjort, alltså
+  med hasharens kostnad, och en känd användare med den lagrade kostnaden. Med hashar från
+  `new BCryptPasswordEncoder(12)` och `defaults()` (kostnad 10) tar en känd användare med fel
+  lösenord ungefär fyra gånger så lång tid som en okänd, och eftersom hashen aldrig byts ut går
+  det aldrig över; tiden visar vilka användarnamn som finns. Det löses med konfiguration, inte
+  kod: Javadoc för `BCryptPasswordHasher` (`defaults()`, `needsRehash` och avsnittet om
+  omhashning), `PasswordHasher.delegating`, README (en punkt vid exemplet och raden om
+  `needsRehash` i avvikelsetabellen) och PROGRESS.md säger att hasharens kostnad ska vara minst
+  den högsta lagrade, till exempel `of(12)`. Att sänka kostnaden vid inloggning hade försvagat
+  hasharna och gått emot Springs `upgradeEncoding` och uppdragets beslut, och att göra dummyhashen
+  med den högsta lagrade kostnaden hade krävt ändringar i `Authenticator`, som låg utanför
+  uppdraget. Åt andra hållet, efter en höjning av kostnaden, är användare med lägre kostnad
+  snabbare än okända tills de har loggat in och fått en ny hash, som vid flytten mellan
+  algoritmer.
 - **Formatet med `{id}`.** `PasswordHasher.delegating(defaultId, hashers)` lagrar
   `{id}<delegatens hash>`, som `DelegatingPasswordEncoder`. `hash` ger `"{" + defaultId + "}"`
   följt av standarddelegatens hash, och delegatens undantag släpps igenom. I `matches` och
@@ -3154,7 +3169,8 @@ Fyra nya huvudkällfiler, så `SourceRulesTests` räknar 17 filer i stället fö
   PBKDF2-hashen ligger kvar.
 - **Tester.** Nio nya testfiler i `spola.security`: vektortabellerna (jBCrypt, Openwall,
   libxcrypt och användningsfallet), Blowfish-kärnan mot JDK:ns `Cipher` och Eric Youngs vektorer,
-  lösenordsreglerna (också mot en lagrad kostnad 31, som visar att inget räknas), 44 felaktiga
+  lösenordsreglerna (också mot en lagrad kostnad 31, som visar att inget räknas: en sådan kontroll
+  körs på en daemontråd och misslyckas efter 5 s med meddelandet att bcrypt räknades), 44 felaktiga
   lagrade hashar, den delegerande hasharen, `Authenticator` med räknande delegater och 200
   virtuella trådar, markörer i lösenord och hashar (också mellan klamrarna) och README-exemplet
   `BCryptExample.java`, som är kompilerad testkälla och jämförs med README.

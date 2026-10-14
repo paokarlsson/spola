@@ -266,6 +266,15 @@ public final class BCryptExample {
   (`{bcrypt}`). Med uppgradering, `Authenticator.of(users, hasher, users.upgrader(hasher))`, får en
   användare med `{pbkdf2}`-hash eller lägre bcrypt-kostnad en ny `{bcrypt}`-hash med kostnad 10
   vid nästa lyckade inloggning.
+- **Ge bcrypt minst den högsta lagrade kostnaden.** `defaults()` ovan passar hashar från
+  `new BCryptPasswordEncoder()` (kostnad 10). Kommer hasharna från
+  `new BCryptPasswordEncoder(12)`, använd `BCryptPasswordHasher.of(12)`. En hash med högre
+  kostnad än hasharens byts aldrig ut (`needsRehash` är bara `true` för en lägre kostnad), men
+  dummyhashen för okända användare görs med hasharens kostnad. Med `defaults()` och hashar med
+  kostnad 12 tar en känd användare med fel lösenord därför ungefär fyra gånger så lång tid som en
+  okänd, och skillnaden går aldrig över, så en angripare kan se vilka användarnamn som finns. Höjer
+  appen kostnaden senare är användarna med lägre kostnad i stället snabbare än okända tills de har
+  loggat in och fått en ny hash, som när användare flyttas mellan algoritmer.
 - Ett bcrypt-lösenord är 1–72 byte UTF-8 utan U+0000. bcrypt läser bara 72 byte, och Spring
   godtog förr två lösenord med samma första 72 byte som samma (CVE-2025-22228). Spola avvisar
   längre lösenord: `hash` kastar `IllegalArgumentException` och `matches` ger `false`. En
@@ -302,7 +311,7 @@ public final class BCryptExample {
 | PHC-format för PBKDF2 (`$pbkdf2-sha256$i=…$salt$hash`) i stället för Springs `{pbkdf2}` med hex | Iterationer, salt- och hashlängd står i strängen, så gamla hashar kan verifieras och uppgraderas. |
 | BCrypt-lösenord är 1–72 byte UTF-8 och får inte innehålla U+0000 | bcrypt läser bara 72 byte, så ett längre lösenord skulle tyst räknas som sina första 72 (CVE-2025-22228), och med NUL kan två olika lösenord ge samma nyckel. `hash` kastar och `matches` ger `false`; en användare med ett längre lösenord från Spring måste byta det. |
 | BCrypt-hashar kräver kanonisk Base64 (oanvända bitar noll) och exakt 60 tecken | Spring jämför hela strängen med en ny kodning av saltet, så en icke-kanonisk hash har aldrig verifierats där heller. Varje hash har en enda stavning, och en felaktig ger undantag. |
-| `needsRehash` bara vid lägre kostnad för BCrypt | Som Springs `upgradeEncoding`: versionen (`$2a$`, `$2b$`, `$2y$`) och en högre kostnad ger `false`. `Pbkdf2PasswordHasher` vill däremot ha en ny hash vid varje skillnad i inställningarna. |
+| `needsRehash` bara vid lägre kostnad för BCrypt | Som Springs `upgradeEncoding`: versionen (`$2a$`, `$2b$`, `$2y$`) och en högre kostnad ger `false`. `Pbkdf2PasswordHasher` vill däremot ha en ny hash vid varje skillnad i inställningarna. Eftersom en högre kostnad aldrig sänks ska hasharens kostnad vara minst den högsta lagrade (`of(12)` för hashar från `new BCryptPasswordEncoder(12)`); annars tar kända användare för alltid längre tid än okända (dummyhashen har hasharens kostnad), och tiden avslöjar vilka användarnamn som finns. |
 | Alltid `$2a$` för nya BCrypt-hashar | Som Springs standard; ingen `BCryptVersion`. `$2b$` och `$2y$` verifieras och räknas likadant (som i jBCrypt); `$2x$` och `$2$` stöds inte. |
 | Exakta id, ingen reservhasher för hashar utan prefix | Id:t jämförs skiftlägeskänsligt, och en hash utan `{id}` eller med okänt id är ett datafel (`IllegalArgumentException`), som med Springs standard; ingen `setDefaultPasswordEncoderForMatches`. Meddelandet innehåller aldrig texten mellan klamrarna, som kan vara en hash. En ren hash från `BCryptPasswordEncoder` verifieras med `BCryptPasswordHasher`. |
 | `{pbkdf2}` är Spolas format | Id:na är appens namn: `"pbkdf2"` läser Spolas PHC-format (`Pbkdf2PasswordHasher`), inte hex-formatet från Springs `Pbkdf2PasswordEncoder`, som inte stöds. |

@@ -5,12 +5,14 @@ import static spola.test.Assertions.assertFalse;
 import static spola.test.Assertions.assertNotEquals;
 import static spola.test.Assertions.assertThrows;
 import static spola.test.Assertions.assertTrue;
+import static spola.test.Assertions.fail;
 import static spola.test.Tests.parameterized;
 import static spola.test.Tests.suite;
 import static spola.test.Tests.test;
 
 import java.time.Duration;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.regex.Pattern;
 import spola.test.Body;
 import spola.test.Suite;
@@ -36,7 +38,38 @@ final class BCryptHasherTests {
 
     /** Whether the salt of a 60-character hash is canonical: its last character is one of {@code .Oeu}. */
     static boolean canonicalSalt(String encoded) {
-        return ".Oeu".indexOf(encoded.charAt(28)) >= 0 && BCrypt.decode(encoded, 7, 16) != null;
+        return ".Oeu".indexOf(encoded.charAt(28)) >= 0 && BCrypt.fromBase64(encoded, 7, 16) != null;
+    }
+
+    /** How long a check that involves cost 31 may take; computing bcrypt there takes days. */
+    static final Duration NO_BCRYPT = Duration.ofSeconds(5);
+
+    /**
+     * Runs {@code check}, which involves cost 31, on a daemon thread, and fails with a clear
+     * message if it has not returned within {@link #NO_BCRYPT}: that can only mean bcrypt was
+     * computed. bcrypt does not look at interrupts, so such a thread runs on until the JVM exits;
+     * as a daemon it does not keep the JVM alive. What {@code check} throws is rethrown.
+     */
+    static void withoutBcrypt(String what, Body check) throws Exception {
+        var thrown = new AtomicReference<Throwable>();
+        var thread = Thread.ofPlatform().daemon().name("bcrypt check: " + what).start(() -> {
+            try {
+                check.run();
+            } catch (Throwable t) {
+                thrown.set(t);
+            }
+        });
+        if (!thread.join(NO_BCRYPT)) {
+            fail("bcrypt was computed: " + what + " did not return within " + NO_BCRYPT.toSeconds()
+                    + " s (cost 31 takes days)");
+        }
+        switch (thrown.get()) {
+            case null -> {
+            }
+            case Exception e -> throw e;
+            case Error e -> throw e;
+            case Throwable t -> throw new AssertionError(t);
+        }
     }
 
     /** A password the hasher refuses, and why. */
@@ -111,12 +144,15 @@ final class BCryptHasherTests {
                     assertEquals("BCryptPasswordHasher[cost=12]", BCryptPasswordHasher.of(12).toString());
                 }),
                 parameterized("a refused password: hash throws without it, matches is false, no bcrypt computed", REFUSED, r -> {
-                    var e = assertThrows(IllegalArgumentException.class, () -> slowest.hash(r.password()));
-                    if (!r.password().isEmpty()) {
-                        assertFalse(e.getMessage().contains(r.password()), "the message contains the password");
-                    }
+                    withoutBcrypt("of(31).hash of a refused password", () -> {
+                        var e = assertThrows(IllegalArgumentException.class, () -> slowest.hash(r.password()));
+                        if (!r.password().isEmpty()) {
+                            assertFalse(e.getMessage().contains(r.password()), "the message contains the password");
+                        }
+                    });
                     assertFalse(fast.matches(r.password(), valid));
-                    assertFalse(fast.matches(r.password(), cost31));
+                    withoutBcrypt("matches of a refused password against a cost-31 hash",
+                            () -> assertFalse(fast.matches(r.password(), cost31)));
                 }).timeout(Duration.ofSeconds(10)),
                 test("\"a\\u0000a\" does not verify against hash(\"a\"), though both give the key a 00 a 00 ...", () -> {
                     var hash = fast.hash("a");
@@ -148,8 +184,10 @@ final class BCryptHasherTests {
                     assertFalse(hasher.needsRehash(stored("$2y$10$")));
                     assertFalse(hasher.needsRehash(stored("$2a$12$")));
                     long start = System.nanoTime();
-                    assertFalse(hasher.needsRehash(cost31));
-                    assertFalse(hasher.needsRehash(stored("$2y$31$")));
+                    withoutBcrypt("needsRehash of a cost-31 hash", () -> {
+                        assertFalse(hasher.needsRehash(cost31));
+                        assertFalse(hasher.needsRehash(stored("$2y$31$")));
+                    });
                     long millis = (System.nanoTime() - start) / 1_000_000;
                     assertTrue(millis < 1_000, "needsRehash computed something: " + millis + " ms");
                 }).timeout(Duration.ofSeconds(10)),

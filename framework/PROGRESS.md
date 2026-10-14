@@ -724,7 +724,8 @@
   i jBCrypt); `$2x$` och `$2$` stöds inte. Strikt tolkning: exakt 60 tecken (först), kostnad som
   två ASCII-siffror 04–31, kanoniskt salt och kanonisk hash; annars `IllegalArgumentException`
   utan strängen. Jämförelse av de 23 byten med `MessageDigest.isEqual`. `needsRehash` är `true`
-  bara för en lägre lagrad kostnad, som Springs `upgradeEncoding`.
+  bara för en lägre lagrad kostnad, som Springs `upgradeEncoding`, så hasharens kostnad ska vara
+  minst den högsta lagrade (se kända begränsningar).
 - Lösenord: UTF-8 med `REPORT`, ingen normalisering, **1–72 byte och inget U+0000** (över 72
   `char` avvisas före kodningen). Annars `IllegalArgumentException` i `hash` (utan lösenordet) och
   `false` i `matches`, utan att någon bcrypt räknas. Så räknas två olika lösenord aldrig som samma
@@ -888,6 +889,15 @@
   - Medan användare flyttas mellan algoritmer skiljer sig tiden för kända användare med en annan
     algoritm (`{pbkdf2}`) från tiden för okända (dummyhashen är `{bcrypt}`), så en angripare kan se
     vilka användarnamn som finns. Lika tid mellan algoritmer ingick inte.
+  - En lagrad bcrypt-hash med **högre kostnad** än hasharens byts aldrig ut (`needsRehash` är bara
+    `true` för en lägre kostnad, som Springs `upgradeEncoding`), men dummyhashen för okända
+    användare görs med hasharens kostnad. Kommer hasharna från `new BCryptPasswordEncoder(12)` och
+    appen använder `defaults()` (kostnad 10), tar en känd användare med fel lösenord ungefär fyra
+    gånger så lång tid som en okänd, och det går aldrig över: en angripare kan se vilka
+    användarnamn som finns. Hasharens kostnad ska därför vara minst den högsta lagrade
+    (`BCryptPasswordHasher.of(12)` för de hasharna); det står i Javadoc för `BCryptPasswordHasher`
+    och i README. Efter en höjning av kostnaden är användare med lägre kostnad i stället snabbare
+    än okända tills de har loggat in, som vid flytten mellan algoritmer.
   - Ingen reservhasher för hashar utan prefix (Springs `setDefaultPasswordEncoderForMatches`); en
     ren bcrypt-hash i en delegerande hasher är ett datafel.
   - Springs `{pbkdf2}`-format (hex från `Pbkdf2PasswordEncoder`) stöds inte; `{pbkdf2}` läser

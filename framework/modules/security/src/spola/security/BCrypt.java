@@ -19,13 +19,13 @@ final class BCrypt {
     static final int SALT_BYTES = 16;
     /** Bytes of the hash that are encoded (the 24th byte of the ciphertext is dropped). */
     static final int HASH_BYTES = 23;
-    /** Characters of the encoded salt. */
-    static final int SALT_CHARS = 22;
-    /** Characters of the encoded hash. */
-    static final int HASH_CHARS = 31;
-    /** The lowest cost. */
+    /** Characters of the encoded salt: four per three bytes, rounded up (22). */
+    static final int SALT_CHARS = (SALT_BYTES * 4 + 2) / 3;
+    /** Characters of the encoded hash: four per three bytes, rounded up (31). */
+    static final int HASH_CHARS = (HASH_BYTES * 4 + 2) / 3;
+    /** The lowest cost, as in Spring and OpenBSD. */
     static final int MIN_COST = 4;
-    /** The highest cost. */
+    /** The highest cost, as in Spring and OpenBSD. */
     static final int MAX_COST = 31;
 
     /** bcrypt's Base64 alphabet: not the standard one, and used without padding. */
@@ -71,7 +71,7 @@ final class BCrypt {
         }
         var hash = hash(password, salt, cost);
         try {
-            return "$2" + version + "$" + (cost < 10 ? "0" : "") + cost + "$" + encode(salt) + encode(hash);
+            return "$2" + version + "$" + (cost < 10 ? "0" : "") + cost + "$" + toBase64(salt) + toBase64(hash);
         } finally {
             Arrays.fill(hash, (byte) 0);
         }
@@ -106,10 +106,10 @@ final class BCrypt {
         var state = Blowfish.initial();
         try {
             // EksBlowfishSetup(cost, salt, key)
-            state.expand(key, saltWords);
+            state.expandKey(key, saltWords);
             for (long round = 0; round < rounds; round++) {
-                state.expand(key, null);
-                state.expand(saltKey, null);
+                state.expandKey(key);
+                state.expandKey(saltKey);
             }
             for (int i = 0; i < text.length; i++) {
                 text[i] = word(MAGIC, 4 * i);
@@ -144,7 +144,7 @@ final class BCrypt {
      * @param bytes the bytes
      * @return the characters
      */
-    static String encode(byte[] bytes) {
+    static String toBase64(byte[] bytes) {
         var text = new StringBuilder((bytes.length * 4 + 2) / 3);
         for (int i = 0; i < bytes.length; i += 3) {
             int b0 = bytes[i] & 0xff;
@@ -163,7 +163,7 @@ final class BCrypt {
     }
 
     /**
-     * Decodes bcrypt's Base64 strictly: exactly the characters that {@link #encode} gives for
+     * Decodes bcrypt's Base64 strictly: exactly the characters that {@link #toBase64} gives for
      * {@code length} bytes, every one from {@link #ALPHABET}, and the unused low bits of the last
      * character zero, so that each byte string has exactly one spelling.
      *
@@ -173,7 +173,7 @@ final class BCrypt {
      * @return the bytes, or {@code null} if the characters are not the canonical encoding of
      *         {@code length} bytes
      */
-    static byte[] decode(CharSequence text, int start, int length) {
+    static byte[] fromBase64(CharSequence text, int start, int length) {
         int chars = (length * 4 + 2) / 3;
         if (start < 0 || text.length() - start < chars) {
             return null;
@@ -209,7 +209,14 @@ final class BCrypt {
                 | (bytes[offset + 2] & 0xff) << 8 | bytes[offset + 3] & 0xff;
     }
 
-    private static void checkCost(int cost) {
+    /**
+     * Refuses a cost outside {@value #MIN_COST} to {@value #MAX_COST}, with the message that
+     * {@link BCryptPasswordHasher#of} documents.
+     *
+     * @param cost the cost
+     * @throws IllegalArgumentException if it is outside the range
+     */
+    static void checkCost(int cost) {
         if (cost < MIN_COST || cost > MAX_COST) {
             throw new IllegalArgumentException("cost must be " + MIN_COST + " to " + MAX_COST);
         }

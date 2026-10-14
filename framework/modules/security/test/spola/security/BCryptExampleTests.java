@@ -38,6 +38,8 @@ final class BCryptExampleTests {
         var hasher = BCryptExample.hasher();
         return suite("the bcrypt README example (the need's use case)",
                 test("the README shows BCryptExample.java as it is compiled and tested here", () -> {
+                    // The same check as ReadmeTests makes for LoginExample.java; that file is left
+                    // as it is (crit. 2 allows only its deviation rows to change), so it is not shared.
                     var readme = Files.readString(ReadmeTests.README);
                     var source = Files.readString(Path.of("modules/security/test/spola/security/BCryptExample.java"));
                     var header = "package spola.security;\n\n";
@@ -72,7 +74,7 @@ final class BCryptExampleTests {
                 test("the package-private path gives exactly Spring's string for \"hemligt\", cost 10 and the salt 0x10..0x1f", () -> {
                     assertEquals(HEMLIGT, BCrypt.format('a', 10, salt(), "hemligt".getBytes(UTF_8)));
                     assertEquals(HUNTER2, BCrypt.format('a', 10, salt(), "hunter2hunter2".getBytes(UTF_8)));
-                    assertEquals("C/CQCvOTDfaWEPmZF/ycFu", BCrypt.encode(salt()));
+                    assertEquals("C/CQCvOTDfaWEPmZF/ycFu", BCrypt.toBase64(salt()));
                 }),
                 test("the example's authenticator: Authenticated with USER for the right password, BAD_CREDENTIALS otherwise", () -> {
                     var authenticator = BCryptExample.authenticator(hasher, List.of(
