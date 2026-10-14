@@ -21,3 +21,4 @@
 - 2026-10-13 21:37 · 20261013-2026-web-sessioner · PASS · 1 rounds · Sessions part 1: in-memory HTTP sessions with a session cookie · commits: e7acba8
 - 2026-10-13 22:23 · 20261013-2137-security-inloggning-med-session · PASS · 1 rounds · Sessions part 2: login and logout with session (spola.security.web) · commits: 9fc4caa
 - 2026-10-13 23:32 · 20261013-2223-security-csrf · PASS · 1 rounds · Sessions part 3: CSRF protection with XSRF-TOKEN (spola.security.web) · commits: b00240b
+- 2026-10-14 01:19 · 20261013-2333-security-bcrypt · PASS · 2 rounds · BCrypt hashes and a delegating {id} password hasher (spola.security) · commits: a83d0bc, fff56cd
