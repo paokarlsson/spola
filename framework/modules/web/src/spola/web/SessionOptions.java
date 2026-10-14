@@ -16,6 +16,10 @@ import java.util.function.UnaryOperator;
  *         .withCookie(cookie -> cookie.secure(true));  // server.servlet.session.cookie.secure=true
  * }</pre>
  *
+ * <p>Without {@code secure(true)} the cookie is still {@code Secure} when the request's scheme
+ * is {@code https}, as with Tomcat; {@code secure(true)} makes it {@code Secure} over
+ * {@code http} too.
+ *
  * <p>The canonical constructor, and so every {@code withX} method, checks the values and
  * reports every problem at once: one {@link IllegalArgumentException} with one line per
  * problem. The {@link #cookie} function is checked by {@link Sessions#inMemory(SessionOptions)},
@@ -37,11 +41,16 @@ import java.util.function.UnaryOperator;
  *                    {@code HttpOnly}, {@code SameSite=Lax}, not {@code Secure}, no
  *                    {@code Domain}, no {@code Max-Age}, so a session cookie) and returns that
  *                    builder with attributes changed, such as {@code cookie -> cookie.secure(true)}.
- *                    Default: the builder unchanged. {@code Secure} is set only when this
- *                    function sets it, never from the request's scheme.
+ *                    Default: the builder unchanged.
  *                    {@link Sessions#inMemory(SessionOptions)} applies it once, to a stand-in
  *                    id, and uses the attributes it sets for every session cookie and for the
- *                    removal.
+ *                    removal. The cookie and the removal get {@code Secure} when this function
+ *                    sets it (then on every response, also over {@code http}) <b>or</b> when the
+ *                    scheme of the request that the session filter got is {@code https}: over
+ *                    TLS, or behind a TLS proxy when {@link ForwardedHeaders} is registered
+ *                    before {@code sessions.filter()} (or before the security filter that runs
+ *                    it). Registered after it, the cookie gets no {@code Secure} from the proxy.
+ *                    The rule cannot be turned off. See "{@code Secure}" in {@link Sessions}.
  */
 public record SessionOptions(Duration idleTimeout, int maxSessions, String cookieName,
                              UnaryOperator<ResponseCookie.Builder> cookie) {

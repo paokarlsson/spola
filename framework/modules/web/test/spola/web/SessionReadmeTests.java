@@ -92,7 +92,7 @@ final class SessionReadmeTests {
                             "| Gräns för antalet sessioner |",
                             "i stället för att ta bort sessioner",
                             "| Cookienamn | `JSESSIONID` (Tomcat) | `SESSION`, som Spring Session, i stället för `JSESSIONID`.",
-                            "| `Secure` på sessionscookien |", "Inget automatiskt `Secure` över HTTPS",
+                            "| `Secure` på sessionscookien |", "Samma regel: `Secure` när `request.scheme()` är `https`",
                             "| Persistens och flera servrar |", "Ingen persistens och ingen delning",
                             "| Städning av utgångna sessioner |", "Ingen bakgrundstråd",
                             "| `Cache-Control` för sessionscookien |", "`Cache-Control: no-store`")) {

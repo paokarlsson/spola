@@ -113,7 +113,8 @@ final class ForwardedReadmeTests {
                                     + " stöds inte",
                             "| Ogiltiga värden från en betrodd proxy |", "| IP-adresser i `X-Forwarded-For` |",
                             "Strikta IP-literaler", "| Betrodda proxyer som standard |", "`100.64.0.0/10`",
-                            "| `Secure` på cookies efter schemat |", "Det kommer i 13b.")) {
+                            "| `Secure` på cookies efter schemat bakom en proxy |",
+                            "måste registreras före `sessions.filter()` och `security.filter()`")) {
                         assertTrue(text.contains(row), "missing " + row);
                     }
                 }));

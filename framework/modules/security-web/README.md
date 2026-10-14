@@ -21,7 +21,8 @@ fungerar utan säkerhet.
 - `WebSecurity.builder()` med `authentication(...)` (en eller flera mekanismer) och
   `rule(matcher, accessRule)`, sedan `build()`. `security.filter()` registreras på routern,
   **först**, så att filtret ligger ytterst och ser varje förfrågan (även routerns 400, 404, 405
-  och automatiska `OPTIONS`).
+  och automatiska `OPTIONS`). Bakom en omvänd proxy kommer bara `ForwardedHeaders` före det, så
+  att filtret ser klientens schema och adress (se [Bakom Caddy](#bakom-caddy)).
 - `HttpBasic.of(authenticator, realm)`: HTTP Basic enligt RFC 7617 med strikt tolkning.
 - `RequestMatcher.under(prefix)`, `exactly(path)`, `method(method, inner)`, `anyRequest()` eller
   en lambda.
@@ -38,6 +39,8 @@ fungerar utan säkerhet.
 - `WebSecurity.builder().csrf(Csrf.cookie())`: CSRF-skydd med cookien `XSRF-TOKEN` och huvudet
   `X-XSRF-TOKEN` (Angulars standard). Ändrande anrop utan matchande huvud får 403, och
   `login`/`logout` ger en ny token.
+- Sessions- och CSRF-cookien får `Secure` när förfrågans schema är `https`, som i Spring: över
+  TLS, och bakom en TLS-proxy när `ForwardedHeaders` registreras före `security.filter()`.
 
 Den första regeln vars matcher matchar avgör, och **en förfrågan som ingen regel matchar nekas**.
 Nekas en anonym förfrågan, eller är uppgifterna fel, blir svaret 401 med
@@ -384,8 +387,10 @@ public final class LoginExample {
      * The sessions: 30 minutes idle, the cookie {@code SESSION} with {@code Path=/},
      * {@code HttpOnly} and {@code SameSite=Lax}.
      *
-     * @param secure {@code config.booleanValue("cookie.secure")}: {@code true} over HTTPS, also
-     *               behind a TLS proxy ({@code Secure} is never set from the scheme)
+     * @param secure {@code config.booleanValue("cookie.secure")}: {@code true} sets {@code Secure}
+     *               on every response, also over {@code http}; with {@code false} the cookie is
+     *               {@code Secure} when the request's scheme is {@code https} (over TLS, or behind
+     *               a TLS proxy with {@code ForwardedHeaders} registered first)
      * @param clock  {@code InstantSource.system()} in production; the tests move their own
      * @return the sessions
      */
@@ -504,8 +509,14 @@ anrop som kan ändra något. Ett sådant anrop utan matchande huvud får 403.
 
 - `WebSecurity.builder().csrf(Csrf.cookie())` slår på skyddet, med och utan `sessions(...)`.
   Cookien är `XSRF-TOKEN=<token>; Path=/; SameSite=Lax`, utan `HttpOnly` (Angular måste kunna
-  läsa den) och utan `Secure`. Bakom en TLS-proxy skrivs
-  `Csrf.cookie().withCookie(c -> c.secure(true))`; `Secure` sätts aldrig efter schemat.
+  läsa den).
+- Cookien får `Secure`, som i Spring, när förfrågans schema är `https`:
+  `XSRF-TOKEN=<token>; Path=/; Secure; SameSite=Lax`. Samma regel gäller sessionscookien. Över
+  TLS är schemat `https`, och bakom en TLS-proxy blir det `https` när `ForwardedHeaders`
+  registreras före `security.filter()` (se [Bakom Caddy](#bakom-caddy) nedan). Schemat är det som
+  förfrågan har när den når säkerhetsfiltret; `login` och `logout` i handlern ändrar det inte.
+  `Csrf.cookie().withCookie(c -> c.secure(true))` ger `Secure` på varje svar, också över `http`.
+  Regeln går inte att stänga av.
 - `GET`, `HEAD`, `OPTIONS` och `TRACE` kontrolleras inte. Alla andra metoder, också `PURGE` och
   `post` med gemener, kräver exakt ett `X-XSRF-TOKEN`-fält med en välformad token (43 tecken
   Base64url) som är lika med en av förfrågans `XSRF-TOKEN`-cookies, jämförd i konstant tid.
@@ -637,8 +648,10 @@ public final class CsrfExample {
      * The sessions: 30 minutes idle, the cookie {@code SESSION} with {@code Path=/},
      * {@code HttpOnly} and {@code SameSite=Lax}.
      *
-     * @param secure {@code config.booleanValue("cookie.secure")}: {@code true} over HTTPS, also
-     *               behind a TLS proxy ({@code Secure} is never set from the scheme)
+     * @param secure {@code config.booleanValue("cookie.secure")}: {@code true} sets {@code Secure}
+     *               on every response, also over {@code http}; with {@code false} the cookie is
+     *               {@code Secure} when the request's scheme is {@code https} (over TLS, or behind
+     *               a TLS proxy with {@code ForwardedHeaders} registered first)
      * @param clock  {@code InstantSource.system()} in production; the tests move their own
      * @return the sessions
      */
@@ -703,14 +716,52 @@ public final class CsrfExample {
 ```
 
 I produktion startas det som `LoginExample` i [Inloggning med session](#inloggning-med-session),
-med `CsrfExample` i stället. Bakom en TLS-proxy blir raden
-`.csrf(Csrf.cookie().withCookie(cookie -> cookie.secure(true)))`. Testerna kör exemplet genom en
-riktig server med `HttpClient` och `CookieManager`, där huvudet `X-XSRF-TOKEN` sätts från cookien
-i `CookieManager` som Angular gör: `/actuator/health` ger 200 och en `XSRF-TOKEN` men ingen
-session, inloggning utan huvudet ger 403 utan att handlern eller `Authenticator` anropas,
-inloggning med huvudet ger 200, en `SESSION`-cookie och en ny `XSRF-TOKEN`, `/api/auth/me` ger
-`{"username":"anna"}`, utloggning med token från före inloggningen ger 403 och med den aktuella
-200, och därefter ger `/api/auth/me` 401.
+med `CsrfExample` i stället, och bakom en proxy som i [Bakom Caddy](#bakom-caddy) nedan. Testerna
+kör exemplet genom en riktig server med `HttpClient` och `CookieManager`, där huvudet
+`X-XSRF-TOKEN` sätts från cookien i `CookieManager` som Angular gör: `/actuator/health` ger 200
+och en `XSRF-TOKEN` men ingen session, inloggning utan huvudet ger 403 utan att handlern eller
+`Authenticator` anropas, inloggning med huvudet ger 200, en `SESSION`-cookie och en ny
+`XSRF-TOKEN`, `/api/auth/me` ger `{"username":"anna"}`, utloggning med token från före
+inloggningen ger 403 och med den aktuella 200, och därefter ger `/api/auth/me` 401.
+
+### Bakom Caddy
+
+Bakom en omvänd proxy som avslutar TLS (Caddy, nginx) kommer förfrågningarna över `http` från
+proxyn. Registrera då `ForwardedHeaders` från `spola.web` först, före `security.filter()` som
+`CsrfExample.router` lägger till. Då ser säkerhetsfiltret, och sessionsfiltret som det kör, schemat
+`https` ur proxyns `X-Forwarded-Proto`, och båda cookierna blir `Secure` utan `secure(true)`
+(`users` är appens `UserStore`):
+
+```java
+var sessions = CsrfExample.sessions(false, InstantSource.system()); // no secure(true)
+var router = CsrfExample.router(
+        Router.builder().filter(ForwardedHeaders.trusting(TrustedProxies.privateNetworks())), // first
+        CsrfExample.security(sessions), Authenticator.of(users, Pbkdf2PasswordHasher.defaults()));
+var server = HttpServer.start(HttpServerOptions.DEFAULT.withPort(8080), router);
+// behind Caddy, which sends X-Forwarded-Proto: https:
+//   Set-Cookie: XSRF-TOKEN=<token>; Path=/; Secure; SameSite=Lax
+//   Set-Cookie: SESSION=<id>; Path=/; Secure; HttpOnly; SameSite=Lax
+//   Set-Cookie: SESSION=; Path=/; Max-Age=0; Secure; HttpOnly; SameSite=Lax   (logout)
+// directly over http://localhost:8080: the same lines without Secure
+```
+
+- **Ordningen.** Schemat som gäller är det som förfrågan har när den når `security.filter()`.
+  Registreras `ForwardedHeaders` efter säkerhetsfiltret ser handlern `https`, men cookierna får
+  inget `Secure`.
+- **Bara från en betrodd proxy.** `X-Forwarded-Proto` läses bara när den direkta avsändaren är
+  betrodd. Från en annan avsändare är schemat anslutningens, `http`, och cookierna får inget
+  `Secure`. Lita helst bara på proxyns adress (`TrustedProxies.of("172.18.0.5")`, se "Bakom en
+  omvänd proxy" i `spola.web`).
+- **Utveckling** över `http://localhost` fungerar som förut: utan proxy och utan TLS är schemat
+  `http`, cookierna saknar `Secure` och webbläsaren sparar dem.
+- **`secure(true)`** behövs bara när cookierna ska vara `Secure` också över `http`, till exempel
+  bakom en proxy utan `ForwardedHeaders`.
+- **Andra cookies** som appen sätter med `Responses.withCookie` får inget automatiskt `Secure`.
+  Appen väljer själv efter `request.scheme()`.
+
+Ett test kör flödet ovan med `Router.builder().filter(ForwardedHeaders.trusting(...))`, sessioner
+utan `secure(true)` och `X-Forwarded-Proto: https` på varje förfrågan, och jämför varje
+`Set-Cookie` tecken för tecken med raden som `withCookie(c -> c.secure(true))` ger.
 
 ### Spring Security och Spola, CSRF
 
@@ -720,6 +771,8 @@ inloggning med huvudet ger 200, en `SESSION`-cookie och en ny `XSRF-TOKEN`, `/ap
 | `CsrfTokenRequestAttributeHandler` (token utan maskering) | huvudet jämförs med cookiens värde som det är |
 | `CsrfCookieFilter` efter `CsrfFilter` | inget eget filter: säkerhetsfiltret sätter cookien på första svaret |
 | `CookieCsrfTokenRepository.setCookieCustomizer(c -> c.secure(true))` | `Csrf.cookie().withCookie(c -> c.secure(true))` |
+| `CookieCsrfTokenRepository` sätter `secure` efter `request.isSecure()` | `XSRF-TOKEN` får `Secure` när `request.scheme()` är `https` |
+| `server.forward-headers-strategy=native` bakom en TLS-proxy | `Router.builder().filter(ForwardedHeaders.trusting(...))` före `security.filter()` |
 | `CsrfFilter` med 403 från `AccessDeniedHandler` | kontrollen i `security.filter()`, samma 403 som en nekad regel |
 | `CsrfFilter.DEFAULT_CSRF_MATCHER` (`GET`, `HEAD`, `TRACE`, `OPTIONS` kontrolleras inte) | samma metoder, jämförda exakt |
 | `CsrfAuthenticationStrategy` och `CsrfLogoutHandler` | `WebSecurity.login` och `WebSecurity.logout` ger en ny token |
@@ -737,3 +790,5 @@ inloggning med huvudet ger 200, en `SESSION`-cookie och en ny `XSRF-TOKEN`, `/ap
 | Cookien sätts på första svaret utan ett eget filter | Spring laddar token lat sedan 6.0, så cookien sätts bara när något läser token, och behovet behöver ett `CsrfCookieFilter`. Här sätter säkerhetsfiltret cookien på varje svar till en förfrågan som saknar en välformad cookie, också 401, 403 och 404. |
 | Ny token också med en egen inloggningshandler | Springs `CsrfAuthenticationStrategy` och `CsrfLogoutHandler` körs av Springs egna inloggnings- och utloggningsfilter; behovets `AuthController` (med `logout(l -> l.disable())`) byter alltså inte token. Här gör `WebSecurity.login` och `WebSecurity.logout` det alltid. |
 | Strikt format | Ett huvud- eller cookievärde som inte är exakt 43 tecken ur `[A-Za-z0-9_-]` räknas som saknat, och två `X-XSRF-TOKEN`-fält ger 403. Spring jämför vilka värden som helst. |
+| `Secure` efter schemat kan inte stängas av | Spring sätter `secure` efter `request.isSecure()` om inget annat sägs, och en cookie customizer (`c -> c.secure(false)`) kan ta bort det över HTTPS. Här finns inget sådant val: en `XSRF-TOKEN` som sätts över `https` har alltid `Secure`, eftersom en app på samma origin aldrig behöver en utan `Secure` från `https`. `withCookie(c -> c.secure(true))` ger `Secure` också över `http`. |
+| `ForwardedHeaders` före säkerhetsfiltret | Tomcats `RemoteIpValve` körs före alla filter, så `request.isSecure()` är klientens schema överallt. Här är `ForwardedHeaders` ett filter som ska registreras före `security.filter()`. Registreras det efter får sessions- och CSRF-cookien inget `Secure` bakom en proxy, fast handlern ser `https`. |

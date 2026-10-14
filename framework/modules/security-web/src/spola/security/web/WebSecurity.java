@@ -40,8 +40,11 @@ import spola.web.WebRequest;
  * <h2>The filter</h2>
  * {@link #filter()} must be registered on the router, <b>first</b>, so that it is the
  * outermost filter: then it runs for every request, also those the router answers with 400,
- * 404, 405 or an automatic {@code OPTIONS}, and no other filter sees a request it denies. For
- * each request it:
+ * 404, 405 or an automatic {@code OPTIONS}, and no other filter sees a request it denies.
+ * Behind a reverse proxy the one exception is {@link spola.web.ForwardedHeaders}, which comes
+ * before it: then this filter, the session filter it runs and the rules see the client's scheme
+ * and address, and the cookies get {@code Secure} over HTTPS (see "{@code Secure} from the
+ * scheme"). For each request it:
  * <ol>
  *   <li>with {@linkplain Builder#sessions sessions}, runs the session filter of those sessions
  *       around all the steps below, so that the request's session is found from its cookie (see
@@ -74,7 +77,9 @@ import spola.web.WebRequest;
  * </ol>
  * With CSRF protection, the response that comes back (the handler's, 401, 403, 404, a mapped
  * error) gets a {@code Set-Cookie} with a new {@code XSRF-TOKEN} when the request had no
- * well-formed one, or when {@link #login} or {@link #logout} ran.
+ * well-formed one, or when {@link #login} or {@link #logout} ran. That cookie and the session
+ * cookie get {@code Secure} when their cookie function sets it or when the scheme of the request
+ * this filter got is {@code https} (see "{@code Secure} from the scheme" below).
  * An exception from a mechanism, a matcher or a rule is not caught: the router maps it (500
  * without a mapper), so an error never lets a request through.
  *
@@ -150,6 +155,9 @@ import spola.web.WebRequest;
  *       ({@code SessionOptions.idleTimeout}); every request with its cookie counts as a use. An
  *       expired session makes the request anonymous, so a login on a {@code permitAll} path
  *       works with an expired cookie.</li>
+ *   <li><b>{@code Secure}.</b> The session cookie that {@link #login} sets and the removal that
+ *       {@link #logout} sends get {@code Secure} also when the request this filter got is
+ *       {@code https}; see "{@code Secure} from the scheme" below.</li>
  * </ul>
  *
  * <h2>CSRF protection</h2>
@@ -181,6 +189,30 @@ import spola.web.WebRequest;
  *   <li><b>No stored tokens.</b> The server compares the header with the cookie of the same
  *       request and keeps nothing, so the protection works with and without sessions.</li>
  * </ul>
+ *
+ * <h2>{@code Secure} from the scheme</h2>
+ * The session cookie (with {@link Builder#sessions sessions}) and {@code XSRF-TOKEN} (with
+ * {@link Builder#csrf csrf}) get {@code Secure} when their cookie function sets it
+ * ({@code SessionOptions.withCookie(c -> c.secure(true))},
+ * {@code Csrf.cookie().withCookie(c -> c.secure(true))}; then also over {@code http}), <b>or</b>
+ * when the {@link WebRequest#scheme()} of the request this filter got is {@code https}, as
+ * Tomcat and Spring Security do with {@code request.isSecure()}. This holds for the session
+ * cookie and its removal, and for {@code XSRF-TOKEN} on the first response and at
+ * {@link #login} and {@link #logout}; a handler or a filter inside this one does not change
+ * which scheme applies. Over TLS the scheme is {@code https}. Behind a TLS proxy it is
+ * {@code https} only when {@link spola.web.ForwardedHeaders} is registered <b>before</b> this
+ * filter and trusts the proxy:
+ *
+ * <pre>{@code
+ * Router router = Router.builder()
+ *         .filter(ForwardedHeaders.trusting(TrustedProxies.privateNetworks()))  // first
+ *         .filter(security.filter())                     // sees https: both cookies get Secure
+ *         ...
+ * }</pre>
+ *
+ * Registered after this filter, {@code ForwardedHeaders} comes too late and the cookies get no
+ * {@code Secure} from the proxy. There is no way to turn the rule off. See
+ * {@link spola.web.Sessions} and {@link Csrf}.
  */
 public final class WebSecurity {
 
@@ -248,7 +280,8 @@ public final class WebSecurity {
 
     /**
      * The security filter. Register it on the router, <b>first</b>
-     * ({@code Router.builder().filter(security.filter())}); see the class documentation.
+     * ({@code Router.builder().filter(security.filter())}), behind a reverse proxy right after
+     * {@link spola.web.ForwardedHeaders}; see the class documentation.
      * Register it once: when a request reaches it a second time (it is also registered on a
      * group, or a second {@code WebSecurity}'s filter ran first), that is a programming error
      * and the filter throws {@link IllegalStateException} (500).
@@ -644,6 +677,10 @@ public final class WebSecurity {
          *       a {@code Cache-Control}; and with a new token by {@link WebSecurity#login} and
          *       {@link WebSecurity#logout}. A request with a well-formed cookie gets none, and a
          *       response gets at most one.</li>
+         *   <li><b>{@code Secure}</b> when the cookie function sets it, or when the scheme of the
+         *       request the security filter got is {@code https} (over TLS, or behind a proxy with
+         *       {@link spola.web.ForwardedHeaders} registered before the security filter); see
+         *       "{@code Secure} from the scheme" in {@link WebSecurity}.</li>
          * </ul>
          * {@link #build()} applies the cookie function of {@code csrf} once and reports a bad
          * one (see {@link Csrf#withCookie}). Call it once: a second call is a problem that

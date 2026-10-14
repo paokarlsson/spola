@@ -18,7 +18,9 @@
  *       {@link spola.security.web.WebSecurity#builder()}; its
  *       {@link spola.security.web.WebSecurity#filter() filter()} must be registered on the
  *       router <b>first</b>, so that it is the outermost filter and sees every request
- *       (also the router's 400, 404, 405 and automatic {@code OPTIONS}).</li>
+ *       (also the router's 400, 404, 405 and automatic {@code OPTIONS}); behind a reverse
+ *       proxy right after {@link spola.web.ForwardedHeaders}, so that it sees the client's
+ *       scheme and address.</li>
  *   <li>{@link spola.security.web.RequestAuthentication},
  *       {@link spola.security.web.AuthOutcome} and {@link spola.security.web.HttpBasic}
  *       (RFC 7617): how a request is authenticated.</li>
@@ -43,6 +45,11 @@
  *       {@code GET}, {@code HEAD}, {@code OPTIONS} and {@code TRACE} must repeat it in the
  *       header {@code X-XSRF-TOKEN}, or it gets 403 before any authentication. The server
  *       keeps no tokens.</li>
+ *   <li>{@code Secure}: the session cookie and {@code XSRF-TOKEN} get {@code Secure} when their
+ *       cookie function sets it or when the scheme of the request the security filter got is
+ *       {@code https} (over TLS, or behind a TLS proxy with {@code ForwardedHeaders} registered
+ *       before the security filter), as Tomcat and Spring Security do with
+ *       {@code request.isSecure()}.</li>
  * </ul>
  *
  * <p>{@code spola.web} and {@code spola.security} are required transitively because both are

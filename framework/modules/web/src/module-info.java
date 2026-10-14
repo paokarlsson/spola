@@ -30,7 +30,8 @@
  *       {@link spola.web.SessionOptions} keeps sessions in memory, identified by a random id in
  *       a cookie, created only when something is stored, with an idle timeout, a limit (503)
  *       and a new id on demand ({@code changeSessionId}); its filter is registered on the
- *       router.</li>
+ *       router. The cookie is {@code Secure} when the options say so or when the request's
+ *       scheme is {@code https}, as with Tomcat.</li>
  *   <li>Validation and binding ({@code @Valid}, {@code @ModelAttribute},
  *       {@code MethodArgumentNotValidException}): {@code WebRequest.readJson(codec, validator)},
  *       {@code readForm(binder, validator)} and {@code bindQuery(binder, validator)} with a
@@ -44,8 +45,9 @@
  *       {@code X-Forwarded-For} from the right past the trusted proxies, takes strict IP literals
  *       only (no name lookup) and answers 400 for an invalid value from a trusted proxy.
  *       Registered first, it gives every filter and handler after it the client's
- *       {@code WebRequest.scheme()} and {@code clientAddress()}, while
- *       {@code WebRequest.http()} still describes the connection.</li>
+ *       {@code WebRequest.scheme()} and {@code clientAddress()} (so the session cookie gets
+ *       {@code Secure} behind a TLS proxy), while {@code WebRequest.http()} still describes the
+ *       connection.</li>
  * </ul>
  *
  * <p>{@code spola.http} is required transitively because the API uses its {@code Request},

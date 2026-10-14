@@ -22,6 +22,7 @@ final class CsrfTests {
                 CsrfModeTests.tests(),
                 CsrfSetupTests.tests(),
                 CsrfConcurrencyTests.tests(),
+                SchemeTests.tests(),
                 CsrfReadmeTests.tests(),
                 CsrfLeakTests.tests());
     }

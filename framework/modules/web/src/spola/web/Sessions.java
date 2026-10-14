@@ -29,9 +29,9 @@ import spola.http.Response;
  * static final AttributeKey<Cart> CART = AttributeKey.of("cart", Cart.class);
  *
  * Sessions sessions = Sessions.inMemory(SessionOptions.DEFAULT
- *         .withIdleTimeout(Duration.ofMinutes(30))
- *         .withCookie(cookie -> cookie.secure(true)));          // behind a TLS proxy: say so
+ *         .withIdleTimeout(Duration.ofMinutes(30)));           // Secure when the scheme is https
  * Router router = Router.builder()
+ *         .filter(ForwardedHeaders.trusting(TrustedProxies.privateNetworks()))  // behind a TLS proxy: first
  *         .filter(sessions.filter())                             // before filters that use sessions
  *         .post("/cart/items", request -> {
  *             Session session = Sessions.getOrCreate(request);   // request.getSession()
@@ -46,7 +46,8 @@ import spola.http.Response;
  *
  * <h2>The filter</h2>
  * Register {@link #filter()} on the router, before the filters that use sessions (a filter
- * registered before it does not see the session state). For each request it reads the session
+ * registered before it does not see the session state), and behind a reverse proxy after
+ * {@link ForwardedHeaders} (see "{@code Secure}" below). For each request it reads the session
  * cookie, looks the session up, puts the request's session state on the request as an attribute
  * under a key only this class has, and calls {@code next.proceed}. On the response that comes
  * back, also one from a mapped exception, it adds a {@code Set-Cookie} when the session was
@@ -84,19 +85,47 @@ import spola.http.Response;
  * <h2>The cookie out</h2>
  * The session cookie is {@code ResponseCookie.of(cookieName, id)} (by default {@code Path=/},
  * {@code HttpOnly}, {@code SameSite=Lax}, no {@code Max-Age}: a session cookie) with the
- * attributes that {@link SessionOptions#cookie} gives it: with
- * {@code withCookie(c -> c.secure(true))} it is
- * {@code SESSION=<id>; Path=/; Secure; HttpOnly; SameSite=Lax}. The removal is
- * {@code SESSION=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax} with the same {@code Path},
- * {@code Domain} and {@code Secure}, so that it removes the cookie that was set. {@code Secure}
- * is set only when the function says so, never from the scheme (behind a TLS proxy the scheme
- * is {@code http}). The function is applied once, by {@link #inMemory(SessionOptions)}, so a
- * mistake in it shows at startup; its attributes are used for every session cookie. A response
- * gets at most one {@code Set-Cookie} for the session, with the
- * final outcome: created and then invalidated during one request gives only the removal,
- * invalidated and then created gives only the new id. A response that sets or removes the
- * cookie also gets {@code Cache-Control: no-store} unless it has a {@code Cache-Control}, so
+ * attributes that {@link SessionOptions#cookie} gives it, by default
+ * {@code SESSION=<id>; Path=/; HttpOnly; SameSite=Lax}. The removal is
+ * {@code SESSION=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax} with the same {@code Path} and
+ * {@code Domain}, so that it removes the cookie that was set. The function is applied once, by
+ * {@link #inMemory(SessionOptions)}, so a mistake in it shows at startup; its attributes are
+ * used for every session cookie. A response gets at most one {@code Set-Cookie} for the session,
+ * with the final outcome: created and then invalidated during one request gives only the
+ * removal, invalidated and then created gives only the new id. A response that sets or removes
+ * the cookie also gets {@code Cache-Control: no-store} unless it has a {@code Cache-Control}, so
  * that a shared cache never keeps a response with an id.
+ *
+ * <h2>{@code Secure}</h2>
+ * As Tomcat sets {@code Secure} on {@code JSESSIONID} when {@code request.isSecure()}, the
+ * session cookie and its removal get {@code Secure} when the function sets it, <b>or</b> when the
+ * request's {@link WebRequest#scheme()} is {@code https}:
+ * {@code SESSION=<id>; Path=/; Secure; HttpOnly; SameSite=Lax} and
+ * {@code SESSION=; Path=/; Max-Age=0; Secure; HttpOnly; SameSite=Lax}. Nothing else in the line
+ * changes.
+ * <ul>
+ *   <li><b>Which scheme.</b> The scheme of the request that this filter got, decided when the
+ *       filter starts, for each request on its own. With
+ *       {@code WebSecurity.builder().sessions(sessions)} the security filter runs this filter
+ *       itself, with the request the security filter got. A handler or a filter inside this one
+ *       does not change it, so {@link #renew} at login and {@link #invalidate} at logout use the
+ *       same scheme.</li>
+ *   <li><b>Over TLS</b> the scheme is {@code https}. <b>Behind a TLS proxy</b> (Caddy, nginx) the
+ *       connection is {@code http}, and the scheme is {@code https} only when
+ *       {@link ForwardedHeaders} is registered <b>before</b> this filter (first on the router)
+ *       and trusts the proxy that sends {@code X-Forwarded-Proto: https}. Registered after this
+ *       filter (or after the security filter that runs it), it comes too late: the cookie gets
+ *       no {@code Secure} from the proxy.</li>
+ *   <li><b>{@code withCookie(c -> c.secure(true))}</b> gives {@code Secure} on every response,
+ *       also over {@code http}, as before.</li>
+ *   <li><b>There is no way to turn the rule off</b> (Tomcat does not have one either): a cookie
+ *       set over {@code https} always has {@code Secure}. The checks at startup do not depend
+ *       on it: {@code SameSite=None}, {@code __Secure-} and {@code __Host-} still need
+ *       {@code secure(true)} in the function, since a request over {@code http} would otherwise
+ *       get a cookie that the browser rejects.</li>
+ *   <li>A removal over {@code http} of a cookie that was set over {@code https} has no
+ *       {@code Secure}, and a browser can then ignore it.</li>
+ * </ul>
  *
  * <h2>The lifecycle</h2>
  * <ul>
@@ -187,7 +216,10 @@ public final class Sessions {
     private final AtomicInteger sweeps = new AtomicInteger();
     /** The session cookie as the options' function made it, with {@link #PLACEHOLDER} as value. */
     private final ResponseCookie template;
+    /** The removal with the template's attributes: for a request whose scheme is not {@code https}. */
     private final ResponseCookie removal;
+    /** The removal with {@code Secure}: for a request whose scheme is {@code https}. */
+    private final ResponseCookie secureRemoval;
     private final Filter filter;
 
     private Sessions(SessionOptions options, InstantSource clock) {
@@ -195,6 +227,8 @@ public final class Sessions {
         this.clock = clock;
         this.template = template(options);
         this.removal = attributes(ResponseCookie.of(options.cookieName(), ""), template).maxAge(Duration.ZERO).build();
+        this.secureRemoval = attributes(ResponseCookie.of(options.cookieName(), ""), template).secure(true)
+                .maxAge(Duration.ZERO).build();
         this.nextSweep = new AtomicReference<>(clock.instant().plus(SWEEP_INTERVAL));
         this.filter = this::apply;
     }
@@ -344,7 +378,7 @@ public final class Sessions {
         }
         var now = clock.instant();
         sweepIfDue(now);
-        var state = new SessionState(this, lookup(request.cookieAll(options.cookieName()), now));
+        var state = new SessionState(this, lookup(request.cookieAll(options.cookieName()), now), isHttps(request));
         Response response;
         try {
             response = next.proceed(request.withAttribute(STATE, state));
@@ -516,14 +550,23 @@ public final class Sessions {
         return options.idleTimeout();
     }
 
-    /** The {@code Set-Cookie} for {@code id}: the template's attributes with the id as value. */
-    ResponseCookie sessionCookie(String id) {
-        return attributes(ResponseCookie.of(options.cookieName(), id), template).build();
+    /** Whether the scheme of the request the session filter got is {@code https}: then the cookie is {@code Secure}. */
+    private static boolean isHttps(WebRequest request) {
+        return request.scheme().equals("https");
     }
 
-    /** The {@code Set-Cookie} that removes the session cookie. */
-    ResponseCookie removalCookie() {
-        return removal;
+    /**
+     * The {@code Set-Cookie} for {@code id}: the template's attributes with the id as value, and
+     * {@code Secure} also when {@code https}.
+     */
+    ResponseCookie sessionCookie(String id, boolean https) {
+        return attributes(ResponseCookie.of(options.cookieName(), id), template).secure(template.secure() || https)
+                .build();
+    }
+
+    /** The {@code Set-Cookie} that removes the session cookie, with {@code Secure} also when {@code https}. */
+    ResponseCookie removalCookie(boolean https) {
+        return https ? secureRemoval : removal;
     }
 
     /** Applies the options' cookie function once, to a stand-in id, and checks the result. */

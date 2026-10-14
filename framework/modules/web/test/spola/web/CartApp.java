@@ -33,7 +33,9 @@ final class CartApp {
 
     private final Sessions sessions;
 
-    // secure: true over HTTPS, also behind a TLS proxy (Secure is never set from the scheme)
+    // secure: true sets Secure on every response, also over http; with false the cookie is
+    // Secure when the request's scheme is https (over TLS, or behind a TLS proxy with
+    // ForwardedHeaders registered before sessions.filter())
     CartApp(boolean secure) {
         sessions = Sessions.inMemory(SessionOptions.DEFAULT
                 .withIdleTimeout(Duration.ofMinutes(30))
@@ -79,7 +81,8 @@ final class CartApp {
     }
 
     public static void main(String[] args) throws Exception {
-        // behind a TLS proxy that forwards https://shop.example.com to port 8080
+        // behind a TLS proxy that forwards https://shop.example.com to port 8080; the router has
+        // no ForwardedHeaders, so the scheme is http and secure = true sets Secure
         var server = HttpServer.start(HttpServerOptions.DEFAULT.withPort(8080), new CartApp(true).router());
         Runtime.getRuntime().addShutdownHook(new Thread(server::close));
     }

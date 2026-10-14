@@ -108,10 +108,37 @@ import spola.web.WebRequest;
  * without padding: 43 characters. The cookie is
  * {@code ResponseCookie.of("XSRF-TOKEN", token).httpOnly(false)} changed by the
  * {@link #withCookie} function; by default {@code XSRF-TOKEN=<token>; Path=/; SameSite=Lax},
- * without {@code HttpOnly} and without {@code Secure}. {@code Secure} is set only when the
- * function says so ({@code Csrf.cookie().withCookie(c -> c.secure(true))}), never from the
- * scheme, which is {@code http} behind a TLS proxy. The names are fixed (Angular's and Spring's
- * defaults); there is no form parameter ({@code _csrf}) and no masking of the token.
+ * without {@code HttpOnly}. The names are fixed (Angular's and Spring's defaults); there is no
+ * form parameter ({@code _csrf}) and no masking of the token.
+ *
+ * <h2>{@code Secure}</h2>
+ * As Spring's {@code CookieCsrfTokenRepository} sets {@code secure} from
+ * {@code request.isSecure()}, the cookie gets {@code Secure} when the function sets it, <b>or</b>
+ * when the request's {@link WebRequest#scheme()} is {@code https}:
+ * {@code XSRF-TOKEN=<token>; Path=/; Secure; SameSite=Lax}. Nothing else in the line changes.
+ * The rule applies wherever the cookie is set: on the first response, whatever its status (200,
+ * 401, 403 from a rule or from the check, 404, ...), and at {@link WebSecurity#login} and
+ * {@link WebSecurity#logout}.
+ * <ul>
+ *   <li><b>Which scheme.</b> The scheme of the request that the security filter got, decided
+ *       when it starts, for each request on its own; the session cookie of
+ *       {@link WebSecurity.Builder#sessions sessions(...)} follows the same request. A handler
+ *       or a filter inside the security filter does not change it, so {@code login} and
+ *       {@code logout} use the same scheme.</li>
+ *   <li><b>Over TLS</b> the scheme is {@code https}. <b>Behind a TLS proxy</b> (Caddy, nginx) the
+ *       connection is {@code http}, and the scheme is {@code https} only when
+ *       {@link spola.web.ForwardedHeaders} is registered <b>before</b> {@code security.filter()}
+ *       (first on the router) and trusts the proxy that sends {@code X-Forwarded-Proto: https}.
+ *       Registered after the security filter, it comes too late: the cookie gets no
+ *       {@code Secure} from the proxy.</li>
+ *   <li><b>{@code Csrf.cookie().withCookie(c -> c.secure(true))}</b> gives {@code Secure} on
+ *       every response, also over {@code http}, as before.</li>
+ *   <li><b>There is no way to turn the rule off.</b> Spring can leave {@code secure} out over
+ *       HTTPS with a cookie customizer ({@code c -> c.secure(false)}); here a cookie set over
+ *       {@code https} always has {@code Secure}, since an application on the same origin never
+ *       needs one without it. The checks in {@link WebSecurity.Builder#build()} do not depend on
+ *       the rule: {@code SameSite=None} still needs {@code secure(true)} in the function.</li>
+ * </ul>
  */
 public final class Csrf {
 
@@ -154,12 +181,14 @@ public final class Csrf {
      * .httpOnly(false)} and returns that builder with attributes changed:
      *
      * <pre>{@code
-     * Csrf.cookie().withCookie(c -> c.secure(true))   // behind a TLS proxy: XSRF-TOKEN=...; Path=/; Secure; SameSite=Lax
+     * Csrf.cookie().withCookie(c -> c.secure(true))   // also over http: XSRF-TOKEN=...; Path=/; Secure; SameSite=Lax
      * }</pre>
      *
      * {@link WebSecurity.Builder#build()} applies the function once, to a stand-in token, and
      * uses the attributes it sets ({@code Path}, {@code Domain}, {@code Max-Age},
-     * {@code Secure}, {@code SameSite}) for every token. {@code build()} fails with an
+     * {@code Secure}, {@code SameSite}) for every token. Without {@code secure(true)} the cookie
+     * still gets {@code Secure} when the scheme of the request is {@code https} (see
+     * "{@code Secure}" in {@link Csrf}). {@code build()} fails with an
      * {@link IllegalArgumentException} if the function returns {@code null} or a builder for
      * another cookie, turns {@code HttpOnly} on (the application's JavaScript could not read the
      * cookie), sets {@code Max-Age} to zero (the browser would drop the cookie at once), or gives
@@ -251,7 +280,8 @@ public final class Csrf {
         }
 
         /**
-         * Checks {@code request} and notes whether it has a well-formed cookie.
+         * Checks {@code request} and notes whether it has a well-formed cookie and whether its
+         * scheme is {@code https} (then a new cookie gets {@code Secure}).
          *
          * @throws spola.web.WebException 400 if the request has more than 200 cookies
          */
@@ -261,7 +291,8 @@ public final class Csrf {
             for (var value : cookies) {
                 hasCookie |= isWellFormed(value);
             }
-            return new Exchange(this, hasCookie, UNCHECKED.contains(request.method()) || matches(request, cookies));
+            return new Exchange(this, hasCookie, UNCHECKED.contains(request.method()) || matches(request, cookies),
+                    request.scheme().equals("https"));
         }
 
         /**
@@ -283,10 +314,10 @@ public final class Csrf {
             return match;
         }
 
-        /** A cookie with a new token and the template's attributes. */
-        ResponseCookie newCookie() {
-            var builder = ResponseCookie.of(COOKIE_NAME, newToken()).path(template.path()).secure(template.secure())
-                    .httpOnly(false).sameSite(template.sameSite());
+        /** A cookie with a new token and the template's attributes, and {@code Secure} also when {@code https}. */
+        ResponseCookie newCookie(boolean https) {
+            var builder = ResponseCookie.of(COOKIE_NAME, newToken()).path(template.path())
+                    .secure(template.secure() || https).httpOnly(false).sameSite(template.sameSite());
             if (template.domain().isPresent()) {
                 builder = builder.domain(template.domain().get());
             }
@@ -315,22 +346,25 @@ public final class Csrf {
     /**
      * The CSRF state of one request, which the security filter puts on the request as an
      * attribute under a key only {@link WebSecurity} has: whether the request passed the check,
-     * whether it had a well-formed cookie, and whether {@code login} or {@code logout} asked for
-     * a new token. Holds no token. Synchronized, since a {@link WebRequest} may be handed to
-     * other threads.
+     * whether it had a well-formed cookie, whether the request the security filter got was
+     * {@code https}, and whether {@code login} or {@code logout} asked for a new token. Holds no
+     * token. Synchronized, since a {@link WebRequest} may be handed to other threads.
      */
     static final class Exchange {
 
         private final Protection protection;
         private final boolean hasCookie;
         private final boolean allowed;
+        /** Whether the request the security filter got is {@code https}: then a new cookie gets {@code Secure}. */
+        private final boolean https;
         private boolean renew;
         private boolean finished;
 
-        private Exchange(Protection protection, boolean hasCookie, boolean allowed) {
+        private Exchange(Protection protection, boolean hasCookie, boolean allowed, boolean https) {
             this.protection = protection;
             this.hasCookie = hasCookie;
             this.allowed = allowed;
+            this.https = https;
         }
 
         /** Whether the request passed the check: an unchecked method or a matching header. */
@@ -352,16 +386,16 @@ public final class Csrf {
         }
 
         /**
-         * {@code response} with a new token if the request had no well-formed cookie or a new one
-         * was asked for, and then {@code Cache-Control: no-store} unless it has a
-         * {@code Cache-Control}.
+         * {@code response} with a new token (with {@code Secure} also when the request was
+         * {@code https}) if the request had no well-formed cookie or a new one was asked for, and
+         * then {@code Cache-Control: no-store} unless it has a {@code Cache-Control}.
          */
         synchronized Response finish(Response response) {
             finished = true;
             if (hasCookie && !renew) {
                 return response;
             }
-            var withCookie = Responses.withCookie(response, protection.newCookie());
+            var withCookie = Responses.withCookie(response, protection.newCookie(https));
             return withCookie.headers().contains("Cache-Control") ? withCookie
                     : withCookie.withHeader("Cache-Control", "no-store");
         }

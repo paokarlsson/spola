@@ -17,6 +17,7 @@ final class SessionTests {
                 SessionExpiryTests.tests(),
                 SessionSetupTests.tests(),
                 SessionScaleTests.tests(),
+                SessionSchemeTests.tests(),
                 SessionReadmeTests.tests(),
                 SessionLeakTests.tests());
     }

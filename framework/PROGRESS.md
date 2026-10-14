@@ -606,7 +606,8 @@
   (funktionen körs en gång, i `inMemory`, och fel i den ger `IllegalArgumentException` vid
   uppstart); borttagningen med samma `Path`, `Domain` och `Secure` och `Max-Age=0`; högst ett
   `Set-Cookie` per svar med det slutliga utfallet; `Cache-Control: no-store` om svaret saknar
-  `Cache-Control`. `Secure` bara uttryckligen.
+  `Cache-Control`. `Secure` i 11a bara uttryckligen; sedan 13b också när förfrågans schema är
+  `https` (se 13b nedan).
 - Utgång efter `idleTimeout` sedan senaste användningen (filtrets uppslagning räknas), borttagning
   vid uppslagning, städning högst en gång per minut i filtret, ingen bakgrundstråd. Gränsen
   `maxSessions` gäller också vid samtidiga skapanden; vid gränsen städas först och sedan ger
@@ -683,8 +684,9 @@
 - Filtrets ordning: sessionsfiltret, 400 för flera `Authorization`-fält, CSRF-kontrollen,
   identiteten (sessionen, sedan mekanismerna), reglerna. En förfalskad förfrågan når aldrig
   `Authenticator`.
-- Cookien `XSRF-TOKEN=<token>; Path=/; SameSite=Lax` (utan `HttpOnly`, `Secure` med
-  `withCookie(c -> c.secure(true))`) sätts på varje svar som går ut genom säkerhetsfiltret till en
+- Cookien `XSRF-TOKEN=<token>; Path=/; SameSite=Lax` (utan `HttpOnly`; `Secure` med
+  `withCookie(c -> c.secure(true))` och sedan 13b också när schemat är `https`) sätts på varje
+  svar som går ut genom säkerhetsfiltret till en
   förfrågan utan välformad cookie (200, 401, 403, 404, 405, mappade fel), och med en ny token av
   `WebSecurity.login` och `WebSecurity.logout`; högst ett `Set-Cookie` per svar och
   `Cache-Control: no-store` om svaret saknar `Cache-Control`. Cookie-funktionen körs en gång, i
@@ -766,7 +768,7 @@
 ### Uppdrag 13a: bakom en omvänd proxy del 1, schema och klientadress från `X-Forwarded-*` (`spola.web`, `spola.http`)
 - **Första delen av behovet `2026-10-13-proxyhuvuden`** ("Rätt schema och klientadress bakom en
   omvänd proxy", appen psykologen). **13b** (`Secure` efter schemat på sessions- och CSRF-cookien)
-  återstår. Behovets kod fungerar som det står: bakom Caddy ger `/api/whoami` `https 203.0.113.7`,
+  kom sedan (se nedan). Behovets kod fungerar som det står: bakom Caddy ger `/api/whoami` `https 203.0.113.7`,
   direkt `http 127.0.0.1`, och falska huvuden till en server som inte litar på avsändaren
   ignoreras.
 - **Säkerhetskritisk kod.** Huvudena är data utifrån. Koden är testad genom en riktig server med
@@ -804,6 +806,55 @@
   `SourceRulesTests`), ungefär 4 s; 7 i `spola.http` (`RemoteAddressTests`, över TCP i `HttpTests`
   och över TLS i `TlsTests`); 3 i `spola.security.web` (`ForwardedSecurityTests`).
 
+### Uppdrag 13b: bakom en omvänd proxy del 2, `Secure` efter schemat på sessions- och CSRF-cookien (`spola.web`, `spola.security.web`) — behovet levererat
+- **Sista delen av behovet `2026-10-13-proxyhuvuden`** ("Rätt schema och klientadress bakom en
+  omvänd proxy", appen psykologen). Behovet är därmed **levererat i sin helhet (13a–13b)**: bakom
+  Caddy, med `ForwardedHeaders` registrerat först, ser filter och handlers klientens schema och
+  adress, och flödet från 11c (`CsrfExample`, sessioner utan `secure(true)`) ger `XSRF-TOKEN`,
+  `SESSION` och borttagningen med `Secure`. Appen kan byta
+  `server.forward-headers-strategy=native` mot `ForwardedHeaders` och behöver inget
+  `secure(true)` bakom proxyn.
+- **Säkerhetskritisk kod.** Cookierna bär inloggningen och CSRF-skyddet, och schemat kommer från
+  data utifrån (`X-Forwarded-Proto`). Koden är testad genom en riktig server med behovets flöde
+  (bakom en proxy och över direkt TLS), varje sorts svar, båda fel ordningar, obetrodda
+  avsändare, 200 samtidiga virtuella trådar som växlar schema och mutationer av koden, men **en människa bör granska den** innan ramverket
+  används på riktigt.
+- Regeln, som i Spring (Tomcats `JSESSIONID`, `CookieCsrfTokenRepository`): sessionscookien och
+  dess borttagning (`spola.web`) och `XSRF-TOKEN` (`spola.security.web`) får `Secure` när
+  cookie-funktionen sätter det, som förut, **eller** när förfrågans schema är `https`. Det gäller
+  när en session skapas, förnyas och tas bort, och för `XSRF-TOKEN` på första svaret (200, 401,
+  403 från en regel och från CSRF-kontrollen, 404, 405, mappade fel) och vid `login` och
+  `logout`. Inget annat i raden ändras; den är tecken för tecken raden som
+  `withCookie(c -> c.secure(true))` ger. `secure(true)` ger `Secure` också över `http`, som förut.
+- Schemat är `scheme()` för förfrågan som filtret fick: `sessions.filter()` för sessionscookien,
+  `security.filter()` för `XSRF-TOKEN` (och för sessionscookien när `WebSecurity` kör
+  sessionsfiltret). Det läses när filtret börjar; `login` och `logout` ändrar det inte. Över TLS är
+  det `https`; bakom en proxy bara när `ForwardedHeaders` är registrerat före filtren och litar på
+  proxyn. Över `http://localhost` får cookierna inget `Secure`, så utvecklingen fungerar som förut.
+- Kontrollerna vid uppstart är oförändrade: `SameSite=None`, `__Secure-` och `__Host-` kräver
+  fortfarande `secure(true)` i funktionen, för både `Sessions` och `Csrf`.
+- Inget nytt API: inga publika typer eller metoder, inga ändrade `requires` eller `exports`, inga
+  nya huvudkällfiler och inga ändringar i `Build.java`, `ForwardedHeaders`, `TrustedProxies`,
+  `spola.http` eller andra moduler. Internt läser `Sessions` och `Csrf.Protection` schemat per
+  förfrågan och lägger det i förfrågans tillstånd (`SessionState`, `Csrf.Exchange`); mallarna
+  byggs vid uppstart och ändras inte.
+- Javadoc för `Sessions` (nytt avsnitt "`Secure`"), `SessionOptions`, `Csrf` (nytt avsnitt
+  "`Secure`"), `WebSecurity` (nytt avsnitt "`Secure` from the scheme", och att bara
+  `ForwardedHeaders` kommer före säkerhetsfiltret) och båda `module-info.java`. `README.md` i
+  `modules/web/` (punkten "`Secure`" under Sessioner, en punkt under "Bakom en omvänd proxy" och
+  två omskrivna avvikelserader) och i `modules/security-web/` (inledningen, punkten om `Secure` i
+  "CSRF-skydd för en SPA", den nya delen "Bakom Caddy" med `ForwardedHeaders` först och båda
+  cookierna `Secure` utan `secure(true)`, två jämförelserader och två avvikelserader, bland dem att
+  regeln inte kan stängas av). Kommentarerna i `CartApp`, `LoginExample` och `CsrfExample` säger
+  regeln; exemplens kod är oförändrad. Varje mening om att `Secure` aldrig sätts efter schemat är
+  ersatt.
+- Nya tester: 10 i `spola.web` (`SessionSchemeTests`, registrerad i `SessionTests`) och 18 i
+  `spola.security.web` (`SchemeTests` med `SchemeFlowTests`, `SchemeCookieTests`,
+  `SchemeConcurrencyTests` och `SchemeReadmeTests`, registrerad i `CsrfTests` före läcktesterna;
+  ett av dem kör flödet över direkt TLS med en nyckel från `keytool`), ungefär 3 s. Av de befintliga testfilerna ändrades bara registreringen, raderna i
+  `SessionReadmeTests` och `ForwardedReadmeTests` för de omskrivna avvikelseraderna, och
+  kommentarerna i exemplen.
+
 ### Versioner och releaser (gjort för hand, utanför loopen)
 - `VERSION` i `Build.java` (nu `0.1.0`) sätts som modulversion i varje jar
   (`jar --module-version`). `java Build.java version` skriver ut den.
@@ -816,11 +867,10 @@
   `uppdrag/behov/` och står still (`IDLE`) när inget väntar. Se `MONSTER.md`.
 
 ## Återstår
-- **13b**, andra delen av behovet `2026-10-13-proxyhuvuden`: `Secure` efter schemat
-  (`request.scheme()`) på sessions- och CSRF-cookien (`uppdrag/13b-cookies-secure-efter-schemat.md`).
 - Behovet "Inloggning med sessioner och CSRF-skydd för ett JSON-API"
-  (psykologen) är levererat i sin helhet (11a–11c), och behovet "BCrypt-hashar och delegerande
-  lösenordshasher" (psykologen) i uppdrag 12; appen byter sin Spring-konfiguration efter nästa
+  (psykologen) är levererat i sin helhet (11a–11c), behovet "BCrypt-hashar och delegerande
+  lösenordshasher" (psykologen) i uppdrag 12 och behovet "Rätt schema och klientadress bakom en
+  omvänd proxy" (psykologen) i 13a–13b; appen byter sin Spring-konfiguration efter nästa
   release. Idéerna i `uppdrag/PLAN.md` (JWT, PostgreSQL, pool och
   transaktioner, query-DSL, migreringar, schemaläggning, observability, starter) byggs när ett
   behov kommer.
@@ -857,11 +907,24 @@
   - Ogiltiga värden från en betrodd proxy ger 400, till exempel `unknown` (som vissa proxyer
     skriver när de inte vet adressen) och dolda identifierare som `_hidden`; en klient på ett
     betrott nät som skickar skräp får också 400. Tomcat avvisar aldrig förfrågan för dem.
-  - `Secure` på sessions- och CSRF-cookien följer ännu inte schemat; det kommer i 13b.
+  - `Secure` på sessions- och CSRF-cookien följer schemat sedan 13b (se nästa punkt).
   - Ordningen i kedjan kan modulen inte kontrollera: ett filter som registreras före
     `ForwardedHeaders` ser anslutningens värden.
   - Inget sätt för andra filter att ändra `scheme()` och `clientAddress()`, ingen `removeOnly`
     (huvudena finns kvar i `headers()`) och inget `X-Forwarded-By`.
+- **`Secure` efter schemat (spola.web, spola.security.web, 13b):** säkerhetskritiskt; **bör
+  granskas av en människa** innan ramverket används på riktigt. Kända begränsningar:
+  - **Fel ordning med `ForwardedHeaders` ger inget `Secure`.** Registreras `ForwardedHeaders`
+    efter `sessions.filter()` eller `security.filter()` ser handlern `https`, men cookierna blir
+    inte `Secure` bakom proxyn. Ordningen kan modulerna inte kontrollera; den står i Javadoc och
+    README.
+  - **Det finns inget sätt att stänga av regeln.** En cookie som sätts över `https` har alltid
+    `Secure` (Spring kan stänga av det för `XSRF-TOKEN` med en cookie customizer).
+  - **En borttagning över `http` av en cookie som sattes över `https` får inget `Secure`**, och
+    webbläsaren kan då ignorera den. Sessionen är ändå borta på servern.
+  - Bara sessionscookien och `XSRF-TOKEN` följer schemat. Cookies som appen sätter med
+    `Responses.withCookie` får inget automatiskt `Secure`; appen väljer själv efter
+    `request.scheme()`.
 - **CSRF-skydd (spola.security.web, 11c):** säkerhetskritiskt; **bör granskas av en människa**
   innan ramverket används på riktigt. **Skyddet faller vid XSS:** skript på appens egna sidor kan
   läsa `XSRF-TOKEN` och skicka huvudet. **Det faller också för origins som CORS öppnar för:** en
@@ -916,8 +979,8 @@
   ny session med ett eget `Set-Cookie` (det som kommer sist gäller). Städningen går igenom alla
   sessioner på en förfrågans tråd högst en gång per minut (med 10 000 sessioner snabbt, med
   miljontals märkbart för den förfrågan). Ingen absolut maxlivstid, inget "kom ihåg mig", ingen
-  gräns per användare och inga händelser vid skapande och utgång (`HttpSessionListener`). Inget
-  automatiskt `Secure` efter schemat eller `X-Forwarded-Proto` (eget behov). Attributvärden
+  gräns per användare och inga händelser vid skapande och utgång (`HttpSessionListener`). `Secure`
+  efter schemat och `X-Forwarded-Proto` kom i 13b (se ovan). Attributvärden
   sparas som referenser: ett föränderligt värde delas mellan samtidiga förfrågningar och måste
   vara trådsäkert. Cookie-funktionen körs en gång vid `inMemory`, så en funktion som läser
   föränderlig konfiguration ser bara värdet vid uppstart. En förfrågan med fler än 200 cookies

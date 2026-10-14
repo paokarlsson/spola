@@ -8,23 +8,30 @@ import spola.http.Response;
  * attribute under a key only {@link Sessions} has. It holds the request's session (a
  * {@link Session} view, or none) and what the response must say about the cookie: the id of a
  * session created or renewed during the request, or that the cookie is to be removed. Only the
- * final outcome is sent, as one {@code Set-Cookie}. The new id lives here only until the filter
- * has built the response.
+ * final outcome is sent, as one {@code Set-Cookie}, with {@code Secure} also when the scheme of
+ * the request the filter got was {@code https} (fixed when the filter starts; nothing later in
+ * the chain changes it). The new id lives here only until the filter has built the response.
  *
  * <p>Synchronized, since a {@link WebRequest} may be handed to other threads.
  */
 final class SessionState {
 
     private final Sessions owner;
+    /** Whether the scheme of the request the filter got is {@code https}, so that the cookie gets {@code Secure}. */
+    private final boolean https;
     private Session session;
     private String issued;
     private boolean cleared;
     private boolean finished;
 
-    /** @param session the session the filter found for the request, or {@code null} */
-    SessionState(Sessions owner, Session session) {
+    /**
+     * @param session the session the filter found for the request, or {@code null}
+     * @param https   whether the scheme of the request the filter got is {@code https}
+     */
+    SessionState(Sessions owner, Session session, boolean https) {
         this.owner = owner;
         this.session = session;
+        this.https = https;
     }
 
     synchronized Optional<Session> find() {
@@ -63,7 +70,8 @@ final class SessionState {
     }
 
     /**
-     * The response with the outcome for the cookie: the new id, the removal, or nothing.
+     * The response with the outcome for the cookie: the new id, the removal, or nothing, with
+     * {@code Secure} also when the request the filter got was {@code https}.
      * A response that gets a {@code Set-Cookie} here gets {@code Cache-Control: no-store} too,
      * unless it has a {@code Cache-Control}.
      */
@@ -71,10 +79,10 @@ final class SessionState {
         finished = true;
         ResponseCookie cookie = null;
         if (issued != null) {
-            cookie = owner.sessionCookie(issued);
+            cookie = owner.sessionCookie(issued, https);
             issued = null;
         } else if (cleared) {
-            cookie = owner.removalCookie();
+            cookie = owner.removalCookie(https);
             cleared = false;
         }
         if (cookie == null) {

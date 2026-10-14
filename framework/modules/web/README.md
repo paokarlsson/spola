@@ -19,7 +19,8 @@ formulärkroppar (`request.readForm()`, `FormData`) kom i 08c. Validering med
 med fel per fält i `errors` kom i 09b. Sessioner i minnet med en sessionscookie (`Sessions`,
 `Session`, `SessionOptions`) kom i 11a. Klientens schema och adress bakom en omvänd proxy, ur
 `X-Forwarded-Proto` och `X-Forwarded-For` (`ForwardedHeaders`, `TrustedProxies`,
-`request.scheme()`, `request.clientAddress()`), kom i 13a.
+`request.scheme()`, `request.clientAddress()`), kom i 13a. `Secure` på sessionscookien när
+förfrågans schema är `https`, också bakom en proxy, kom i 13b.
 
 | Spring MVC | Spola |
 |---|---|
@@ -683,7 +684,9 @@ final class CartApp {
 
     private final Sessions sessions;
 
-    // secure: true over HTTPS, also behind a TLS proxy (Secure is never set from the scheme)
+    // secure: true sets Secure on every response, also over http; with false the cookie is
+    // Secure when the request's scheme is https (over TLS, or behind a TLS proxy with
+    // ForwardedHeaders registered before sessions.filter())
     CartApp(boolean secure) {
         sessions = Sessions.inMemory(SessionOptions.DEFAULT
                 .withIdleTimeout(Duration.ofMinutes(30))
@@ -729,7 +732,8 @@ final class CartApp {
     }
 
     public static void main(String[] args) throws Exception {
-        // behind a TLS proxy that forwards https://shop.example.com to port 8080
+        // behind a TLS proxy that forwards https://shop.example.com to port 8080; the router has
+        // no ForwardedHeaders, so the scheme is http and secure = true sets Secure
         var server = HttpServer.start(HttpServerOptions.DEFAULT.withPort(8080), new CartApp(true).router());
         Runtime.getRuntime().addShutdownHook(new Thread(server::close));
     }
@@ -758,13 +762,22 @@ kör det genom en riktig server med `HttpClient` och en `CookieManager`.
   upp; ett felaktigt, okänt eller utgånget värde ger ingen session, inget 400 och inget
   `Set-Cookie`.
 - **Cookien ut.** `SESSION=<id>; Path=/; HttpOnly; SameSite=Lax` (en sessionscookie) med de
-  attribut som `withCookie` ger: `cookie.secure(true)` ger
-  `SESSION=<id>; Path=/; Secure; HttpOnly; SameSite=Lax`. Funktionen körs en gång, i
-  `Sessions.inMemory`, så fel i inställningarna (`SameSite=None` utan `Secure`, `__Host-` med
-  `Domain`) ger `IllegalArgumentException` vid uppstart. Borttagningen är
-  `SESSION=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax` med samma `Path`, `Domain` och `Secure`.
+  attribut som `withCookie` ger. Funktionen körs en gång, i `Sessions.inMemory`, så fel i
+  inställningarna (`SameSite=None` utan `Secure`, `__Host-` med `Domain`) ger
+  `IllegalArgumentException` vid uppstart. Borttagningen är
+  `SESSION=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax` med samma `Path` och `Domain`.
   Ett svar får högst ett `Set-Cookie` för sessionen, med det slutliga utfallet, och ett svar som
   sätter eller tar bort cookien får `Cache-Control: no-store` om det saknar `Cache-Control`.
+- **`Secure`**, som Tomcat sätter det på `JSESSIONID`: cookien och borttagningen får `Secure` när
+  förfrågans schema (`request.scheme()`) är `https`, eller när `withCookie` säger det
+  (`cookie.secure(true)` ger `Secure` på varje svar, också över `http`). Inget annat i raden
+  ändras: `SESSION=<id>; Path=/; Secure; HttpOnly; SameSite=Lax`. Schemat är det som förfrågan
+  har när den når `sessions.filter()`, så `renew` och `invalidate` i handlern ändrar det inte.
+  Över TLS är det `https`. Bakom en TLS-proxy är det `https` bara när `ForwardedHeaders` är
+  registrerat före `sessions.filter()` (se [Bakom en omvänd proxy](#bakom-en-omvänd-proxy));
+  registrerat efter får cookien inget `Secure`. Över `http://localhost` får cookien inget
+  `Secure`, så utvecklingen fungerar. Regeln går inte att stänga av. En borttagning över `http`
+  av en cookie som sattes över `https` får inget `Secure`, och webbläsaren kan då ignorera den.
 - **Livscykeln.** `find` skapar aldrig en session. `getOrCreate` ger den levande sessionen eller
   skapar en. `renew` ger en levande session ett nytt id atomärt (det gamla slutar gälla direkt,
   attributen finns kvar) eller skapar en ny; använd den när sessionen får högre behörighet, till
@@ -855,6 +868,11 @@ final class WhoamiApp {
   exempel `sessions.filter()` och `security.filter()`), gruppernas filter och handlers klientens
   schema och adress, också på förfrågningar som ett filter skickar vidare med `withAttribute` och
   på routerns egna 400, 404 och 405. Ett filter som registreras före det ser anslutningens värden.
+- **`Secure` på sessions- och CSRF-cookien.** Med `ForwardedHeaders` före `sessions.filter()`
+  (eller `security.filter()`) är schemat `https` när proxyn skickar `X-Forwarded-Proto: https`,
+  och cookierna får `Secure` utan `secure(true)`. Registreras `ForwardedHeaders` efter ser
+  handlern `https`, men cookierna får inget `Secure`. Egna cookies med `Responses.withCookie` får
+  inget automatiskt `Secure`; appen väljer själv efter `request.scheme()`.
 - **Bara från en betrodd avsändare.** Filtret frågar `TrustedProxies` om den direkta avsändaren,
   `request.http().remoteAddress()`. Är den inte betrodd går förfrågan vidare oförändrad och
   huvudena läses inte alls: den som når appen direkt kan varken ändra värdena eller få 400 med
@@ -1214,7 +1232,7 @@ Router.builder()
 | Sessionens id | `HttpSession.getId()` ger id:t | Ingen `getId()`: id:t är en hemlighet som bara cookien bär, och applikationen behöver det inte. `Session.toString()` visar bara antalet attribut. |
 | Gräns för antalet sessioner | Ingen gräns som standard (Tomcats `maxActiveSessions` är -1). Med en gräns kastar Tomcat `TooManyActiveSessionsException` när en ny session ska skapas | Högst `maxSessions` (standard 10 000). Vid gränsen ger `getOrCreate` 503 (problem-svar utan `Set-Cookie`) i stället för att ta bort sessioner för att ge plats: befintliga sessioner tas aldrig bort, så den som kan skapa sessioner kan inte logga ut andra. |
 | Cookienamn | `JSESSIONID` (Tomcat) | `SESSION`, som Spring Session, i stället för `JSESSIONID`. I produktion rekommenderas `__Host-SESSION` med `secure(true)`. |
-| `Secure` på sessionscookien | Tomcat sätter `Secure` automatiskt när förfrågan kom över HTTPS, och `server.servlet.session.cookie.secure` tvingar det | Inget automatiskt `Secure` över HTTPS: `Secure` sätts bara med `withCookie(cookie -> cookie.secure(true))`, eftersom schemat är `http` bakom en TLS-proxy. |
+| `Secure` på sessionscookien | Tomcat sätter `Secure` på `JSESSIONID` när `request.isSecure()`, och `server.servlet.session.cookie.secure=true` tvingar det | Samma regel: `Secure` när `request.scheme()` är `https`, och `withCookie(cookie -> cookie.secure(true))` tvingar det, också över `http`. Bakom en proxy krävs att `ForwardedHeaders` registreras före `sessions.filter()` (se raden om `Secure` bakom en proxy nedan). Som i Tomcat går regeln inte att stänga av. |
 | Persistens och flera servrar | Tomcat kan spara sessioner mellan omstarter (`server.servlet.session.persistent`), och Spring Session delar dem mellan servrar med JDBC eller Redis | Ingen persistens och ingen delning: sessionerna finns bara i minnet, försvinner vid omstart och delas inte mellan servrar. Attributen sparas som referenser (ingen serialisering, inget krav på `Serializable`). |
 | Städning av utgångna sessioner | Tomcat städar i en bakgrundstråd | Ingen bakgrundstråd: en utgången session tas bort när den slås upp, filtret städar alla utgångna högst en gång per minut, och alltid innan en ny session nekas vid gränsen. `Sessions` behöver ingen `close()`. |
 | `Cache-Control` för sessionscookien | Inget särskilt utan Spring Security (som sätter `no-cache, no-store` på alla svar) | Ett svar som sätter eller tar bort sessionscookien får `Cache-Control: no-store` om det saknar `Cache-Control`, så att en delad cache aldrig sparar ett svar med ett sessions-id. |
@@ -1223,4 +1241,4 @@ Router.builder()
 | Ogiltiga värden från en betrodd proxy | `RemoteIpValve` avvisar aldrig förfrågan: elementen i `X-Forwarded-For` jämförs som text med reguljära uttryck, och ett `X-Forwarded-Proto` som inte är `https` ger `http` | 400 (problem-svar som namnger huvudet men inte värdet), aldrig 500: ett element i `X-Forwarded-For` som genomgången når och som inte är en IP-adress, fler än ett `X-Forwarded-Proto` och ett annat värde än `http` eller `https`. Element till vänster om klienten läses inte, och en obetrodd avsändare kan aldrig få 400 med huvudena. |
 | IP-adresser i `X-Forwarded-For` | Text som matchas mot `internal-proxies` (reguljära uttryck) | Strikta IP-literaler: IPv4 som fyra decimala delar utan inledande nollor (`127.1`, `2130706433`, `1.2.3` och `010.0.0.1` avvisas), IPv6 enligt RFC 4291 utan hakparenteser, zon eller port. Adressen skapas med `InetAddress.ofLiteral` först efter kontrollen, och inga namn slås upp. `::ffff:203.0.113.7` blir IPv4-adressen. |
 | Betrodda proxyer som standard | Tomcats standard för `internal-proxies` omfattar fler nät, bland annat de länklokala `169.254.0.0/16` och `100.64.0.0/10` | `TrustedProxies.privateNetworks()`: `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `127.0.0.0/8`, `::1` och `fc00::/7`, inga länklokala adresser och inte `100.64.0.0/10`. Inget standardval: `ForwardedHeaders.trusting(...)` tar alltid `TrustedProxies` uttryckligen. |
-| `Secure` på cookies efter schemat | Tomcat sätter `Secure` på sessionscookien när `request.isSecure()`, också efter `RemoteIpValve` | Ännu inte: sessions- och CSRF-cookien får `Secure` bara när cookie-funktionen säger det, inte efter `request.scheme()`. Det kommer i 13b. |
+| `Secure` på cookies efter schemat bakom en proxy | Tomcats `RemoteIpValve` körs före alla filter, så `request.isSecure()` är klientens schema för sessionscookien och för Spring Securitys cookies | `ForwardedHeaders` är ett filter och måste registreras före `sessions.filter()` och `security.filter()`. Då får sessions- och CSRF-cookien `Secure` efter klientens schema. Registreras det efter ser handlern `https`, men cookierna får inget `Secure`. Cookies som appen sätter själv med `Responses.withCookie` får inget automatiskt `Secure`. |
