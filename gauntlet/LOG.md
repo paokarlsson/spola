@@ -22,3 +22,4 @@
 - 2026-10-13 22:23 · 20261013-2137-security-inloggning-med-session · PASS · 1 rounds · Sessions part 2: login and logout with session (spola.security.web) · commits: 9fc4caa
 - 2026-10-13 23:32 · 20261013-2223-security-csrf · PASS · 1 rounds · Sessions part 3: CSRF protection with XSRF-TOKEN (spola.security.web) · commits: b00240b
 - 2026-10-14 01:19 · 20261013-2333-security-bcrypt · PASS · 2 rounds · BCrypt hashes and a delegating {id} password hasher (spola.security) · commits: a83d0bc, fff56cd
+- 2026-10-14 02:34 · 20261014-0119-web-proxyhuvuden · PASS · 1 rounds · Proxy part 1: client scheme and address from X-Forwarded-* (spola.web) · commits: 25fc491

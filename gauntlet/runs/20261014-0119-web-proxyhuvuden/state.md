@@ -3,9 +3,10 @@ title: Proxy part 1: client scheme and address from X-Forwarded-* (spola.web)
 mission_source: uppdrag/13a-web-proxyhuvuden.md
 max_rounds: 5
 round: 1
-next_step: 3d
-status: verifying
-green: –
-counts: –
+next_step: done
+status: PASS
+green: yes
+counts: 0 blocker, 0 major, 13 minor
 commits:
+  - round 1: 25fc491
 stash: –
