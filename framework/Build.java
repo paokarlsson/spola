@@ -74,6 +74,8 @@ static final List<ModuleDir> MODULES = List.of(
                 new TestEntry("spola.security.SecurityTests", "suite")),
         new ModuleDir("spola.security.web", Path.of("modules/security-web"),
                 new TestEntry("spola.security.web.SecurityWebTests", "suite")),
+        new ModuleDir("spola.client", Path.of("modules/client"),
+                new TestEntry("spola.client.ClientTests", "suite")),
         new ModuleDir("spola.demo", Path.of("modules/demo"),
                 new TestEntry("spola.demo.DemoTests", "suite")));
 
@@ -579,7 +581,8 @@ void runGuardrails() {
 /// modules. The layer gets the same readability the test compilation had (`--add-reads`), and
 /// the entry's package is exported to the runner so that it can call the entry method. All
 /// modules are run, then the build fails if any of them had a failing test. Tests run with
-/// `framework/` as working directory.
+/// `framework/` as working directory. The project modules that the module `requires static` are
+/// roots of its layer too (see staticProjectRequires).
 void runTests(List<ModuleDir> order) {
     var failed = new ArrayList<String>();
     for (var module : order) {
@@ -593,8 +596,10 @@ void runTests(List<ModuleDir> order) {
             }
         }
         var boot = ModuleLayer.boot();
+        var roots = new ArrayList<>(List.of(module.name(), TEST_RUNNER));
+        roots.addAll(staticProjectRequires(module));
         var configuration = boot.configuration().resolve(ModuleFinder.of(paths.toArray(Path[]::new)),
-                ModuleFinder.of(), Set.copyOf(List.of(module.name(), TEST_RUNNER)));
+                ModuleFinder.of(), Set.copyOf(roots));
         var controller = ModuleLayer.defineModulesWithOneLoader(configuration, List.of(boot),
                 ClassLoader.getSystemClassLoader());
         var layer = controller.layer();
@@ -619,6 +624,20 @@ void runTests(List<ModuleDir> order) {
     if (!failed.isEmpty()) {
         throw new BuildFailure("tests failed in " + String.join(", ", failed) + " (see the reports above)");
     }
+}
+
+/// The project modules that `module` requires only `static`, read from its compiled descriptor.
+/// Resolution leaves a `requires static` module out unless something else needs it, so without
+/// this its tests could not reach it at run time (spola.client's tests start a spola.web server).
+/// A module without such requires gets the same layer as before.
+List<String> staticProjectRequires(ModuleDir module) {
+    var descriptor = ModuleFinder.of(TEST_CLASSES.resolve(module.name())).find(module.name()).orElseThrow().descriptor();
+    return descriptor.requires().stream()
+            .filter(r -> r.modifiers().contains(ModuleDescriptor.Requires.Modifier.STATIC))
+            .map(ModuleDescriptor.Requires::name)
+            .filter(name -> MODULES.stream().anyMatch(m -> m.name().equals(name)))
+            .sorted()
+            .toList();
 }
 
 /// First argument that makes `java Build.java` run the exit-guard probe instead of building.

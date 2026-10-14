@@ -1,0 +1,14 @@
+feat(client): add spola.client, a RestClient for JSON APIs
+
+A new module on java.net.http and spola.json, the counterpart of
+Spring's RestClient: base URI, default headers, JSON bodies through
+codecs, one deadline for the whole call, a response size limit, no
+redirects, and a sealed RestClientException with status and excerpt.
+Build.java lets a module's tests load Spola modules it requires static.
+
+Gauntlet-Run: 20261014-0332-rest-klient
+Gauntlet-Round: 1/5
+Gauntlet-Verdict: FAIL (0 blocker, 3 major, 11 minor upheld)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_016R1SyuZe48AGwQWbo2Xdkz

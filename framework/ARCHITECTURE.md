@@ -22,6 +22,7 @@ framework/
   modules/web/README.md     exempel för spola.web bredvid Spring MVC, avvikelser från Spring MVC
   modules/validation/README.md  exempel för spola.validation bredvid Jakarta Bean Validation, avvikelser från Jakarta
   modules/security-web/README.md  exempel för spola.security.web bredvid Spring Security, avvikelser från Spring Security
+  modules/client/README.md  exempel för spola.client bredvid Springs RestClient och @SpringBootTest, avvikelser från RestClient
   out/                      byggresultat (ignoreras av git)
     classes/<modulnamn>/    kompilerade klasser per modul
     <modulnamn>.jar         en jar per modul (utan tester)
@@ -75,6 +76,14 @@ framework/
   testklassernas bytekod), kör till sist testerna för alla moduler. Testerna för alla moduler
   körs även om en tidigare modul fick rött; bygget blir sedan rött och listar modulerna.
 - Inga inkrementella byggen: `out/` raderas och byggs om varje gång.
+- **Testlagret och `requires static`:** en `requires static` löses inte av sig själv, så en
+  Spola-modul som en modul bara kräver med `static` fanns inte i testlagret. Sedan uppdrag 14 är
+  också de Spola-moduler som modulen `requires static` rötter i dess testlager
+  (`staticProjectRequires`, läst ur den kompilerade `module-info.class`), så att testerna når dem
+  vid körning (`spola.client`s tester startar en `spola.web`-server). Vid kompileringen behövs
+  inget: javac löser `requires static` ändå. JDK-moduler med `static` (som `java.net.http` i
+  `spola.http`) finns redan i boot-lagret. Ingen annan Spola-modul kräver en Spola-modul med
+  `static`, så de andra modulernas testlager är som förut.
 - **Version:** konstanten `VERSION` i `Build.java` (semver, kontrolleras mot ett mönster vid
   varje bygge) blir modulversion i varje jar (`jar --module-version`), så att
   `java --describe-module` och `ModuleDescriptor.rawVersion()` visar den. Den ligger i
@@ -3434,3 +3443,150 @@ Internt:
   och kommentarerna i `CartApp`, `LoginExample` och `CsrfExample` (README visar dem, och testerna
   jämför README med källan). Varje befintlig förväntan på en exakt `Set-Cookie`-rad över `http`
   gäller oförändrad.
+
+## REST-klient (`spola.client`)
+
+Uppdrag 14, behovet "HTTP-klient för JSON-API:er" (`2026-10-13-rest-klient`, appen psykologen):
+motsvarigheten till Spring Frameworks `RestClient`. En delbar, trådsäker klient ovanpå
+`java.net.http.HttpClient` och `spola.json` som skickar en JSON-kropp med några huvuden och ger
+tillbaka ett typat svar via en `JsonCodec`, eller ett typat fel med status. Svaret är data
+utifrån, så klienten har en tidsgräns för hela anropet och en storleksgräns för kroppen, och
+inga huvudvärden syns i fel eller `toString`. Klienterna för Anthropic och OpenAI stannar i
+appen.
+
+### API (paket `spola.client`)
+
+| Typ | Roll |
+|---|---|
+| `RestClient` | final, oföränderlig, trådsäker, `AutoCloseable`; `builder()`, `get`/`post`/`put`/`patch`/`delete(path)` → `RestRequest`, `close()`; konstanterna `DEFAULT_TIMEOUT` (30 s), `DEFAULT_CONNECT_TIMEOUT` (10 s), `DEFAULT_MAX_RESPONSE_SIZE` (4 MiB) och `MAX_ERROR_BODY` (8 KiB) |
+| `RestClient.Builder` | `baseUri(URI)` (krävs), `defaultHeader(name, value)`, `timeout(Duration)`, `connectTimeout(Duration)`, `maxResponseSize(int)`, `build()` |
+| `RestRequest` | final och oföränderlig: `header(name, value)`, `json(T, JsonCodec<T>)`, `json(JsonValue)`, `retrieve(JsonCodec<T>)` → `T`, `retrieveJson()` → `JsonValue`, `retrieveBodiless()` → 2xx-statusen |
+| `RestClientException` | abstrakt, `sealed`, `RuntimeException`; `method()`, `uri()`; `MAX_MESSAGE` (1 000) |
+| `RestClientResponseException` | final: `status()`, `headers()` (`java.net.http.HttpHeaders`), `bodyExcerpt()`; `MAX_EXCERPT` (1 000) |
+| `RestClientTransportException` | final: `timedOut()` |
+
+Interna klasser: `BodyReader` (`BodyHandler` och `BodySubscriber` som läser kroppen inom
+gränserna och kan avbrytas från den anropande tråden), `HeaderRules` (namn, värden och förbjudna
+namn), `Uris` (bas-URI, sökvägar och URI:n i meddelanden), `Text` (utdraget, escaping och
+ASCII-meddelanden) och `Causes` (orsaker som inte citerar förfrågans hemligheter).
+
+### Beslut
+
+- **Ny modul med `requires static spola.web` bara för testerna.** `module-info.java` har exakt
+  `requires transitive java.net.http` (det publika API:t har `HttpHeaders`),
+  `requires transitive spola.json` (API:t har `JsonCodec` och `JsonValue`), `requires static
+  spola.web` och `exports spola.client`. Huvudkoden använder inget från `spola.web`,
+  `spola.http` eller `spola.validation` (ett test läser källorna), så vid körning behövs bara
+  `spola.json` och klienten beror inte på servern. Testerna behöver en server och en router, och
+  testkällorna kompileras som en del av modulen, så de kan bara läsa det modulen läser; därav
+  `requires static`. Testlagret löser det (se "Bygget" nedan).
+- **API:t.** Namnen kommer från behovet. `RestClient.builder()` ger en nästlad `Builder` vars
+  sättare bara kastar `NullPointerException` för `null`; `build()` kontrollerar allt på en gång.
+  En `RestRequest` är oföränderlig: `header` och `json` ger en ny, så samma förfrågan kan skickas
+  flera gånger och delas mellan trådar. De avslutande anropen skickar en ny förfrågan och
+  blockerar den anropande tråden (vanlig blockerande stil, bra på virtuella trådar).
+  `retrieveBodiless()` ger statusen som `int` (för 204 och liknande).
+- **Undantagen följer Springs hierarki men är `sealed`.** `RestClientException` har exakt två
+  slutliga fall: `RestClientResponseException` (ett svar kom men går inte att använda: status
+  utanför 2xx, kropp över gränsen, tom kropp, inte JSON, JSON som inte passar kodeken) och
+  `RestClientTransportException` (inget användbart svar: nekad anslutning, TLS, avbruten
+  anslutning, felaktigt svar, tidsgräns, avbruten tråd). Konstruktorerna är paketprivata.
+  **Avvikelse från behovet:** behovet läser `status()` och `bodyExcerpt()` på
+  `RestClientException`, men en tidsgräns har ingen status, så de finns på
+  `RestClientResponseException`, som `getStatusCode()` i Spring. `catch (RestClientException e)`
+  fångar allt och en `switch` över den är uttömmande utan `default` (ett test kompilerar en
+  sådan). `HttpHeaders` är inte serialiserbar, så fältet är `transient` och `headers()` ger tomma
+  huvuden efter deserialisering.
+- **URI som text.** `baseUri` är absolut, `http` eller `https` (skiftlägesokänsligt, skrivs med
+  gemener), har en värd och en port mellan 1 och 65535 eller ingen, och saknar userinfo, query och
+  fragment. Dess sökväg följer samma tecken som en förfrågans (RFC 3986, bara ASCII), och ett
+  avslutande `/` tas bort. Sökvägen i `post(path)` börjar med `/`, är en giltig URI-sökväg
+  (pchar och `/`, `%` bara före två hexsiffror) med valfri query (också `?` och `/`) och utan
+  fragment. Den läggs **som text** efter basens sökväg (`https://h/api` + `/v1/x` blir
+  `https://h/api/v1/x`, till skillnad från `URI.resolve`), och inget kodas och det finns inga
+  mallar. Förfrågan går därmed alltid till basens schema, värd och port; `//annan.example/x` är
+  en sökväg på basens värd. `java.net.http` skickar `getRawPath()` och `getRawQuery()` som de är
+  (ASCII påverkas inte av dess `Utils.encode`), utom att en tom query (`/x?`) skickas som `/x`.
+- **HTTP/1.1, inga omdirigeringar, ingen proxy, inga cookies.** `HttpClient` byggs med
+  `Version.HTTP_1_1`, `Redirect.NEVER`, `Builder.NO_PROXY` och utan `CookieHandler`. En 3xx ger
+  `RestClientResponseException`, så huvudena med nyckeln skickas aldrig vidare till en annan värd.
+  `NO_PROXY` i stället för JDK:ns standard (`ProxySelector.getDefault()`, som läser
+  `https.proxyHost`): uppdraget säger "ingen proxy" och att förfrågan alltid går till basens värd,
+  och en proxy som JVM:ens egenskaper väljer tyst vore motsatsen. TLS använder JDK:ns standard-
+  `SSLContext` och värdnamnskontroll; varken den eller en proxy går att ange (utanför scope).
+- **Huvuden.** Namnet är en `token` (RFC 9110 5.6.2). Värdet är synlig ASCII, mellanslag och
+  tab, får vara tomt men inte börja eller sluta med mellanslag eller tab; det är en delmängd av
+  vad `java.net.http` tar, så JDK:ns eget `IllegalArgumentException` (som citerar värdet) nås
+  aldrig. `Connection`, `Content-Length`, `Content-Type`, `Expect`, `Host`, `Keep-Alive`,
+  `Proxy-Connection`, `TE`, `Trailer`, `Transfer-Encoding` och `Upgrade` avvisas oavsett
+  skiftläge. Samma namn två gånger i `defaultHeader` är ett fel. `header` ersätter ett
+  standardhuvud och ett tidigare `header` med samma namn i vilket skiftläge som helst.
+  `Accept: application/json` läggs till när inget `Accept` finns. `json(...)` kodar direkt
+  (`Json.write` som UTF-8) och sätter `Content-Type: application/json`; ett fel från kodeken
+  släpps igenom och inget skickas. `json(null, codec)` ger `NullPointerException` (regeln om
+  `null`); JSON `null` skickas med `json(JsonNull.INSTANCE)`.
+- **Meddelanden utan hemligheter.** Fel i uppsättningen nämner huvudets namn och var i värdet
+  felet är (index, och tecknet bara om det är ett styrtecken), aldrig värdet. Ett felaktigt namn
+  citeras bara fram till det första otillåtna tecknet, så `"Authorization: Bearer x"` som namn
+  visar `"Authorization"` och inget mer. En felaktig sökväg citeras utan query och fragment;
+  bas-URI:n citeras inte alls (den kan ha userinfo eller en query med en nyckel).
+- **Tidsgränsen är en deadline för hela anropet, också kroppen.** `HttpRequest.timeout` i
+  `java.net.http` gäller bara fram till huvudena (`MultiExchange` stänger av timern där), så
+  klienten använder den inte. I stället skickas förfrågan med `sendAsync` och en egen
+  `BodyHandler` vars `CompletableFuture` blir klar först när kroppen är läst, och den anropande
+  tråden väntar med `get(timeout)`. Går tiden ut avbryts kroppen (`Subscription.cancel`) och
+  framtiden (`cancel(true)`, som i JDK 16+ avbryter utbytet); båda stänger anslutningen. Testerna
+  visar att servern ser stängningen. `connectTimeout` ges till `HttpClient`. En tid längre än
+  `Long.MAX_VALUE` nanosekunder räknas som det, så att JDK:ns `Instant.plus` aldrig flödar över.
+- **Storleksgränsen i en egen `BodySubscriber`.** Prenumeranten begär obegränsat men behåller
+  högst gränsen: för 2xx `maxResponseSize`, annars `min(8 KiB, maxResponseSize)`. Ett
+  `Content-Length` över `maxResponseSize` (för vilken status som helst) avbryter innan en byte
+  läses. Går en 2xx-kropp förbi gränsen, eller når ett felsvar sina 8 KiB, avbryts prenumerationen
+  och `java.net.http` stänger anslutningen (`Http1AsyncReceiver`), så en kropp utan slut kan
+  inte hålla anropet. JSON tolkas med `JsonLimits.DEFAULT.withMaxInputSize(maxResponseSize)`.
+  `retrieveBodiless()` läser kroppen inom gränserna och kastar den.
+- **2xx tolkas alltid som JSON.** Kroppen tolkas strikt (RFC 8259, UTF-8) oavsett
+  `Content-Type`, en avvikelse från Spring som väljer konverterare efter typen. En tom kropp ger
+  fel i `retrieve` och `retrieveJson`, med `JsonParseException` som orsak;
+  `JsonMappingException` är orsaken när JSON:en inte passar kodeken.
+- **`bodyExcerpt()`.** De första högst 8 KiB avkodas som UTF-8 med JDK:ns ersättning (U+FFFD,
+  också för en ofullständig sekvens sist); 8 KiB ger alltid fler än 1 000 tecken, så kortningen
+  efter 1 000 `char` påverkas inte av var byten tog slut. Ett surrogatpar delas aldrig. Efter
+  kortningen skrivs styrtecken (U+0000–U+001F, U+007F–U+009F), U+2028, U+2029, bidi-tecknen
+  (U+200E, U+200F, U+202A–U+202E, U+2066–U+2069) och ensamma surrogat som `\uxxxx` (gemena
+  hexsiffror, som `spola.json`); bokstäver utanför ASCII behålls. En kortning slutar med `...`.
+- **`getMessage()`** är `METOD URI: vad` med URI:n utan query och fragment (högst 400 tecken, så
+  att statusen alltid får plats), för svarsfel `status N: vad: utdrag`, som en rad utskrivbar ASCII
+  (allt annat som `\uxxxx`) på högst 1 000 tecken, aldrig kapad mitt i en escape.
+  `RestClient.toString()` och `RestRequest.toString()` visar bara huvudenas namn och URI:n utan
+  query.
+- **Orsaker som inte citerar förfrågan.** `java.net.http` kan citera det servern skickade: en
+  server som ekar förfrågan får JDK:ns "Invalid status line" att citera förfrågans rad med query.
+  Därför letar `Causes` efter förfrågans huvudvärden, query och kropp (kompakt JSON, en rad) i
+  orsakens text (och i dess orsaker och undertryckta undantag, högst 64). Finns en är orsaken en `IOException` som namnger
+  originalets klass och har dess stackspår men inte dess text; annars är orsaken JDK:ns undantag
+  och meddelandet har dess text (ASCII, högst 300 tecken). Kontrollen har ingen minsta längd: ett
+  kort värde som `1` gör att fler orsaker byts ut, vilket bara kostar diagnostik. Tidsgränsen har
+  ingen orsak; ett avbrott har `InterruptedException`.
+- **Avbrott.** En tråd som avbryts medan den väntar avbryter utbytet, får flaggan satt igen och
+  ett `RestClientTransportException` med `InterruptedException` som orsak. En tråd som redan är
+  avbruten skickar ingenting.
+- **`close()`** stänger `HttpClient` (`HttpClient.close()`, som väntar på pågående utbyten; vart
+  och ett slutar inom sin tidsgräns, eftersom den anropande tråden avbryter det). Efter `close()`
+  ger ett avslutande anrop `IllegalStateException`; ett andra `close()` gör ingenting. Ett anrop
+  startar (`sendAsync`, som inte blockerar) under ett läslås, och `close()` markerar klienten som
+  stängd under skrivlåset innan `HttpClient.close()`. Ett anrop som tävlar med `close()` startar
+  därför antingen före (och `close()` väntar på det) eller får `IllegalStateException`, aldrig
+  JDK:ns `IOException("closed")` som ett transportfel (ett test kör 20 trådar mot `close()`).
+- **Ingen loggning och ingen reflektion** i modulen (ett test läser källorna).
+- **Tester** (`spola.client.ClientTests`, ungefär 290 st, ungefär 15 s): behovets kod
+  (`AiClients`, README:s första exempel) mot servrar som spelar Anthropic och OpenAI;
+  integrationstestet mot en router (`ItemApp` och `ItemApiTests`, README:s andra exempel);
+  omdirigeringar till en andra server som inte får någon förfrågan; tomma, HTML-, trasiga och
+  felmappade kroppar; gränsen med `Content-Length`, chunked och kroppar utan slut; tidsgränsen
+  mot en server som aldrig svarar och en som skickar en byte var 100:e ms; nekad anslutning,
+  skräp, avbruten kropp, TLS mot en server som inte talar TLS (första byten 0x16), avbrott;
+  utdraget som tabell; meddelanden och markörer för varje sorts fel (också en server som ekar
+  förfrågan); uppsättningen; vad servern tar emot; 200 virtuella trådar; `close()`; en `switch`
+  utan `default`; README mot testkällorna. Råa servrar på `ServerSocket` används där
+  `spola.http` inte kan svara fel med avsikt.

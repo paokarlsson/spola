@@ -73,6 +73,7 @@ jlink -p lib:out --add-modules hello --launcher hello=hello/hello.Main \
 | `spola.http` | Tomcat/Netty: HTTP/1.1 på virtuella trådar, TLS, gränser mot missbruk |
 | `spola.web` | Spring MVC: routing som kod, filter, felhantering (RFC 9457), JSON, cookies, formulär, sessioner, proxyhuvuden (`X-Forwarded-For`, `X-Forwarded-Proto`) |
 | `spola.json` | Jackson: strikt RFC 8259-parser och explicit mappning till records |
+| `spola.client` | Springs `RestClient`: JSON-API:er över `java.net.http` med codecs, tidsgräns för hela anropet, storleksgräns och typade fel med status, utan att läcka huvudvärden |
 | `spola.validation` | Bean Validation: komponerbara validatorer |
 | `spola.security` | Spring Security: PBKDF2- och BCrypt-hashning (`BCryptPasswordHasher`, hashar från Springs `BCryptPasswordEncoder`), delegerande hasher med `{id}`-prefix (`PasswordHasher.delegating`), autentisering |
 | `spola.security.web` | Spring Security: säkerhetsfilter, HTTP Basic, åtkomstregler, inloggning med session (`WebSecurity.login`/`logout`), CSRF-skydd för en SPA (`Csrf`, `XSRF-TOKEN`) |

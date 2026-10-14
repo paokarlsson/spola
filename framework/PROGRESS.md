@@ -855,6 +855,46 @@
   `SessionReadmeTests` och `ForwardedReadmeTests` för de omskrivna avvikelseraderna, och
   kommentarerna i exemplen.
 
+### Uppdrag 14: REST-klient för JSON-API:er på `java.net.http` (`spola.client`) — behovet levererat
+- **Behovet `2026-10-13-rest-klient`** ("HTTP-klient för JSON-API:er", appen psykologen) är
+  **levererat**: behovets kod för Anthropics Messages API och OpenAIs Chat Completions fungerar
+  mot lokala servrar som spelar API:erna (med avvikelsen `catch (RestClientResponseException e)`,
+  se nedan), och `HttpServer` plus klienten räcker för integrationstester mot appens egen router.
+  Appen kan byta Anthropics SDK och sin handskrivna `java.net.http`-kod mot `RestClient`; klienterna
+  för de två API:erna stannar i appen.
+- **Säkerhetskritisk kod** (svaret är data utifrån, huvudena bär API-nycklar). Testad mot råa
+  servrar med kroppar utan slut, enorma `Content-Length`, skräp, avbrutna kroppar, en server som
+  ekar förfrågan och markörer i huvuden, query och kropp, men **en människa bör granska den**
+  innan ramverket används på riktigt.
+- Ny modul `spola.client` (`modules/client/`): `RestClient` (final, oföränderlig, trådsäker,
+  `AutoCloseable`) med `RestClient.Builder` (`baseUri`, `defaultHeader`, `timeout` 30 s,
+  `connectTimeout` 10 s, `maxResponseSize` 4 MiB), `RestRequest` (oföränderlig: `header`,
+  `json(value, codec)`, `json(JsonValue)`, `retrieve(codec)`, `retrieveJson()`,
+  `retrieveBodiless()`) och den `sealed` undantagshierarkin `RestClientException` med
+  `RestClientResponseException` (`status()`, `headers()`, `bodyExcerpt()`) och
+  `RestClientTransportException` (`timedOut()`). HTTP/1.1, inga omdirigeringar, ingen proxy,
+  inga cookies, en deadline för hela anropet inklusive kroppen, en gräns för kroppen som också
+  stoppar chunked kroppar utan slut, bara de första 8 KiB av ett felsvar, och ett utdrag på högst
+  1 000 tecken utan styr- och bidi-tecken. Inga huvudvärden, ingen query och ingen
+  förfrågningskropp i meddelanden, `toString()` eller orsaker som modulen skapar.
+- **Avvikelse från behovet:** `status()` och `bodyExcerpt()` finns på
+  `RestClientResponseException`, inte på `RestClientException` (en tidsgräns har ingen status),
+  som i Spring.
+- `module-info.java`: `requires transitive java.net.http`, `requires transitive spola.json`,
+  `requires static spola.web` (bara för testerna) och `exports spola.client`. Vid körning behövs
+  bara `spola.json`.
+- `Build.java`: `spola.client` i `MODULES` med testingången `spola.client.ClientTests`, och
+  testlagret löser också de Spola-moduler som en modul `requires static`
+  (`staticProjectRequires`). Inga andra moduler är ändrade.
+- Javadoc på allt publikt API och i `module-info.java`. `README.md` i `modules/client/` visar
+  Spring-koden bredvid Spola-koden för behovets anrop (`AiClients.java`) och för ett
+  integrationstest mot en router bredvid `@SpringBootTest(webEnvironment = RANDOM_PORT)`
+  (`ItemApp.java`, `ItemApiTests.java`); exemplen är kompilerade testkällor som ett test jämför med
+  README. README har en jämförelsetabell, en tabell med gränserna och en avvikelsetabell.
+  Modulkatalogen i `MONSTER.md` och modultabellen i rotens `README.md` har en rad för
+  `spola.client`.
+- Nya tester: ungefär 290 i `spola.client` (`ClientTests`), ungefär 15 s.
+
 ### Versioner och releaser (gjort för hand, utanför loopen)
 - `VERSION` i `Build.java` (nu `0.1.0`) sätts som modulversion i varje jar
   (`jar --module-version`). `java Build.java version` skriver ut den.
@@ -870,8 +910,8 @@
 - Behovet "Inloggning med sessioner och CSRF-skydd för ett JSON-API"
   (psykologen) är levererat i sin helhet (11a–11c), behovet "BCrypt-hashar och delegerande
   lösenordshasher" (psykologen) i uppdrag 12 och behovet "Rätt schema och klientadress bakom en
-  omvänd proxy" (psykologen) i 13a–13b; appen byter sin Spring-konfiguration efter nästa
-  release. Idéerna i `uppdrag/PLAN.md` (JWT, PostgreSQL, pool och
+  omvänd proxy" (psykologen) i 13a–13b och behovet "HTTP-klient för JSON-API:er" (psykologen) i
+  uppdrag 14; appen byter sin Spring-konfiguration och sina klienter efter nästa release. Idéerna i `uppdrag/PLAN.md` (JWT, PostgreSQL, pool och
   transaktioner, query-DSL, migreringar, schemaläggning, observability, starter) byggs när ett
   behov kommer.
 - **Kvar från friktionsrapporten i 05c** (`modules/demo/README.md`, avsnitt "Friktion"):
@@ -890,6 +930,40 @@
     `LoggingSettings` efter bindningen, inte i `ConfigException` (punkt 7).
 
 ## Kända problem och begränsningar
+- **REST-klienten (spola.client, 14):** säkerhetskritisk; **bör granskas av en människa** innan
+  ramverket används på riktigt. Kända begränsningar:
+  - **Sökvägen skickas som den står**, utan kodning och utan mallar, så värden utifrån måste
+    kodas av appen innan de blir en del av sökvägen. En sökväg med tecken som inte får finnas i en
+    URI ger `IllegalArgumentException`. En tom query (`/x?`) skickas som `/x` (`java.net.http`).
+  - **Inga cookies, ingen egen `SSLContext` och ingen proxy.** TLS använder JDK:ns
+    standard-`SSLContext`; ingen proxy används, inte heller den som JVM:ens `https.proxyHost`
+    anger. Ingen mTLS, inget eget truststore per klient.
+  - **Bara HTTP/1.1.** Ingen HTTP/2 och ingen komprimering.
+  - **Omdirigeringar följs inte.** En 3xx ger `RestClientResponseException` med `Location` i
+    `headers()`.
+  - **`Content-Type` styr inte tolkningen.** Varje 2xx-kropp tolkas som JSON; `Content-Type` i
+    förfrågan kan inte sättas och bara JSON-kroppar kan skickas.
+  - **Svarshuvuden finns bara på `RestClientResponseException`**; ett lyckat anrop ger bara
+    värdet (eller statusen), inget `toEntity` eller `exchange`.
+  - **Ett felsvar läses bara till de första 8 KiB**, och utdraget är högst 1 000 tecken.
+  - **Samma tidsgräns gäller alla anrop från en klient**; ingen tidsgräns per förfrågan. En
+    deadline som går ut medan ett felsvar läses ger `RestClientTransportException` med
+    `timedOut()`, inte statusen.
+  - **`close()` väntar på pågående anrop** (vart och ett inom sin tidsgräns).
+  - Inga omförsök, ingen cirkelbrytare, inga interceptorer, ingen loggning och inga mätvärden.
+    `java.net.http` gör själv ett nytt försök för `GET` när en återanvänd anslutning visar sig
+    vara stängd, och provar ibland TLS-handslaget två gånger.
+  - Orsaken till ett `RestClientTransportException` byts mot en `IOException` utan text när
+    JDK:ns undantag citerar ett huvudvärde, förfrågans query eller dess kropp; ett kort värde (som
+    `1` eller kroppen `{}`) gör att det händer oftare än nödvändigt. Bara hela värden känns igen:
+    en server som ekar en del av ett värde och får JDK:n att citera den delen syns.
+  - `RestClientResponseException.headers()` är tom efter Java-serialisering (`HttpHeaders` är
+    inte serialiserbar).
+  - **Observerat, orsaken inte hittad:** med 200 samtidiga anrop mot en `spola.http`-server blir i
+    ungefär var tredje körning ett eller två anrop klara först när servern stänger en ledig
+    anslutning (`idleTimeout`). Det händer också med `java.net.http.HttpClient` direkt, utan
+    `spola.client`, så felet ligger i `java.net.http` eller i `spola.http`. Anropet får rätt svar;
+    `timeout` begränsar väntan.
 - **Proxyhuvuden (spola.web, 13a):** säkerhetskritiskt; **bör granskas av en människa** innan
   ramverket används på riktigt. Kända begränsningar:
   - Bara `X-Forwarded-For` och `X-Forwarded-Proto` läses. `Forwarded` (RFC 7239),
