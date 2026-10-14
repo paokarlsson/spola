@@ -39,7 +39,7 @@ final class SourceRulesTests {
                     try (var files = Files.walk(SOURCES)) {
                         sources = files.filter(f -> f.toString().endsWith(".java")).sorted().toList();
                     }
-                    assertEquals(13, sources.size(), "files: " + sources);
+                    assertEquals(17, sources.size(), "files: " + sources);
                     for (var file : sources) {
                         var text = Files.readString(file).replaceAll("(?s)/\\*.*?\\*/", "").replaceAll("//[^\n]*", "");
                         for (var forbidden : List.of("java.lang.reflect", "java.lang.invoke", "getDeclared", "setAccessible",
@@ -51,6 +51,9 @@ final class SourceRulesTests {
                     var hasher = Files.readString(SOURCES.resolve("spola/security/Pbkdf2PasswordHasher.java"));
                     assertTrue(hasher.contains("MessageDigest.isEqual(actual, stored.hash())"));
                     assertTrue(hasher.contains("new SecureRandom()"));
+                    var bcrypt = Files.readString(SOURCES.resolve("spola/security/BCryptPasswordHasher.java"));
+                    assertTrue(bcrypt.contains("MessageDigest.isEqual(actual, stored.hash())"));
+                    assertTrue(bcrypt.contains("new SecureRandom()"));
                     var authenticator = Files.readString(SOURCES.resolve("spola/security/Authenticator.java"));
                     assertTrue(authenticator.contains("System.getLogger(\"spola.security\")"));
                 }),

@@ -56,7 +56,7 @@ projekten som en vanlig Spring-app drar in. Tre villkor till:
 | `spola.http` | Inbäddad Tomcat: HTTP/1.1, TLS | `HttpServer`, `Handler`, `Request`, `Response` | – |
 | `spola.web` | Spring MVC, `ProblemDetail`, `HttpSession` | `Router`, `Filter`, `Responses`, `Param`, `WebException`, `Sessions`, `Session` | `http`, `json`, `validation` |
 | `spola.validation` | Bean Validation | `Validator<T>`, `Constraint` | – |
-| `spola.security` | Spring Security utan HTTP: `PasswordEncoder`, `UserDetailsService` | `Pbkdf2PasswordHasher`, `Authenticator`, `UserStore` | – |
+| `spola.security` | Spring Security utan HTTP: `PasswordEncoder`, `BCryptPasswordEncoder`, `DelegatingPasswordEncoder` (`{id}`-prefix), `UserDetailsService` | `Pbkdf2PasswordHasher`, `BCryptPasswordHasher`, `PasswordHasher.delegating`, `Authenticator`, `UserStore` | – |
 | `spola.security.web` | Spring Security: filterkedja, HTTP Basic, åtkomstregler, sessionsinloggning (`HttpSessionSecurityContextRepository`, `changeSessionId`, `invalidate`), CSRF för en SPA (`CookieCsrfTokenRepository.withHttpOnlyFalse()`, `XSRF-TOKEN`) | `WebSecurity` (`sessions(...)`, `csrf(...)`, `login`/`logout`), `Csrf`, `HttpBasic`, `Rules`, `SecurityContext` | `web`, `security` |
 | `spola.test` | JUnit | `Suite`, `Assertions` | – |
 | `spola.guardrails` | – | kontrollerar reglerna i bygget | – |

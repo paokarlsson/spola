@@ -703,6 +703,65 @@
 - 62 nya tester i `spola.security.web` (registrerade i `SecurityWebTests` via `CsrfTests`),
   ungefär 3 s.
 
+### Uppdrag 12: lösenord från Spring, BCrypt och delegerande hasher med `{id}`-prefix (`spola.security`) — behovet levererat
+- **Behovet `2026-10-13-losenord-bcrypt`** ("BCrypt-hashar och delegerande lösenordshasher",
+  appen psykologen) är **levererat i sin helhet**. En hash från Springs `BCryptPasswordEncoder`
+  verifieras (utan prefix med `BCryptPasswordHasher`, med `{bcrypt}`-prefix med den delegerande
+  hasharen), och en hash som Spola skriver är byte för byte vad Spring skriver för samma salt, så
+  Springs `BCryptPasswordEncoder.matches` godtar den. Appen kan byta
+  `PasswordEncoderFactories.createDelegatingPasswordEncoder()` mot
+  `PasswordHasher.delegating("bcrypt", Map.of("bcrypt", BCryptPasswordHasher.defaults(), ...))`.
+- **Säkerhetskritisk kod.** bcrypt och Blowfish är implementerade i modulen (JDK:n har ingen
+  bcrypt, och dess Blowfish-`Cipher` tar inte bcrypts nyckelschema). Koden är testad mot alla 20
+  publicerade vektorer ur jBCrypt och alla Openwall-vektorer, mot oberoende vektorer från
+  libxcrypt, mot JDK:ns `Cipher` (250 slumpade nycklar och block) och Eric Youngs Blowfish-vektorer,
+  men **en människa bör granska den** innan ramverket används på riktigt.
+- `BCryptPasswordHasher` (ny, publik): `defaults()` (kostnad 10, som Spring), `of(cost)` med 4–31
+  (annars `IllegalArgumentException`), konstanterna `MIN_COST`, `MAX_COST`, `DEFAULT_COST` och
+  `MAX_PASSWORD_BYTES`, `toString()` `BCryptPasswordHasher[cost=10]`. Skriver
+  `$2a$<kostnad>$<22 tecken salt><31 tecken hash>` (60 tecken, bcrypts Base64, salt 16 byte från
+  en `new SecureRandom()` per hasher). Verifierar `$2a$`, `$2b$` och `$2y$` (räknas likadant, som
+  i jBCrypt); `$2x$` och `$2$` stöds inte. Strikt tolkning: exakt 60 tecken (först), kostnad som
+  två ASCII-siffror 04–31, kanoniskt salt och kanonisk hash; annars `IllegalArgumentException`
+  utan strängen. Jämförelse av de 23 byten med `MessageDigest.isEqual`. `needsRehash` är `true`
+  bara för en lägre lagrad kostnad, som Springs `upgradeEncoding`.
+- Lösenord: UTF-8 med `REPORT`, ingen normalisering, **1–72 byte och inget U+0000** (över 72
+  `char` avvisas före kodningen). Annars `IllegalArgumentException` i `hash` (utan lösenordet) och
+  `false` i `matches`, utan att någon bcrypt räknas. Så räknas två olika lösenord aldrig som samma
+  (CVE-2025-22228). Lösenordets byte, nyckeln, Blowfish-tillståndet och den räknade hashen
+  nollställs.
+- `PasswordHasher.delegating(defaultId, Map<String, ? extends PasswordHasher>)` (ny statisk
+  metod): lagrar `{id}<hash>` som Springs `DelegatingPasswordEncoder`. Id:t är texten fram till
+  första `}` (sökt högst 101 tecken in) och måste vara exakt ett av de konfigurerade; resten går
+  till den delegaten. En hash utan prefix, med okänt id eller med felaktigt prefix ger
+  `IllegalArgumentException` med ett fast meddelande, utan strängen och utan texten mellan
+  klamrarna. `needsRehash` frågar alltid delegaten och är `true` för ett annat id än standard-id:t.
+  Id:n är 1–100 tecken utskrivbar ASCII utan klamrar; kartan kopieras. `toString()`
+  `DelegatingPasswordHasher[default=bcrypt, ids=[bcrypt, pbkdf2]]`.
+- Blowfishs tabeller härleds från π (Machins formel med `BigInteger`) en gång per JVM, vid första
+  användningen; ingen tabell med konstanter finns i källkoden. Primitiven (`BCrypt`), Blowfish och
+  den delegerande implementationen är paketprivata. Antalet varv räknas som `long` (kostnad 31 ger
+  2^31 varv, inte noll).
+- `Authenticator` och `InMemoryUserStore` är oförändrade: med den delegerande hasharen och
+  `users.upgrader(hasher)` flyttas en användare med `{pbkdf2}` eller lägre bcrypt-kostnad till
+  standardinställningarna vid nästa inloggning, och dummyhashen blir `{bcrypt}$2a$10$...`.
+- Inga ändrade `requires` eller `exports`, inga ändringar i `Build.java` eller andra moduler. Fyra
+  nya huvudkällfiler (`BCryptPasswordHasher`, `BCrypt`, `Blowfish`, `DelegatingPasswordHasher`),
+  så `SourceRulesTests` räknar 17 filer. Av de befintliga testfilerna ändrades bara
+  `SecurityTests` (registreringen), `SourceRulesTests` (antalet filer, `new SecureRandom()` och
+  `MessageDigest.isEqual` i `BCryptPasswordHasher`) och `ReadmeTests` (de nya jämförelse- och
+  avvikelseraderna, och att raden "Bara PBKDF2-SHA256" är borta).
+- Javadoc för `BCryptPasswordHasher`, `PasswordHasher` (med hela beteendet för `delegating`) och
+  `module-info.java`, och `README.md` i `modules/security/` (avsnittet "BCrypt och hashar från
+  Spring": Spring-koden med `DelegatingPasswordEncoder` bredvid `BCryptExample.java`, som är
+  kompilerad testkälla och jämförs med README av ett test, och nya rader i jämförelse- och
+  avvikelsetabellen). Modulkatalogen i `MONSTER.md` och modultabellen i rotens `README.md` är
+  uppdaterade.
+- 202 nya tester i `spola.security` (registrerade i `SecurityTests`; modulen har nu 305), ungefär
+  13 s, varav ungefär 6 s för jBCrypt-vektorerna med kostnad 12. Under arbetet jämfördes dessutom
+  1 200 slumpade fall (UTF-8 och råa byte, 0–100 byte, kostnad 4–5, alla tre versionerna) med
+  libxcrypt:s `crypt(3)` via perl, utan avvikelser; testerna anropar inga externa program.
+
 ### Versioner och releaser (gjort för hand, utanför loopen)
 - `VERSION` i `Build.java` (nu `0.1.0`) sätts som modulversion i varje jar
   (`jar --module-version`). `java Build.java version` skriver ut den.
@@ -716,8 +775,9 @@
 
 ## Återstår
 - Inget är beställt. Behovet "Inloggning med sessioner och CSRF-skydd för ett JSON-API"
-  (psykologen) är levererat i sin helhet (11a–11c); appen byter sin Spring-konfiguration efter
-  nästa release. Idéerna i `uppdrag/PLAN.md` (JWT, PostgreSQL, pool och
+  (psykologen) är levererat i sin helhet (11a–11c), och behovet "BCrypt-hashar och delegerande
+  lösenordshasher" (psykologen) i uppdrag 12; appen byter sin Spring-konfiguration efter nästa
+  release. Idéerna i `uppdrag/PLAN.md` (JWT, PostgreSQL, pool och
   transaktioner, query-DSL, migreringar, schemaläggning, observability, starter) byggs när ett
   behov kommer.
 - **Kvar från friktionsrapporten i 05c** (`modules/demo/README.md`, avsnitt "Friktion"):
@@ -818,9 +878,28 @@
   som användarens `UserStore` kastar loggas av routern med sitt meddelande; lagringen får inte
   lägga lösenord eller andra hemligheter i det. `exactly` och `under` tar inga prefix med
   avslutande `/`.
-- **Säkerhet (spola.security, 10a):** säkerhetskritisk; bör granskas av en människa. Bara
-  PBKDF2-HMAC-SHA256 (ingen BCrypt, SCrypt, Argon2 eller delegerande hasher). Ingen låsning av
-  konton och ingen hastighetsbegränsning; varje försök kostar en PBKDF2-beräkning, så en
+- **BCrypt och delegerande hasher (spola.security, 12):** säkerhetskritisk; **bör granskas av en
+  människa** innan ramverket används på riktigt. Kända begränsningar:
+  - Lösenord över 72 byte och lösenord med U+0000 avvisas, så användare med sådana lösenord från
+    Spring (före Springs rättelse av CVE-2025-22228) måste byta lösenord.
+  - En lagrad kostnad på 31 kan låsa en tråd i dygn (kostnad 31 är ungefär 2 miljoner gånger
+    kostnad 10); tolkningen godtar 4–31 som Spring, så den som kan skriva i användarlagringen kan
+    göra det med en enda rad.
+  - Medan användare flyttas mellan algoritmer skiljer sig tiden för kända användare med en annan
+    algoritm (`{pbkdf2}`) från tiden för okända (dummyhashen är `{bcrypt}`), så en angripare kan se
+    vilka användarnamn som finns. Lika tid mellan algoritmer ingick inte.
+  - Ingen reservhasher för hashar utan prefix (Springs `setDefaultPasswordEncoderForMatches`); en
+    ren bcrypt-hash i en delegerande hasher är ett datafel.
+  - Springs `{pbkdf2}`-format (hex från `Pbkdf2PasswordEncoder`) stöds inte; `{pbkdf2}` läser
+    Spolas PHC-format. Inte heller SCrypt, Argon2, `{noop}`, `{sha256}` eller `{MD5}`.
+  - Nya hashar har alltid `$2a$`; `$2x$` och `$2$` stöds inte.
+  - Lösenordet som `String` (eller annan `CharSequence`) kan inte nollställas av modulen; bara de
+    kodade byten, nyckeln, Blowfish-tillståndet och den räknade hashen nollställs.
+  - Tabellerna från π räknas fram vid första användningen (ungefär 50–300 ms en gång per JVM).
+- **Säkerhet (spola.security, 10a):** säkerhetskritisk; bör granskas av en människa. PBKDF2-HMAC-SHA256
+  och, sedan uppdrag 12, BCrypt och en delegerande hasher med `{id}`-prefix (ingen SCrypt eller
+  Argon2). Ingen låsning av
+  konton och ingen hastighetsbegränsning; varje försök kostar en PBKDF2- eller bcrypt-beräkning, så en
   angripare kan belasta CPU:n (utanför 10a). Ingen normalisering av
   lösenord (Unicode eller blanksteg) eller användarnamn. Ingen lösenordspolicy. Lösenordet
   finns som `CharSequence` (oftast en `String`) hos anroparen och kan inte nollställas av

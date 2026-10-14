@@ -57,9 +57,19 @@ final class ReadmeTests {
                             rows.add(line);
                         }
                     }
-                    for (var topic : List.of("Bara PBKDF2-SHA256", "PHC-format", "`{pbkdf2}`", "`DISABLED` bara efter rätt lösenord",
-                            "undantag i stället för `false`", "Ingen normalisering")) {
+                    for (var topic : List.of("Ingen SCrypt, Argon2", "PHC-format", "`{pbkdf2}`", "`DISABLED` bara efter rätt lösenord",
+                            "undantag i stället för `false`", "Ingen normalisering", "72 byte", "U+0000", "kanonisk Base64",
+                            "`needsRehash` bara vid lägre kostnad", "Alltid `$2a$`", "Exakta id", "ingen reservhasher",
+                            "`{pbkdf2}` är Spolas format")) {
                         assertTrue(rows.stream().anyMatch(r -> r.contains(topic)), "no table row about " + topic);
+                    }
+                    assertFalse(rows.stream().anyMatch(r -> r.contains("Bara PBKDF2-SHA256")), "the old row is replaced");
+                    // New comparison rows: the Spring cell starts with the first text, the row has the second.
+                    for (var pair : List.of(List.of("`BCryptPasswordEncoder", "`BCryptPasswordHasher"),
+                            List.of("`DelegatingPasswordEncoder", "`PasswordHasher.delegating"),
+                            List.of("`upgradeEncoding`", "`needsRehash`"))) {
+                        assertTrue(rows.stream().anyMatch(r -> r.startsWith("| " + pair.get(0)) && r.contains(pair.get(1))),
+                                "no comparison row " + pair);
                     }
                 }));
     }

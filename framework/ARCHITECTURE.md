@@ -3008,3 +3008,153 @@ i `java.base`, `ResponseCookie` och `Responses` i `spola.web`), och inget ändra
   inloggning eller utloggning, cookie på varje svar eller aldrig, `HttpOnly`, standard-Base64,
   skiftlägesokänslig jämförelse, 401 i stället för 403, inget `Cache-Control`) fångas av
   testerna.
+
+## Lösenord från Spring: BCrypt och delegerande hasher (`spola.security`)
+
+Uppdrag 12, hela behovet "BCrypt-hashar och delegerande lösenordshasher" (appen psykologen).
+`spola.security` verifierar och skapar BCrypt-hashar i Spring Securitys format och väljer
+algoritm efter ett `{id}`-prefix, som Springs `BCryptPasswordEncoder` och
+`DelegatingPasswordEncoder`. En app som går över från Spring behåller sina lagrade hashar
+(`{bcrypt}$2a$10$...`), och en hash som Spola skriver godtas av Spring. Koden är
+säkerhetskritisk och bör granskas av en människa.
+
+### API (paket `spola.security`)
+
+| Typ | Roll |
+|---|---|
+| `BCryptPasswordHasher` | ny, publik: `defaults()` (kostnad 10), `of(cost)` (4–31), konstanterna `MIN_COST`, `MAX_COST`, `DEFAULT_COST`, `MAX_PASSWORD_BYTES` |
+| `PasswordHasher` | ny statisk metod `delegating(defaultId, Map<String, ? extends PasswordHasher>)` |
+
+Interna klasser (paketprivata): `BCrypt` (primitiven: `hash(password, salt, cost)` på råa byte,
+`format(version, cost, salt, password)` för hela strängen, bcrypts Base64 och `rounds(cost)`),
+`Blowfish` (tillståndet, nyckelschemat, krypteringen och tabellerna härledda från π) och
+`DelegatingPasswordHasher`. `requires` och `exports` är oförändrade (allt finns i `java.base`),
+och inget ändrades i `Build.java`, `Authenticator`, `InMemoryUserStore` eller någon annan modul.
+Fyra nya huvudkällfiler, så `SourceRulesTests` räknar 17 filer i stället för 13.
+
+### Beslut
+
+- **Varför bcrypt implementeras i Spola (REGLER §4).** JDK:n har ingen bcrypt, och dess `Cipher`
+  för `Blowfish` går inte att använda: bcrypts dyra nyckelschema (`EksBlowfishSetup`) ändrar
+  P-arrayen och S-boxarna direkt, 2^kostnad gånger, och det tillståndet går inte att ge en
+  JDK-cipher. Algoritmen skrivs därför med heltalsaritmetik efter Provos och Mazières, "A
+  Future-Adaptable Password Scheme" (USENIX 1999), med OpenBSD:s `bcrypt.c` som referens för
+  formatet. Allt annat bygger på JDK:ns primitiver: `SecureRandom` för saltet,
+  `MessageDigest.isEqual` för jämförelsen, `CharsetEncoder` för UTF-8 och `BigInteger` för π.
+  Korrektheten visas på tre oberoende sätt: (1) de publicerade vektorerna ur jBCrypt (alla 20,
+  också kostnad 12) och Openwall crypt_blowfish, också de med råa byte `a3` och `ff ff a3`, ger
+  exakt rätt sträng; (2) Blowfish-kärnan med det vanliga nyckelschemat ger samma chiffertext som
+  JDK:ns `Cipher.getInstance("Blowfish/ECB/NoPadding")` för 250 slumpade nycklar (4–56 byte)
+  och block, och Eric Youngs fem vektorer stämmer; (3) vektorer från en oberoende implementation
+  (libxcrypt) med UTF-8, 71–73 byte och användningsfallets salt ger exakt rätt sträng med `$2a$`,
+  `$2b$` och `$2y$`. Vektorn för `"hemligt"` med kostnad 10 och saltet `0x10`–`0x1f` visar att
+  Spolas hashar är byte för byte vad Springs `BCryptPasswordEncoder` skriver.
+- **Konstanterna härleds från π.** Blowfishs initiala P-array (18 ord) och S-boxar (4 × 256 ord)
+  är per definition de första 33 344 bitarna av π:s bråkdel. De räknas fram en gång per JVM, i en
+  statisk hållare (`Blowfish.Pi`) och alltså vid första användningen, med Machins formel
+  `π = 16·arctan(1/5) − 4·arctan(1/239)` i fixpunkt med `BigInteger` och 64 skyddsbitar (varje av
+  de ungefär 9 300 termerna avrundas högst två enheter, så felet håller sig under 2^20 enheter).
+  Det tar ungefär 50–300 ms en gång. En tabell inkopierad från en annan implementation vore
+  inkopierad källkod (REGLER §1) och 1 042 ord som ingen kan granska för hand; formeln går att
+  läsa, och testerna kontrollerar åtta kända värden (bland dem första och sista ordet) och att
+  ingen huvudkällfil innehåller kända konstanter eller en tabell av tal. Varje hash arbetar på en
+  egen kopia, och de härledda tabellerna ändras aldrig (testet läser dem före och efter hashar).
+- **`$2a$`, `$2b$` och `$2y$` räknas likadant, som i jBCrypt (Springs `BCrypt`).** Nyckeln är
+  lösenordets byte följda av en NUL-byte, upprepade cykliskt; varje expansion läser 72 byte,
+  från början. Byte läses utan tecken (en byte ≥ 0x80 teckenutvidgas aldrig, vilket var felet i
+  crypt_blowfish:s gamla `$2a$`, som `$2x$` bevarar). Två andra implementationer skiljer sig, men
+  ingen av skillnaderna kan nå `BCryptPasswordHasher`, som bara tar 1–72 byte giltig UTF-8:
+  OpenBSD:s gamla `$2a$` räknade fel bara för lösenord över 255 byte, och motåtgärden i
+  crypt_blowfish:s och libxcrypt:s `$2a$` gäller bara byte-strängar som inte är giltig UTF-8 (för
+  `ff ff a3` ger libxcrypt en annan hashdel med `$2a$`; jBCrypt och Spola ger samma som med
+  `$2b$`). `$2x$` (crypt_blowfish:s buggkompatibla läge) och `$2$` (utan NUL) stöds inte: Spring
+  skriver dem aldrig, och de skulle kräva en andra, avsiktligt felaktig variant av algoritmen.
+  Nya hashar har alltid `$2a$`, som Springs standard.
+- **Antalet varv räknas som `long`.** Kostnaden `c` ger `2^c` varv. I Java är `1 << 31`
+  negativt, så en loop med `int` skulle för kostnad 31 ge noll varv, alltså en hash som kan
+  räknas på en bråkdel av en sekund. `BCrypt.rounds(cost)` ger `1L << cost`, och loopen räknar med
+  en `long`. Ett test kontrollerar värdena för kostnad 4 och 31, och ett annat att primitiven
+  använder hjälpmetoden.
+- **72 byte och U+0000.** bcrypt läser bara 72 byte av nyckeln, så ett längre lösenord räknas
+  tyst som sina första 72 byte. Det är CVE-2025-22228 i Spring Security, där två olika långa
+  lösenord med samma början godtogs som samma. Nyckeln är dessutom lösenordet följt av NUL,
+  upprepat, så `"a"` och `"a\u0000a"` ger samma nyckelström (`a 00 a 00 ...`), och
+  C-implementationer slutar läsa vid NUL. Därför godtar `BCryptPasswordHasher` bara lösenord på
+  1–72 byte UTF-8 utan U+0000; med de reglerna ger två olika lösenord alltid olika nyckelströmmar.
+  Ett lösenord över 72 `char` avvisas före kodningen (varje `char` blir minst en byte). Ett
+  avvisat lösenord ger `IllegalArgumentException` i `hash` (utan lösenordet i meddelandet) och
+  `false` i `matches`, och ingen bcrypt räknas (testerna visar det mot en lagrad hash med kostnad
+  31). Förhashning av långa lösenord (SHA-512 före bcrypt) är uteslutet: Spring skulle inte kunna
+  verifiera sådana hashar. Konsekvensen, som står i Javadoc, README och PROGRESS.md: en användare
+  vars lösenord i Spring var längre än 72 byte (eller hade NUL) måste byta lösenord. Lösenordet
+  kodas som UTF-8 med `CodingErrorAction.REPORT` och normaliseras inte, som i
+  `Pbkdf2PasswordHasher`; Spring gör `getBytes(UTF_8)`, så varje godtaget lösenord blir samma
+  byte i båda. De kodade byten, nyckelorden, Blowfish-tillståndet, mellanblocken och den räknade
+  hashen nollställs efter användning.
+- **Strikt tolkning med kanonisk Base64.** En lagrad hash godtas bara om den har exakt 60 tecken
+  (kontrolleras först, så en sträng på 10 000 tecken kostar inget), börjar med exakt `$2a$`,
+  `$2b$` eller `$2y$`, har kostnaden som två ASCII-siffror 04–31 följda av `$`, och har 53 tecken
+  ur alfabetet `./A–Za–z0–9` där både saltet (22 tecken, 16 byte) och hashen (31 tecken, 23 byte)
+  är kanoniska: de oanvända låga bitarna i sista tecknet är noll (saltet slutar på en av `.Oeu`,
+  hashen på en av `.CGKOSWaeimquy26`). Allt annat ger `IllegalArgumentException` i `matches` och
+  `needsRehash`, med ett fast meddelande utan strängen, och `matches` tolkar hashen före
+  lösenordet, som `Pbkdf2PasswordHasher`. Varför kanonisk: Springs `BCrypt.checkpw` jämför hela
+  strängen med en ny kodning av saltet och hashen, så en hash med satta oanvända bitar har aldrig
+  kunnat verifieras i Spring; inget går förlorat, och sträng och byte motsvarar varandra ett till
+  ett. Av samma skäl måste Spolas egna hashar vara kanoniska, annars godtar Spring dem inte. De 23
+  avkodade byten jämförs med `MessageDigest.isEqual`.
+- **Kostnaden och `needsRehash`.** `defaults()` har kostnad 10 som `new BCryptPasswordEncoder()`,
+  och `of(cost)` tar 4–31 som Spring (Javadoc rekommenderar minst 10). Tolkningen godtar också
+  4–31, som behovet kräver; en lagrad hash verifieras med sin egen kostnad. Kostnad 31 är ungefär
+  2 miljoner gånger kostnad 10, alltså dygn, så den som kan skriva i användarlagringen kan låsa en
+  tråd med en sådan rad (dokumenterat; ett lägre tak skulle avvisa hashar som Spring godtar).
+  `needsRehash` är `true` bara när den lagrade kostnaden är **lägre** än hasharens, som Springs
+  `upgradeEncoding`: versionen och en högre kostnad ger `false`, och ingen bcrypt räknas. Det
+  skiljer sig medvetet från `Pbkdf2PasswordHasher`, som vill ha en ny hash vid varje skillnad; en
+  högre bcrypt-kostnad är starkare och ska inte sänkas av en inloggning.
+- **Formatet med `{id}`.** `PasswordHasher.delegating(defaultId, hashers)` lagrar
+  `{id}<delegatens hash>`, som `DelegatingPasswordEncoder`. `hash` ger `"{" + defaultId + "}"`
+  följt av standarddelegatens hash, och delegatens undantag släpps igenom. I `matches` och
+  `needsRehash` måste strängen börja med `{`, och id:t är texten fram till första `}`, som söks
+  högst 101 tecken in (ett id är högst 100 tecken). Id:t måste vara exakt ett av de konfigurerade
+  (skiftlägeskänsligt, ingen trimning), och resten går till den delegaten, vars
+  `IllegalArgumentException` släpps igenom oförändrat. `needsRehash` frågar alltid delegaten om
+  resten, så en felaktig rest ger undantag också för ett annat id än standard-id:t, och svaret är
+  `true` om id:t inte är standard-id:t eller om delegaten säger det; så flyttar den befintliga
+  uppgraderingen i `Authenticator` användare från `{pbkdf2}` och från lägre bcrypt-kostnad.
+  Id:n är 1–100 tecken utskrivbar ASCII (0x21–0x7E) utan klamrar, så att de kan stå i
+  `toString()` och i en loggrad utan escaping och ett `}` aldrig kan vara en del av ett id.
+  Kartan kopieras i ett enda varv (så att kontrollerna och användningen ser samma innehåll), och
+  resultatet är oföränderligt.
+- **Ingen reservhasher, och felmeddelanden utan id.** En hash utan prefix eller med ett okänt id
+  är ett datafel, som med Springs standard (`UnmappedIdPasswordEncoder`); Springs
+  `setDefaultPasswordEncoderForMatches` finns inte, eftersom en reserv gör att en hash utan prefix
+  tyst tolkas som en annan algoritm. En ren hash från `BCryptPasswordEncoder` verifieras direkt med
+  `BCryptPasswordHasher`. Meddelandena är fasta texter som varken innehåller strängen eller texten
+  mellan klamrarna, eftersom den kan vara en hash (`{$2a$10$...}`). De listar inte heller de
+  konfigurerade id:na (det hade uppdraget tillåtit): ett meddelande med listan kan innehålla texten
+  mellan klamrarna när den råkar vara en del av ett id, och id:na syns ändå i `toString()`.
+- **`{pbkdf2}` är Spolas format.** Id:na är appens namn, och `"pbkdf2"` i användningsfallet läser
+  Spolas PHC-format (`Pbkdf2PasswordHasher`), inte hex-formatet från Springs
+  `Pbkdf2PasswordEncoder`, som inte stöds. Det står i Javadoc och README.
+- **Primitiven är paketprivat.** Till skillnad från `Pbkdf2.deriveSha256` är en publik
+  bcrypt-primitiv lätt att använda fel: den tar vilka byte som helst och kortar tyst allt efter 72,
+  vilket är just CVE-2025-22228. Reglerna ligger därför i `BCryptPasswordHasher`, och bara den är
+  publik. Primitiven (`BCrypt.hash` på råa byte av vilken längd som helst, också 0 och över 72)
+  och vägen som formaterar hela strängen från ett givet salt (`BCrypt.format`) är paketprivata så
+  att testerna kan köra alla publicerade vektorer, och `hash` och vektortesterna går genom samma
+  `format`.
+- **`Authenticator` och `InMemoryUserStore` är oförändrade.** De arbetar genom `PasswordHasher`.
+  Dummyhashen för okända användare blir `{bcrypt}$2a$10$...` med standardalgoritmen, så en okänd
+  användare kostar en bcrypt-kontroll. Medan användare flyttas mellan algoritmer kostar en känd
+  användare med `{pbkdf2}` en PBKDF2-kontroll, alltså en annan tid än en okänd, så en angripare kan
+  se vilka användarnamn som finns; lika tid mellan algoritmer var utanför uppdraget. En användare
+  med `{pbkdf2}`-hash och ett lösenord över 72 byte loggar in, men uppgraderingen misslyckas med
+  `IllegalArgumentException` från `hash`, som `Authenticator` loggar med klassnamnet, och
+  PBKDF2-hashen ligger kvar.
+- **Tester.** Nio nya testfiler i `spola.security`: vektortabellerna (jBCrypt, Openwall,
+  libxcrypt och användningsfallet), Blowfish-kärnan mot JDK:ns `Cipher` och Eric Youngs vektorer,
+  lösenordsreglerna (också mot en lagrad kostnad 31, som visar att inget räknas), 44 felaktiga
+  lagrade hashar, den delegerande hasharen, `Authenticator` med räknande delegater och 200
+  virtuella trådar, markörer i lösenord och hashar (också mellan klamrarna) och README-exemplet
+  `BCryptExample.java`, som är kompilerad testkälla och jämförs med README.

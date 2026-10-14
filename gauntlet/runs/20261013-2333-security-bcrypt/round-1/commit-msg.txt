@@ -1,0 +1,15 @@
+feat(security): add BCrypt and a delegating {id} password hasher
+
+BCryptPasswordHasher verifies $2a$/$2b$/$2y$ hashes from Spring and
+writes $2a$ hashes Spring accepts; Blowfish is written out with its
+tables derived from pi. PasswordHasher.delegating reads Spring's {id}
+prefix. Passwords over 72 bytes or with U+0000 are refused, so long
+passwords never collide (CVE-2025-22228). Tested against jBCrypt,
+Openwall and libxcrypt vectors.
+
+Gauntlet-Run: 20261013-2333-security-bcrypt
+Gauntlet-Round: 1/5
+Gauntlet-Verdict: FAIL (0 blocker, 1 major, 10 minor upheld)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_016R1SyuZe48AGwQWbo2Xdkz
