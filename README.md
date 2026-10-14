@@ -71,7 +71,7 @@ jlink -p lib:out --add-modules hello --launcher hello=hello/hello.Main \
 | Modul | Ersätter |
 | --- | --- |
 | `spola.http` | Tomcat/Netty: HTTP/1.1 på virtuella trådar, TLS, gränser mot missbruk |
-| `spola.web` | Spring MVC: routing som kod, filter, felhantering (RFC 9457), JSON, cookies, formulär, sessioner |
+| `spola.web` | Spring MVC: routing som kod, filter, felhantering (RFC 9457), JSON, cookies, formulär, sessioner, proxyhuvuden (`X-Forwarded-For`, `X-Forwarded-Proto`) |
 | `spola.json` | Jackson: strikt RFC 8259-parser och explicit mappning till records |
 | `spola.validation` | Bean Validation: komponerbara validatorer |
 | `spola.security` | Spring Security: PBKDF2- och BCrypt-hashning (`BCryptPasswordHasher`, hashar från Springs `BCryptPasswordEncoder`), delegerande hasher med `{id}`-prefix (`PasswordHasher.delegating`), autentisering |

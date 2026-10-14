@@ -3174,3 +3174,141 @@ Fyra nya huvudkällfiler, så `SourceRulesTests` räknar 17 filer i stället fö
   lagrade hashar, den delegerande hasharen, `Authenticator` med räknande delegater och 200
   virtuella trådar, markörer i lösenord och hashar (också mellan klamrarna) och README-exemplet
   `BCryptExample.java`, som är kompilerad testkälla och jämförs med README.
+
+## Bakom en omvänd proxy (`spola.web`, `spola.http`)
+
+Uppdrag 13a, första delen av behovet "Rätt schema och klientadress bakom en omvänd proxy"
+(`2026-10-13-proxyhuvuden`, appen psykologen): motsvarigheten till Spring Boots
+`server.forward-headers-strategy=native` (Tomcats `RemoteIpValve`). En app bakom en proxy som
+avslutar TLS (Caddy, nginx) får klientens schema och adress ur `X-Forwarded-Proto` och
+`X-Forwarded-For`, men bara när förfrågan kommer från en betrodd proxy. **13b** (`Secure` efter
+schemat på sessions- och CSRF-cookien) bygger på det här. Huvudena är data utifrån, så koden är
+säkerhetskritisk och bör granskas av en människa.
+
+### API
+
+| Typ | Roll |
+|---|---|
+| `spola.http.Request` | ny metod `remoteAddress()` → `InetSocketAddress`: TCP-anslutningens andra ände (över TLS TCP-socketen under TLS), tagen vid accept, aldrig `null`, utan namnuppslag |
+| `spola.web.WebRequest` | nya metoder `scheme()` (`"http"` eller `"https"`) och `clientAddress()` (`InetAddress`); utan `ForwardedHeaders` är de `http().scheme()` och `http().remoteAddress().getAddress()` |
+| `spola.web.TrustedProxies` | funktionellt gränssnitt `boolean trusts(InetAddress)` med de statiska fabrikerna `privateNetworks()` och `of(String... networks)` |
+| `spola.web.ForwardedHeaders` | final klass som implementerar `Filter`; `trusting(TrustedProxies)`; oföränderlig och trådsäker |
+
+Interna klasser i `spola.web`: `IpLiteral` (den strikta kontrollen av IP-literaler, skapandet
+med `InetAddress.ofLiteral` och RFC 5952-texten i förslagen) och `ProxyNetworks` (näten i
+`TrustedProxies.of` och `privateNetworks()`). `WebRequest` har en paketprivat `withClient(scheme,
+address)` som bara `ForwardedHeaders` anropar (ett källkodstest kontrollerar det). `requires` och
+`exports` är oförändrade i båda modulerna (allt finns i `java.base`). I `spola.http` tar
+`Connection` adressen vid accept, och `HttpServer` skapar `Connection` inne i sitt
+`try`-block, så att en socket utan adress (som aldrig ska förekomma efter `accept`) stängs och
+loggas i stället för att stoppa accepttråden.
+
+### Beslut
+
+- **Ett filter i `spola.web`, inte en inställning i `spola.http`.** Behovet gäller vad
+  applikationen ser (`getScheme()`, `getRemoteAddr()`), och i Spola är det `WebRequest`.
+  `spola.http` beskriver anslutningen och ska fortsätta göra det: den vet inget om proxyer, och
+  en inställning där skulle ändra `Request` för alla, också för kod som behöver anslutningens
+  värden. Som filter är konfigurationen vanlig Java-kod på routern
+  (`.filter(ForwardedHeaders.trusting(...))`), på samma sätt som `sessions.filter()` och
+  `security.filter()`, och `MONSTER.md` säger att en befintlig modul byggs ut före en ny. Det
+  `spola.http` saknade var avsändarens adress, så den fick `Request.remoteAddress()`, som
+  motsvarar `getRemoteAddr()` och `getRemotePort()` för anslutningen.
+- **Bara `ForwardedHeaders` kan ändra värdena, och `http()` beskriver anslutningen.** Kopian med
+  klientens värden görs av den paketprivata `WebRequest.withClient`, och det finns inget publikt
+  sätt att ändra `scheme()` eller `clientAddress()`. Ett värde som skiljer sig från anslutningens
+  kommer därför alltid från en betrodd proxy, och en regel i säkerhetsfiltret kan lita på det.
+  `withAttribute` och varje `WebRequest` som routern gör behåller värdena. `http()` ändras inte:
+  `http().scheme()` och `http().remoteAddress()` är proxyns anslutning, så både klienten och
+  proxyn går att se.
+- **Regeln om betrodd avsändare.** Filtret frågar `proxies.trusts(request.http().remoteAddress()
+  .getAddress())`. Är svaret `false` går förfrågan vidare oförändrad och huvudena läses inte
+  alls: en obetrodd avsändare kan varken ändra värdena eller framkalla 400 med huvudena (annars
+  kunde vem som helst som når porten få en förfrågan nekad med ett skräpvärde, och fel i
+  tolkningen vore åtkomliga utifrån). Filtret räknar alltid från `request.http()` (avsändaren och
+  huvudena) och aldrig från förfrågans nuvarande `scheme()` eller `clientAddress()`, så två
+  `ForwardedHeaders` i samma kedja ger samma resultat som ett, och en adress i
+  `X-Forwarded-For` kan aldrig göra sig själv till en betrodd avsändare.
+- **Genomgången från höger.** Alla `X-Forwarded-For`-fält läses i ordning som en lista (RFC 9110
+  §5.3), delas vid `,`, SP och HTAB runt elementen tas bort och tomma element hoppas över (§5.6.1).
+  Varje proxy lägger till adressen den ser längst till höger, så det som står till höger är det
+  som betrodda proxyer har skrivit, och allt till vänster om den första obetrodda adressen kan
+  klienten ha skrivit själv. Därför: från höger hoppas adresser som `proxies` litar på över, och
+  den första adress som `proxies` inte litar på är klienten; element till vänster om den läses
+  aldrig (inte ens tolkas). Litar `proxies` på alla är klienten den vänstraste, och utan element
+  är klienten avsändaren. Samma `TrustedProxies` avgör avsändaren och elementen, som
+  `internalProxies` i `RemoteIpValve` (Tomcats separata `trustedProxies` och `X-Forwarded-By`
+  ingår inte). Genomgången går baklänges över fälten utan att dela upp hela listan i förväg.
+- **`X-Forwarded-Proto`.** Utan fältet behålls anslutningens schema. Annars krävs exakt ett fält
+  vars värde, utan SP och HTAB runt, är `http` eller `https` i valfritt ASCII-skiftläge (en egen
+  jämförelse, inte `equalsIgnoreCase`, så att bara ASCII viks); schemat blir värdet med gemener.
+- **Varför ogiltiga värden ger 400.** Ett ogiltigt element i `X-Forwarded-For` nås bara när allt
+  till höger om det kommer från betrodda proxyer, alltså har en betrodd proxy skickat något
+  trasigt (eller en klient på ett betrott nät). Om filtret då föll tillbaka på avsändaren skulle
+  klienten få proxyns adress, som är intern, och en regel som släpper in interna adresser skulle
+  släppa in klienten. Att hoppa över elementet och läsa vidare åt vänster vore ännu sämre: då
+  bestämmer det som klienten själv skrivit. 400 är fail-closed och syns direkt i stället för att
+  ge fel adress i tysthet. Samma skäl för `X-Forwarded-Proto`: två fält eller ett okänt värde går
+  inte att tolka säkert (Tomcat ger `http` för allt utom `https`). Filtret kastar
+  `WebException(400, detail)`, så svaret är ett problem-svar genom routerns mappers, handlern och
+  filtren innanför anropas inte, och det blir aldrig 500. `detail` namnger huvudet men aldrig
+  värdet (svaret kan hamna i loggar och värdet är data utifrån), och filtret loggar inget.
+- **De strikta IP-literalerna, och varför `InetAddress.ofLiteral` inte räcker ensam.** IPv4 är
+  fyra decimala delar med 1–3 ASCII-siffror, värdet 0–255 och ingen inledande nolla (utom `0`);
+  IPv6 följer textformen i RFC 4291 §2.2: grupper med 1–4 hexsiffror i valfritt skiftläge, högst
+  ett `::` (som står för minst en grupp), och valfritt en IPv4-del enligt samma regel i stället för
+  de två sista grupperna. Hakparenteser, zon, port och blanktecken är inte tillåtna. Kontrollen är
+  en egen tolk (`IpLiteral`) som bara tar ASCII-tecken och räknar ut adressens byte. JDK:ns
+  `InetAddress.ofLiteral` (JDK 22, utan namnuppslag) är för generös för data utifrån: den godtar
+  bland annat `127.1`, `2130706433`, `1.2.3` (som blir `1.2.0.3`), `010.0.0.1` (som blir
+  `10.0.0.1`), `[2001:db8::1]` och `fe80::1%1`. Sådana former tolkas olika av olika program, så
+  en proxy och appen kunde se olika adresser i samma text. Adressen skapas först efter
+  kontrollen, med `ofLiteral`, och dess byte jämförs med dem som kontrollen räknade fram: skulle
+  JDK:n läsa texten på något annat sätt avvisas den. `InetAddress.getByName`, `getAllByName`,
+  `getHostName` och `getCanonicalHostName` används inte i huvudkoden (ett källkodstest i
+  `spola.web` och ett i `spola.http` kontrollerar det), så ett namn som `example.com` ger aldrig
+  ett DNS-uppslag, och `clientAddress()` har inget värdnamn som `toString()` eller loggar kunde
+  avslöja. En IPv4-mappad adress (`::ffff:203.0.113.7`) blir en `Inet4Address`, som JDK:n gör, och
+  prövas som IPv4; en mappad post i `TrustedProxies.of` avvisas, så att ett IPv4-nät alltid
+  skrivs som IPv4. Testerna jämför kontrollen med `ofLiteral` för 20 000 slumpade adresser i alla
+  skrivsätt RFC 4291 tillåter.
+- **`TrustedProxies` och näten i `privateNetworks()`.** Ett funktionellt gränssnitt, så att en
+  app kan skriva egen logik som ett lambda (`address -> false`), med två fabriker. I `of` är
+  varje post en IP-literal med valfri decimal prefixlängd utan inledande nolla eller tecken
+  (0–32 för IPv4, 0–128 för IPv6). Bitar efter prefixet måste vara noll, och meddelandet föreslår
+  nätet (`10.0.0.1/8` ger förslaget `10.0.0.0/8`), så att ett skrivfel syns vid uppstart i stället
+  för att lita på fel nät. Alla fel samlas i ett `IllegalArgumentException` med en rad per post,
+  som citerar posten (konfiguration, inte en hemlighet, escapad och kortad). `null` ger
+  `NullPointerException` och arrayen kopieras. Ett IPv4-nät matchar bara `Inet4Address` och ett
+  IPv6-nät bara `Inet6Address` (adressens byte är 4 respektive 16, och zonen räknas inte).
+  `privateNetworks()` är `of("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "127.0.0.0/8",
+  "::1/128", "fc00::/7")`: RFC 1918, loopback och unika lokala IPv6-adresser, som behovet säger.
+  Tomcats standard för `internal-proxies` omfattar fler nät, bland annat länklokala adresser och
+  `100.64.0.0/10`; länklokala adresser kan sättas av vem som helst på samma länk och
+  `100.64.0.0/10` delas av många kunder hos en operatör (CGNAT), så Spola litar inte på dem
+  (avvikelserad i README). Det finns inget standardval: `trusting(...)` tar alltid näten
+  uttryckligen. `privateNetworks()` litar på hela nätet, inte bara på proxyn, och med Dockers
+  userland-proxy (och i Docker Desktop) kan en direkt anslutning till en publicerad port komma
+  från bryggans gateway (till exempel `172.17.0.1`). En klient på ett betrott nät som går genom
+  proxyn hoppas också över som en proxy och väljer därmed själv sin klientadress (samma modell som
+  `internal-proxies`). README och Javadoc säger att bara proxyns port ska publiceras och att appen
+  då ska lita bara på proxyns adress. `toString()` listar
+  posterna som de gavs, så att en loggad konfiguration går att känna igen.
+- **Ordningen i kedjan.** `ForwardedHeaders` ska registreras först, ytterst på routern. Då ser
+  alla filter efter det (till exempel `sessions.filter()` och `security.filter()`), gruppernas
+  filter och handlers klientens värden, också på routerns egna 400, 404 och 405 (routerns filter
+  körs för dem). Ett filter som registreras före det ser anslutningens värden; det kan modulen
+  inte kontrollera, så det står i Javadoc för `ForwardedHeaders`, `WebRequest` och
+  `module-info.java` och i README. Ett test i `spola.security.web` visar båda ordningarna.
+- **`Request.remoteAddress()` tas vid accept.** `Connection` läser `socket.getInetAddress()` och
+  `getPort()` en gång, när anslutningen accepteras, och gör en `InetSocketAddress` av dem utan
+  namnuppslag; samma värde gäller varje förfrågan på anslutningen och används också för
+  loggraderna (som tidigare skrev `getRemoteSocketAddress()`, med samma text). Över TLS är det
+  TCP-socketen under `SSLSocket`. Värdet är aldrig `null`: skulle en accepterad socket sakna
+  adress kastar `Connection` och `HttpServer` stänger socketen och loggar det.
+- **Tester.** Genom en riktig `HttpServer` med rå socket (exakta byte, obs-text) och `HttpClient`
+  (behovets användningsfall, med `WhoamiApp.java` som README visar oförändrad), tabeller med 32
+  giltiga och 34 ogiltiga `X-Forwarded-For`, 8 giltiga och 13 ogiltiga `X-Forwarded-Proto`, kedjan
+  med filter före och efter, grupper och `withAttribute`, 200 samtidiga virtuella trådar,
+  markörer i värdena som letas efter i 400-svar, routerns loggrader och undantagsmeddelanden, och
+  `TrustedProxies` utan nätverk med adresser från `InetAddress.ofLiteral`.

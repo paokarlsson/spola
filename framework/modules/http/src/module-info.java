@@ -20,7 +20,11 @@
  *   <li>{@link spola.http.Handler}: {@code Response handle(Request request)}, called
  *       concurrently from many connections.</li>
  *   <li>{@link spola.http.Request}: method, request-target as sent, raw path and query, version,
- *       {@link spola.http.Headers} and the body as a bounded {@link java.io.InputStream}.</li>
+ *       {@link spola.http.Headers}, the body as a bounded {@link java.io.InputStream}, and the
+ *       connection: {@link spola.http.Request#scheme()}, {@link spola.http.Request#tls()} and
+ *       the sender's address and port, {@link spola.http.Request#remoteAddress()} (taken at
+ *       accept, without a name lookup; behind a reverse proxy the proxy's, see
+ *       {@code ForwardedHeaders} in {@code spola.web}).</li>
  *   <li>{@link spola.http.Response}: status, headers and a {@link spola.http.ResponseBody}
  *       (empty, bytes or streaming).</li>
  * </ul>

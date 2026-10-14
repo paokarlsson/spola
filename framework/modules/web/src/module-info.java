@@ -37,6 +37,15 @@
  *       {@code spola.validation.Validator} and a {@link spola.web.FormBinder} over
  *       {@link spola.web.FormFields}; violations and binding errors are a 400 with
  *       {@code errors} ({@link spola.web.WebException#invalid}).</li>
+ *   <li>Behind a reverse proxy ({@code server.forward-headers-strategy=native}, Tomcat's
+ *       {@code RemoteIpValve}): the filter {@link spola.web.ForwardedHeaders} with
+ *       {@link spola.web.TrustedProxies} reads {@code X-Forwarded-Proto} and
+ *       {@code X-Forwarded-For} only when the direct sender is a trusted proxy, walks
+ *       {@code X-Forwarded-For} from the right past the trusted proxies, takes strict IP literals
+ *       only (no name lookup) and answers 400 for an invalid value from a trusted proxy.
+ *       Registered first, it gives every filter and handler after it the client's
+ *       {@code WebRequest.scheme()} and {@code clientAddress()}, while
+ *       {@code WebRequest.http()} still describes the connection.</li>
  * </ul>
  *
  * <p>{@code spola.http} is required transitively because the API uses its {@code Request},

@@ -17,7 +17,9 @@ formulärkroppar (`request.readForm()`, `FormData`) kom i 08c. Validering med
 `spola.validation` (`request.readJson(codec, validator)`) och formulärbindning till records
 (`FormBinder`, `request.readForm(binder, validator)`, `request.bindQuery(binder, validator)`)
 med fel per fält i `errors` kom i 09b. Sessioner i minnet med en sessionscookie (`Sessions`,
-`Session`, `SessionOptions`) kom i 11a.
+`Session`, `SessionOptions`) kom i 11a. Klientens schema och adress bakom en omvänd proxy, ur
+`X-Forwarded-Proto` och `X-Forwarded-For` (`ForwardedHeaders`, `TrustedProxies`,
+`request.scheme()`, `request.clientAddress()`), kom i 13a.
 
 | Spring MVC | Spola |
 |---|---|
@@ -60,6 +62,10 @@ med fel per fält i `errors` kom i 09b. Sessioner i minnet med en sessionscookie
 | `server.servlet.session.cookie.secure=true` | `withCookie(cookie -> cookie.secure(true))` |
 | `server.servlet.session.cookie.name` | `withCookieName("__Host-SESSION")` |
 | Tomcats `maxActiveSessions` | `withMaxSessions(10_000)` (standard 10 000) |
+| `server.forward-headers-strategy=native` (Tomcats `RemoteIpValve`) | `.filter(ForwardedHeaders.trusting(TrustedProxies.privateNetworks()))`, registrerat först |
+| `request.getScheme()`, `request.isSecure()` | `request.scheme()`, `request.scheme().equals("https")` |
+| `request.getRemoteAddr()` | `request.clientAddress()` (`InetAddress`); anslutningens adress är `request.http().remoteAddress()` |
+| `server.tomcat.remoteip.internal-proxies` | `TrustedProxies.of("172.18.0.5")` eller `TrustedProxies.privateNetworks()` |
 
 ## Ett komplett exempel
 
@@ -782,6 +788,111 @@ Sessions sessions = Sessions.inMemory(SessionOptions.DEFAULT
         .withCookie(cookie -> cookie.secure(true)));
 ```
 
+## Bakom en omvänd proxy
+
+En app bakom en omvänd proxy som avslutar TLS (Caddy, nginx) får förfrågningarna över vanlig HTTP
+från proxyn. Då är `request.http().scheme()` alltid `http` och `request.http().remoteAddress()`
+proxyns adress. Filtret `ForwardedHeaders` läser proxyns `X-Forwarded-Proto` och
+`X-Forwarded-For`, men bara när den direkta avsändaren är en betrodd proxy, och ger alla filter och
+handlers efter sig klientens schema och adress i `request.scheme()` och `request.clientAddress()`.
+Det motsvarar Spring Boots `server.forward-headers-strategy=native` (Tomcats `RemoteIpValve`), där
+`request.getScheme()`, `isSecure()` och `getRemoteAddr()` sedan ger klientens värden. Huvudena är
+data utifrån, så koden är säkerhetskritisk och bör granskas av en människa innan den används på
+riktigt.
+
+### Spring Boot
+
+```properties
+# application.properties
+server.forward-headers-strategy=native
+```
+
+```java
+@RestController
+class WhoamiController {
+
+    @GetMapping("/api/whoami")
+    String whoami(HttpServletRequest request) {
+        return request.getScheme() + " " + request.getRemoteAddr(); // "https 203.0.113.7" behind Caddy
+    }
+}
+```
+
+### Spola
+
+```java
+import spola.http.HttpServer;
+import spola.http.HttpServerOptions;
+import spola.http.Response;
+import spola.web.ForwardedHeaders;
+import spola.web.Router;
+import spola.web.TrustedProxies;
+
+final class WhoamiApp {
+
+    static Router router(TrustedProxies proxies) {
+        var router = Router.builder()
+                .filter(ForwardedHeaders.trusting(proxies))  // first: every filter after it sees the client
+                .get("/api/whoami", request -> Response.text(200,
+                        request.scheme() + " " + request.clientAddress().getHostAddress()))
+                .build();
+        // Behind Caddy:          "https 203.0.113.7"
+        // Directly, no proxy:    "http 127.0.0.1"
+        // From outside with forged headers to a server that does not trust the sender: ignored
+        return router;
+    }
+
+    public static void main(String[] args) throws Exception {
+        // Caddy and the app on Docker's network; only Caddy's port is published
+        var router = router(TrustedProxies.privateNetworks());  // 10/8, 172.16/12, 192.168/16, loopback, fc00::/7
+        var server = HttpServer.start(HttpServerOptions.DEFAULT.withPort(8080), router);
+        Runtime.getRuntime().addShutdownHook(new Thread(server::close));
+    }
+}
+```
+
+- **Registrera `ForwardedHeaders` först**, ytterst på routern. Då ser alla filter efter det (till
+  exempel `sessions.filter()` och `security.filter()`), gruppernas filter och handlers klientens
+  schema och adress, också på förfrågningar som ett filter skickar vidare med `withAttribute` och
+  på routerns egna 400, 404 och 405. Ett filter som registreras före det ser anslutningens värden.
+- **Bara från en betrodd avsändare.** Filtret frågar `TrustedProxies` om den direkta avsändaren,
+  `request.http().remoteAddress()`. Är den inte betrodd går förfrågan vidare oförändrad och
+  huvudena läses inte alls: den som når appen direkt kan varken ändra värdena eller få 400 med
+  dem.
+- **`X-Forwarded-For` läses från höger.** Alla fält läses i ordning som en lista. Från höger hoppas
+  adresser som `TrustedProxies` litar på över, och den första adress den inte litar på är klienten.
+  Det som står till vänster om klienten läses aldrig, så det som klienten själv skickat före sin
+  adress spelar ingen roll. Litar `TrustedProxies` på alla adresser är klienten den vänstraste, och
+  utan element är klienten avsändaren.
+- **`X-Forwarded-Proto`** ska vara exakt ett fält med `http` eller `https`, oavsett skiftläge.
+  Utan fältet behålls anslutningens schema.
+- **400 för ogiltiga värden från en betrodd proxy**: två `X-Forwarded-Proto`-fält, ett annat
+  värde än `http` eller `https` (till exempel `https, http` eller `wss`), och ett element i
+  `X-Forwarded-For` som genomgången når och som inte är en IP-adress (till exempel `unknown`,
+  `203.0.113.7:8080` eller `[2001:db8::1]`). Svaret är ett problem-svar vars `detail` namnger
+  huvudet men aldrig värdet, och handlern anropas inte. Ett ogiltigt element nås bara när allt till
+  höger om det kommer från betrodda proxyer. Att då falla tillbaka på avsändaren skulle göra
+  klienten till proxyn, en intern adress som en regel för interna adresser släpper in.
+- **Strikta IP-adresser.** IPv4 är fyra decimala delar utan inledande nollor, och IPv6 skrivs
+  enligt RFC 4291 utan hakparenteser, zon eller port. Inga namn slås upp.
+- **`request.http()` beskriver anslutningen.** `http().scheme()` och `http().remoteAddress()` är
+  proxyns och ändras aldrig. Bara `ForwardedHeaders` kan ändra `scheme()` och `clientAddress()`,
+  så ett värde som skiljer sig från anslutningens kommer alltid från en betrodd proxy.
+- **Bara proxyns port ska publiceras.** Den som når appens egen port direkt från ett betrott nät
+  kan sätta huvudena till vad som helst.
+- **`privateNetworks()` litar på hela nätet**, inte bara på proxyn: `10.0.0.0/8`,
+  `172.16.0.0/12`, `192.168.0.0/16`, `127.0.0.0/8`, `::1` och `fc00::/7`. Med Dockers
+  userland-proxy, och i Docker Desktop, kan en direkt anslutning till en publicerad port komma från
+  bryggans gateway (till exempel `172.17.0.1`). Den adressen är betrodd och kan förfalska huvudena.
+  En klient på ett betrott nät som går genom proxyn hoppas dessutom över som om den vore en
+  proxy, så det den själv skriver till vänster om sin adress blir klientadressen.
+  Lita då bara på proxyns adress med `TrustedProxies.of(...)`, och ge proxyn en fast adress på
+  nätet (i Docker Compose med `ipv4_address`):
+
+```java
+Filter forwarded = ForwardedHeaders.trusting(TrustedProxies.of("172.18.0.5")); // only Caddy
+```
+
 ## Validering av JSON och formulär
 
 `spola.web` kräver `spola.validation` transitivt, så en handler kan validera det som kommer in
@@ -1108,3 +1219,8 @@ Router.builder()
 | Städning av utgångna sessioner | Tomcat städar i en bakgrundstråd | Ingen bakgrundstråd: en utgången session tas bort när den slås upp, filtret städar alla utgångna högst en gång per minut, och alltid innan en ny session nekas vid gränsen. `Sessions` behöver ingen `close()`. |
 | `Cache-Control` för sessionscookien | Inget särskilt utan Spring Security (som sätter `no-cache, no-store` på alla svar) | Ett svar som sätter eller tar bort sessionscookien får `Cache-Control: no-store` om det saknar `Cache-Control`, så att en delad cache aldrig sparar ett svar med ett sessions-id. |
 | Gamla id:t efter `changeSessionId` | En förfrågan som redan har `HttpSession`-objektet fortsätter att använda det | `renew` gäller direkt också för förfrågningar som redan hanteras: en förfrågan som kom med det gamla id:t ser ingen session längre (`get` ger tomt, `put` kastar). |
+| Proxyhuvuden som läses | Med `native` läser Tomcat `X-Forwarded-For`, `X-Forwarded-Proto`, `X-Forwarded-Host` och `X-Forwarded-Port`; med `framework` läser `ForwardedHeaderFilter` också `Forwarded` (RFC 7239) och `X-Forwarded-Prefix` | Bara `X-Forwarded-For` och `X-Forwarded-Proto`. `Forwarded` (RFC 7239), `X-Forwarded-Host`, `X-Forwarded-Port` och `X-Forwarded-Prefix` stöds inte: `request.http().host()` är det `Host` som proxyn skickar, och porten och absoluta URL:er ändras inte. |
+| Ogiltiga värden från en betrodd proxy | `RemoteIpValve` avvisar aldrig förfrågan: elementen i `X-Forwarded-For` jämförs som text med reguljära uttryck, och ett `X-Forwarded-Proto` som inte är `https` ger `http` | 400 (problem-svar som namnger huvudet men inte värdet), aldrig 500: ett element i `X-Forwarded-For` som genomgången når och som inte är en IP-adress, fler än ett `X-Forwarded-Proto` och ett annat värde än `http` eller `https`. Element till vänster om klienten läses inte, och en obetrodd avsändare kan aldrig få 400 med huvudena. |
+| IP-adresser i `X-Forwarded-For` | Text som matchas mot `internal-proxies` (reguljära uttryck) | Strikta IP-literaler: IPv4 som fyra decimala delar utan inledande nollor (`127.1`, `2130706433`, `1.2.3` och `010.0.0.1` avvisas), IPv6 enligt RFC 4291 utan hakparenteser, zon eller port. Adressen skapas med `InetAddress.ofLiteral` först efter kontrollen, och inga namn slås upp. `::ffff:203.0.113.7` blir IPv4-adressen. |
+| Betrodda proxyer som standard | Tomcats standard för `internal-proxies` omfattar fler nät, bland annat de länklokala `169.254.0.0/16` och `100.64.0.0/10` | `TrustedProxies.privateNetworks()`: `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `127.0.0.0/8`, `::1` och `fc00::/7`, inga länklokala adresser och inte `100.64.0.0/10`. Inget standardval: `ForwardedHeaders.trusting(...)` tar alltid `TrustedProxies` uttryckligen. |
+| `Secure` på cookies efter schemat | Tomcat sätter `Secure` på sessionscookien när `request.isSecure()`, också efter `RemoteIpValve` | Ännu inte: sessions- och CSRF-cookien får `Secure` bara när cookie-funktionen säger det, inte efter `request.scheme()`. Det kommer i 13b. |

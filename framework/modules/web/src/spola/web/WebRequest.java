@@ -2,6 +2,7 @@ package spola.web;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.net.InetAddress;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -48,6 +49,17 @@ import spola.validation.Validator;
  * mapped (or bound) without error, and its violations give the 400 of
  * {@link WebException#invalid(Validated.Invalid)}. A handler therefore never gets an invalid
  * value, and there is no {@code BindingResult}.
+ *
+ * <p><b>The client behind a reverse proxy.</b> {@link #scheme()} and {@link #clientAddress()}
+ * are the client's scheme and address, the counterparts of Spring's {@code getScheme()} and
+ * {@code getRemoteAddr()}. Without {@link ForwardedHeaders} they are the connection's,
+ * {@code http().scheme()} and {@code http().remoteAddress().getAddress()}. After
+ * {@code ForwardedHeaders}, for a request whose direct sender is a trusted proxy, they are what
+ * the proxy's {@code X-Forwarded-Proto} and {@code X-Forwarded-For} say. Only
+ * {@code ForwardedHeaders} can change them (there is no public way to), {@link #withAttribute}
+ * keeps them, and {@link #http()} always describes the connection, that is the proxy's. Register
+ * {@code ForwardedHeaders} first, so that every filter after it and the handler see the client's
+ * values; a filter registered before it sees the connection's.
  */
 public final class WebRequest {
 
@@ -59,9 +71,19 @@ public final class WebRequest {
     private final CookieState cookies;
     private final BodyState body;
     private final Map<AttributeKey<?>, Object> attributes;
+    private final String scheme;
+    private final InetAddress clientAddress;
 
+    /** A request as the router makes it, with the connection's scheme and address. */
     WebRequest(Request http, String path, List<String> segments, Route route, QueryState query, CookieState cookies,
             BodyState body, Map<AttributeKey<?>, Object> attributes) {
+        this(http, path, segments, route, query, cookies, body, attributes, http.scheme(),
+                http.remoteAddress().getAddress());
+    }
+
+    private WebRequest(Request http, String path, List<String> segments, Route route, QueryState query,
+            CookieState cookies, BodyState body, Map<AttributeKey<?>, Object> attributes, String scheme,
+            InetAddress clientAddress) {
         this.http = http;
         this.path = path;
         this.segments = segments;
@@ -70,15 +92,51 @@ public final class WebRequest {
         this.cookies = cookies;
         this.body = body;
         this.attributes = attributes;
+        this.scheme = scheme;
+        this.clientAddress = clientAddress;
     }
 
     /**
-     * The underlying request: raw path and query, version, TLS, host.
+     * The underlying request: raw path and query, version, TLS, host, and the connection it came
+     * on. Behind a reverse proxy, {@code http().scheme()} and {@code http().remoteAddress()} are
+     * the proxy's connection and never change; the client's are {@link #scheme()} and
+     * {@link #clientAddress()}.
      *
      * @return the request
      */
     public Request http() {
         return http;
+    }
+
+    /**
+     * The scheme the client used, the counterpart of Spring's {@code request.getScheme()}
+     * ({@code isSecure()} is {@code scheme().equals("https")}). Without {@link ForwardedHeaders},
+     * or when the direct sender is not a trusted proxy, it is {@code http().scheme()}:
+     * {@code "https"} over TLS, otherwise {@code "http"}. After {@code ForwardedHeaders} and a
+     * trusted sender, it is the proxy's {@code X-Forwarded-Proto} in lower case, or
+     * {@code http().scheme()} without that header. See {@link ForwardedHeaders} for the rules.
+     *
+     * @return {@code "http"} or {@code "https"}
+     */
+    public String scheme() {
+        return scheme;
+    }
+
+    /**
+     * The client's IP address, the counterpart of Spring's {@code request.getRemoteAddr()}.
+     * Without {@link ForwardedHeaders}, or when the direct sender is not a trusted proxy, it is
+     * {@code http().remoteAddress().getAddress()}. After {@code ForwardedHeaders} and a trusted
+     * sender, it is the client's address from the proxy's {@code X-Forwarded-For}, walked from
+     * the right past the trusted proxies, or the sender's without that header. See
+     * {@link ForwardedHeaders} for the rules.
+     *
+     * <p>No name is looked up to make it. {@code getHostAddress()} gives it as text;
+     * {@code getHostName()} would ask DNS for a name.
+     *
+     * @return the address, never {@code null}
+     */
+    public InetAddress clientAddress() {
+        return clientAddress;
     }
 
     /**
@@ -694,7 +752,7 @@ public final class WebRequest {
 
     /**
      * A copy with an attribute set (replacing the key's earlier value). This request does not
-     * change.
+     * change; the copy keeps everything else, also {@link #scheme()} and {@link #clientAddress()}.
      *
      * @param key   the key
      * @param value the value
@@ -709,7 +767,17 @@ public final class WebRequest {
         key.type().cast(value);
         var copy = new HashMap<AttributeKey<?>, Object>(attributes);
         copy.put(key, value);
-        return new WebRequest(http, path, segments, route, query, cookies, body, Map.copyOf(copy));
+        return new WebRequest(http, path, segments, route, query, cookies, body, Map.copyOf(copy), scheme,
+                clientAddress);
+    }
+
+    /**
+     * A copy with the client's scheme and address, for {@link ForwardedHeaders} only (the one
+     * place that may change them). This request does not change.
+     */
+    WebRequest withClient(String scheme, InetAddress clientAddress) {
+        return new WebRequest(http, path, segments, route, query, cookies, body, attributes,
+                Objects.requireNonNull(scheme, "scheme"), Objects.requireNonNull(clientAddress, "clientAddress"));
     }
 
     /** How many times the query was parsed, for tests. */

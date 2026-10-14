@@ -763,6 +763,47 @@
   1 200 slumpade fall (UTF-8 och råa byte, 0–100 byte, kostnad 4–5, alla tre versionerna) med
   libxcrypt:s `crypt(3)` via perl, utan avvikelser; testerna anropar inga externa program.
 
+### Uppdrag 13a: bakom en omvänd proxy del 1, schema och klientadress från `X-Forwarded-*` (`spola.web`, `spola.http`)
+- **Första delen av behovet `2026-10-13-proxyhuvuden`** ("Rätt schema och klientadress bakom en
+  omvänd proxy", appen psykologen). **13b** (`Secure` efter schemat på sessions- och CSRF-cookien)
+  återstår. Behovets kod fungerar som det står: bakom Caddy ger `/api/whoami` `https 203.0.113.7`,
+  direkt `http 127.0.0.1`, och falska huvuden till en server som inte litar på avsändaren
+  ignoreras.
+- **Säkerhetskritisk kod.** Huvudena är data utifrån. Koden är testad genom en riktig server med
+  32 giltiga och 34 ogiltiga `X-Forwarded-For`, 8 giltiga och 13 ogiltiga `X-Forwarded-Proto`,
+  obs-text över rå socket, 200 samtidiga klienter, markörer i värdena som letas efter i svar,
+  loggrader och undantag, och tolken av IP-literaler jämförs med `InetAddress.ofLiteral` för
+  20 000 slumpade adresser, men **en människa bör granska den** innan ramverket används på
+  riktigt.
+- `spola.http`: `Request.remoteAddress()` (`InetSocketAddress`, som `getRemoteAddr()` och
+  `getRemotePort()`): TCP-anslutningens andra ände, över TLS TCP-socketen under TLS, tagen vid
+  accept, samma för varje förfrågan på anslutningen, aldrig `null` och utan namnuppslag.
+- `spola.web`: `WebRequest.scheme()` och `clientAddress()` (anslutningens värden utan filtret),
+  `TrustedProxies` (funktionellt gränssnitt med `privateNetworks()` och `of(String...)`) och
+  `ForwardedHeaders.trusting(TrustedProxies)`, motsvarigheten till
+  `server.forward-headers-strategy=native` (Tomcats `RemoteIpValve`). Huvudena läses bara när den
+  direkta avsändaren (`http().remoteAddress()`) är betrodd. `X-Forwarded-For` gås igenom från
+  höger förbi betrodda adresser; den första obetrodda är klienten och inget till vänster läses.
+  `X-Forwarded-Proto` är exakt ett fält med `http` eller `https`. Ogiltiga värden från en betrodd
+  avsändare ger 400 (problem-svar som namnger huvudet men inte värdet), aldrig 500. Strikta
+  IP-literaler (egen kontroll, sedan `InetAddress.ofLiteral`), inga namnuppslag. Bara
+  `ForwardedHeaders` kan ändra värdena, och `http()` beskriver alltid anslutningen.
+  `ForwardedHeaders` registreras först.
+- Inga ändrade `requires` eller `exports`, inga ändringar i `Build.java` eller andra moduler än
+  `spola.web` och `spola.http` (utom ett nytt test i `spola.security.web`). Nya huvudkällfiler i
+  `spola.web`: `ForwardedHeaders`, `TrustedProxies`, `ProxyNetworks` och `IpLiteral`. I
+  `spola.http` tar `Connection` adressen vid accept, och `HttpServer` skapar `Connection` inne i
+  sitt `try`-block.
+- Javadoc för `Request`, `WebRequest`, `ForwardedHeaders`, `TrustedProxies` och båda
+  `module-info.java`. `README.md` i `modules/web/` har avsnittet "Bakom en omvänd proxy" (Spring
+  Boot-koden bredvid `WhoamiApp.java`, som är kompilerad testkälla och jämförs med README av ett
+  test, Docker-fallet och nya rader i jämförelse- och avvikelsetabellen); `modules/http/README.md`
+  nämner `Request.remoteAddress()`. Modulkatalogen i `MONSTER.md` och modultabellen i rotens
+  `README.md` är uppdaterade.
+- Nya tester: 260 i `spola.web` (registrerade i `WebTests` via `ProxyTests`, och en källkodsregel i
+  `SourceRulesTests`), ungefär 4 s; 7 i `spola.http` (`RemoteAddressTests`, över TCP i `HttpTests`
+  och över TLS i `TlsTests`); 3 i `spola.security.web` (`ForwardedSecurityTests`).
+
 ### Versioner och releaser (gjort för hand, utanför loopen)
 - `VERSION` i `Build.java` (nu `0.1.0`) sätts som modulversion i varje jar
   (`jar --module-version`). `java Build.java version` skriver ut den.
@@ -775,7 +816,9 @@
   `uppdrag/behov/` och står still (`IDLE`) när inget väntar. Se `MONSTER.md`.
 
 ## Återstår
-- Inget är beställt. Behovet "Inloggning med sessioner och CSRF-skydd för ett JSON-API"
+- **13b**, andra delen av behovet `2026-10-13-proxyhuvuden`: `Secure` efter schemat
+  (`request.scheme()`) på sessions- och CSRF-cookien (`uppdrag/13b-cookies-secure-efter-schemat.md`).
+- Behovet "Inloggning med sessioner och CSRF-skydd för ett JSON-API"
   (psykologen) är levererat i sin helhet (11a–11c), och behovet "BCrypt-hashar och delegerande
   lösenordshasher" (psykologen) i uppdrag 12; appen byter sin Spring-konfiguration efter nästa
   release. Idéerna i `uppdrag/PLAN.md` (JWT, PostgreSQL, pool och
@@ -797,6 +840,28 @@
     `LoggingSettings` efter bindningen, inte i `ConfigException` (punkt 7).
 
 ## Kända problem och begränsningar
+- **Proxyhuvuden (spola.web, 13a):** säkerhetskritiskt; **bör granskas av en människa** innan
+  ramverket används på riktigt. Kända begränsningar:
+  - Bara `X-Forwarded-For` och `X-Forwarded-Proto` läses. `Forwarded` (RFC 7239),
+    `X-Forwarded-Host`, `X-Forwarded-Port` och `X-Forwarded-Prefix` stöds inte, så `host()` är
+    det `Host` som proxyn skickar, och porten och absoluta URL:er följer inte proxyn. Ingen
+    `X-Real-IP`, `CF-Connecting-IP` eller PROXY-protokoll.
+  - `privateNetworks()` litar på hela nätet, inte bara på proxyn. Med Dockers userland-proxy, och i
+    Docker Desktop, kan en direkt anslutning till en publicerad port komma från bryggans gateway
+    (till exempel `172.17.0.1`); den adressen är betrodd och kan förfalska huvudena. En klient på
+    ett betrott nät som går genom proxyn hoppas också över som en proxy, så den väljer själv sin
+    klientadress (som med Tomcats `internal-proxies`). Bara proxyns port ska publiceras, och då
+    ska appen lita bara på proxyns adress (`TrustedProxies.of(...)`).
+  - En proxy som skickar vidare klientens egna `X-Forwarded-*` utan att ersätta dem eller lägga
+    till sin egen adress gör att klienten styr värdena (filtret kan inte se skillnad).
+  - Ogiltiga värden från en betrodd proxy ger 400, till exempel `unknown` (som vissa proxyer
+    skriver när de inte vet adressen) och dolda identifierare som `_hidden`; en klient på ett
+    betrott nät som skickar skräp får också 400. Tomcat avvisar aldrig förfrågan för dem.
+  - `Secure` på sessions- och CSRF-cookien följer ännu inte schemat; det kommer i 13b.
+  - Ordningen i kedjan kan modulen inte kontrollera: ett filter som registreras före
+    `ForwardedHeaders` ser anslutningens värden.
+  - Inget sätt för andra filter att ändra `scheme()` och `clientAddress()`, ingen `removeOnly`
+    (huvudena finns kvar i `headers()`) och inget `X-Forwarded-By`.
 - **CSRF-skydd (spola.security.web, 11c):** säkerhetskritiskt; **bör granskas av en människa**
   innan ramverket används på riktigt. **Skyddet faller vid XSS:** skript på appens egna sidor kan
   läsa `XSRF-TOKEN` och skicka huvudet. **Det faller också för origins som CORS öppnar för:** en

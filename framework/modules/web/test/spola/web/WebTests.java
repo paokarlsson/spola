@@ -45,6 +45,7 @@ public final class WebTests {
                 ValidatedFormTests.tests(),
                 ValidationReadmeTests.tests(),
                 SessionTests.tests(),
+                ProxyTests.tests(),
                 SourceRulesTests.tests())
                 .timeout(Duration.ofSeconds(60));
     }

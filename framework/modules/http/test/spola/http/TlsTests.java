@@ -17,7 +17,8 @@ final class TlsTests {
         return suite("TLS",
                 TlsMaterialTests.tests(),
                 TlsHandshakeTests.tests(),
-                TlsServerTests.tests())
+                TlsServerTests.tests(),
+                RemoteAddressTests.tests(Transport.Tls.standard()))
                 .beforeAll(TestPki::get)
                 .afterAll(TestPki::delete);
     }
