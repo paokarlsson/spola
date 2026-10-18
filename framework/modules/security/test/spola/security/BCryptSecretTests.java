@@ -43,7 +43,7 @@ final class BCryptSecretTests {
                     assertTrue(hasher.matches(password, stored));
                     var users = new InMemoryUserStore();
                     users.add(new User("ada", stored, Set.of("USER"), true));
-                    var authenticator = Authenticator.of(users, hasher, users.upgrader(hasher));
+                    var authenticator = Authenticator.of(users, hasher, users.upgrader());
                     authenticator.authenticate("ada", password);
                     for (var object : List.<Object>of(bcrypt, hasher, BCryptPasswordHasher.defaults(), authenticator)) {
                         var text = object.toString();
@@ -67,16 +67,22 @@ final class BCryptSecretTests {
                         assertFalse(trace.toString().contains(HASH_MARKER));
                     }
                 }),
-                test("the log line of a failed upgrade has no marker", () -> {
+                test("the log lines of a failed upgrade and of malformed stored hashes have no marker", () -> {
                     var pbkdf2 = Support.fast();
                     var hasher = PasswordHasher.delegating("bcrypt", Map.of("bcrypt", BCryptPasswordHasher.of(4), "pbkdf2", pbkdf2));
                     var password = PASSWORD_MARKER.repeat(10);
+                    var valid = "$2a$04$" + MARKED_TAIL;
                     var users = new InMemoryUserStore();
                     users.add(new User("ada", "{pbkdf2}" + pbkdf2.hash(password), Set.of(), true));
+                    users.add(new User("bob", "{" + HASH_MARKER + "}" + valid, Set.of(), true));
+                    users.add(new User("carl", "{bcrypt}" + valid.substring(0, 59), Set.of(), true));
                     var log = new RecordingLogger();
-                    var authenticator = Authenticator.of(users, hasher, users.upgrader(hasher), log);
+                    var authenticator = Authenticator.of(users, hasher, users.upgrader(), log);
                     assertTrue(authenticator.authenticate("ada", password) instanceof AuthResult.Authenticated);
-                    assertTrue(log.entries().size() == 1, "one log line");
+                    var bad = new AuthResult.Failed(Failure.BAD_CREDENTIALS);
+                    assertTrue(bad.equals(authenticator.authenticate("bob", "pw-" + PASSWORD_MARKER)), "bob");
+                    assertTrue(bad.equals(authenticator.authenticate("carl", "pw-" + PASSWORD_MARKER)), "carl");
+                    assertTrue(log.entries().size() == 3, "three log lines");
                     for (var entry : log.entries()) {
                         assertFalse(entry.message().contains(PASSWORD_MARKER));
                         assertFalse(entry.message().contains(HASH_MARKER));
@@ -151,14 +157,8 @@ final class BCryptSecretTests {
             calls.add(() -> hasher.needsRehash(encoded));
         }
         calls.add(() -> hasher.hash(PASSWORD_MARKER.repeat(10)));
-        // Criterion 12: the authenticator lets a malformed stored hash through.
-        var users = new InMemoryUserStore();
-        users.add(new User("ada", "{" + HASH_MARKER + "}" + valid, Set.of(), true));
-        users.add(new User("bob", "{bcrypt}" + valid.substring(0, 59), Set.of(), true));
-        var authenticator = Authenticator.of(users, hasher, users.upgrader(hasher));
-        calls.add(() -> authenticator.authenticate("ada", password));
-        calls.add(() -> authenticator.authenticate("bob", password));
-        calls.add(() -> users.upgrader(hasher).upgrade("ada", "{bcrypt}" + valid));
+        // Criterion 12 let a malformed stored hash through the authenticator; since 15c it gives
+        // BAD_CREDENTIALS and a log line, checked in the test above.
         var thrown = new ArrayList<Throwable>();
         for (var call : calls) {
             try {

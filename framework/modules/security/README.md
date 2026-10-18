@@ -15,10 +15,12 @@ Filterkedjan, HTTP Basic, formulärinloggning och 401/403 kommer i del 2 (10b).
   §5.2) på `javax.crypto.Mac`, testad mot RFC 7914 §11 och mot JDK:ns `SecretKeyFactory`.
 - `PasswordHasher` (`hash`, `matches`, `needsRehash`) och `Pbkdf2PasswordHasher`
   (`defaults()`: 600 000 iterationer, 16 byte salt, 32 byte hash; `of(iterations, saltBytes,
-  hashBytes)`). Lösenord kodas som UTF-8 utan normalisering och får vara 1–1 024 tecken.
+  hashBytes)` med högst 32 byte hash). Lösenord kodas som UTF-8 utan normalisering och får vara
+  1–1 024 tecken.
 - Lagringsformat: `$pbkdf2-sha256$i=<iterationer>$<salt>$<hash>` med standard-Base64 utan
   utfyllnad. Tolkningen är strikt; en felaktig lagrad hash ger `IllegalArgumentException` vars
-  meddelande inte innehåller strängen.
+  meddelande inte innehåller strängen. `Authenticator` svarar `BAD_CREDENTIALS` för en användare
+  med en sådan hash och loggar datafelet.
 - `BCryptPasswordHasher` (`defaults()`: kostnad 10 som Spring; `of(cost)` med 4–31): bcrypt i
   formatet från Springs `BCryptPasswordEncoder`, `$2a$10$<salt><hash>`. Verifierar `$2a$`, `$2b$`
   och `$2y$`. Lösenord är 1–72 byte UTF-8 utan U+0000. Testad mot de publicerade vektorerna från
@@ -26,8 +28,8 @@ Filterkedjan, HTTP Basic, formulärinloggning och 401/403 kommer i del 2 (10b).
 - `PasswordHasher.delegating(defaultId, hashers)`: lagrar `{id}<hash>` och väljer hasher efter
   id:t, som Springs `DelegatingPasswordEncoder`; `needsRehash` flyttar användare till standard-id:t.
 - `User(username, passwordHash, roles, enabled)`, `UserStore` (`find`) och `InMemoryUserStore`
-  (`add`, `find`, `updatePassword` för lösenordsbyten och `upgrader(hasher)` för villkorad
-  uppgradering). Användarnamn jämförs exakt (skiftlägeskänsligt).
+  (`add`, `find`, `updatePassword` för lösenordsbyten och `upgrader()` för uppgradering som
+  compare-and-set på den verifierade hashen). Användarnamn jämförs exakt (skiftlägeskänsligt).
 - `Authenticator.of(store, hasher[, upgrade])` och `authenticate(username, password)`, som ger
   `AuthResult.Authenticated(Identity)` eller `AuthResult.Failed(Failure)` med `BAD_CREDENTIALS`
   eller `DISABLED`.
@@ -109,7 +111,7 @@ public final class LoginExample {
     public static Authenticator authenticator(PasswordHasher hasher, InMemoryUserStore users) {
         users.add(new User("ada", hasher.hash("correct horse battery staple"), Set.of("USER", "ADMIN"), true));
         users.add(new User("bob", hasher.hash("hunter2hunter2"), Set.of("USER"), false));
-        return Authenticator.of(users, hasher, users.upgrader(hasher));
+        return Authenticator.of(users, hasher, users.upgrader());
     }
 
     /**
@@ -132,13 +134,23 @@ public final class LoginExample {
 }
 ```
 
-I produktion skickas `Pbkdf2PasswordHasher.defaults()` in som `hasher`. `users.upgrader(hasher)`
-är uppgraderingen: en användare vars hash har andra inställningar (till exempel 20 000
-iterationer) får en ny hash med de aktuella inställningarna vid nästa lyckade inloggning.
-Uppgraderingen byter bara en hash som fortfarande behöver det (`needsRehash`), i ett atomärt
-steg, så ett lösenordsbyte (`users.updatePassword`) som hinner emellan skrivs aldrig över med en
-hash av det gamla lösenordet. En databas blir en `UserStore`-lambda och en
-`PasswordUpgrade`-lambda som gör samma villkorade uppdatering.
+I produktion skickas `Pbkdf2PasswordHasher.defaults()` in som `hasher`. `users.upgrader()` är
+uppgraderingen: en användare vars hash har andra inställningar (till exempel 20 000 iterationer)
+får en ny hash med de aktuella inställningarna vid nästa lyckade inloggning. Uppgraderingen är en
+compare-and-set: `PasswordUpgrade.upgrade(username, verifiedHash, newHash)` får den hash som
+inloggningen läste och verifierade, och `upgrader()` byter bara om den lagrade hashen fortfarande
+är exakt den, i ett atomärt steg. Ett lösenordsbyte (`users.updatePassword`) som hinner emellan
+skrivs därför aldrig över med en hash av det gamla lösenordet, vilka inställningar bytet än
+hashades med (till exempel av en instans som ännu inte har fått den högre kostnaden under en
+rullande driftsättning). En databas blir en `UserStore`-lambda och en `PasswordUpgrade`-lambda
+med samma villkor i en enda sats:
+
+```sql
+UPDATE users SET hash = ? WHERE username = ? AND hash = ?   -- newHash, username, verifiedHash
+```
+
+Uppdaterar satsen ingen rad har hashen ändrats sedan inloggningen läste den (ett lösenordsbyte
+eller en annan inloggnings uppgradering), och då ska inget göras.
 
 ## BCrypt och hashar från Spring
 
@@ -263,9 +275,24 @@ public final class BCryptExample {
 - `hasher.hash("hemligt")` ger `{bcrypt}$2a$10$<22 tecken salt><31 tecken hash>`, som Springs
   `DelegatingPasswordEncoder` godtar (och utan prefix `BCryptPasswordEncoder`).
 - `Authenticator.of(users, hasher)` gör dummyhashen för okända användare med standardalgoritmen
-  (`{bcrypt}`). Med uppgradering, `Authenticator.of(users, hasher, users.upgrader(hasher))`, får en
+  (`{bcrypt}`). Med uppgradering, `Authenticator.of(users, hasher, users.upgrader())`, får en
   användare med `{pbkdf2}`-hash eller lägre bcrypt-kostnad en ny `{bcrypt}`-hash med kostnad 10
   vid nästa lyckade inloggning.
+- **Lika tid för okända användare gäller bara inom en algoritm och kostnad.** En okänd användare
+  kontrolleras mot dummyhashen, alltså med standardalgoritmen och hasharens kostnad, en känd med
+  den lagrade hashens algoritm och kostnad. Användare som ligger kvar i en gammal algoritm
+  (`{pbkdf2}`) eller med en annan kostnad tar därför en annan tid än okända, och en angripare som
+  mäter tiden kan se att användarnamnen finns, tills användarna har loggat in en gång och fått en
+  ny hash (bara med uppgradering; utan den består skillnaden). Ett lösenord över 72 byte gör
+  skillnaden brusfri: bcrypt avvisar det utan arbete medan PBKDF2 räknar. Tiden jämnas inte ut
+  mellan algoritmer.
+- **En lagrad hash som inte går att tolka ger `BAD_CREDENTIALS`.** Rader som Spolas hashare inte
+  läser, till exempel `{noop}`, `{sha256}`, `{MD5}` och Springs hex-`{pbkdf2}` efter
+  `createDelegatingPasswordEncoder()`, eller en avkortad bcrypt-hash, ger samma svar och samma
+  arbete (en kontroll mot dummyhashen) som en okänd användare, så de avslöjar inte att kontot
+  finns. `Authenticator` loggar en rad på `WARNING` med bara undantagets klassnamn (aldrig
+  hashen, lösenordet eller användarnamnet), så att datafelet syns i loggen. Sådana användare
+  kan inte logga in förrän raden har fått en hash som Spola läser.
 - **Ge bcrypt minst den högsta lagrade kostnaden.** `defaults()` ovan passar hashar från
   `new BCryptPasswordEncoder()` (kostnad 10). Kommer hasharna från
   `new BCryptPasswordEncoder(12)`, använd `BCryptPasswordHasher.of(12)`. En hash med högre
@@ -297,11 +324,11 @@ public final class BCryptExample {
 | `UserDetails` / `User.withUsername(...)...build()` | `record User(username, passwordHash, roles, enabled)` |
 | `UserDetailsService.loadUserByUsername` (kastar `UsernameNotFoundException`) | `UserStore.find` (ger `Optional`) |
 | `InMemoryUserDetailsManager` | `InMemoryUserStore` (`add`, `find`, `updatePassword`, `upgrader`) |
-| `UserDetailsPasswordService.updatePassword(user, newPassword)` | `PasswordUpgrade.upgrade(username, newHash)`, t.ex. `store.upgrader(hasher)` |
+| `UserDetailsPasswordService.updatePassword(user, newPassword)` | `PasswordUpgrade.upgrade(username, verifiedHash, newHash)`, t.ex. `store.upgrader()` |
 | `DaoAuthenticationProvider` + `authenticate(token)` | `Authenticator.of(store, hasher, upgrade)` + `authenticate(username, password)` |
 | `Authentication` med `getName()` och `getAuthorities()` | `Identity(name, roles)` med `hasRole` |
 | `BadCredentialsException`, `DisabledException` | `AuthResult.Failed(Failure.BAD_CREDENTIALS)`, `AuthResult.Failed(Failure.DISABLED)` |
-| `userNotFoundEncodedPassword` (skydd mot tidsskillnader) | fast dummyhash, kontrolleras exakt en gång för okända och ogiltiga användarnamn |
+| `userNotFoundEncodedPassword` (skydd mot tidsskillnader) | fast dummyhash, kontrolleras exakt en gång för okända och ogiltiga användarnamn och för en lagrad hash som inte går att tolka; lika tid bara inom en algoritm och kostnad |
 
 ## Avvikelser från Spring Security
 
@@ -309,6 +336,7 @@ public final class BCryptExample {
 |---|---|
 | Ingen SCrypt, Argon2 eller äldre kodare (`{noop}`, `{sha256}`, `{MD5}`) | Bara det som har behövts: PBKDF2-SHA256 (officiella testvektorer i RFC 7914 §11, på JDK:ns `Mac`) och BCrypt (för hashar från Spring, verifierad mot publicerade testvektorer). |
 | PHC-format för PBKDF2 (`$pbkdf2-sha256$i=…$salt$hash`) i stället för Springs `{pbkdf2}` med hex | Iterationer, salt- och hashlängd står i strängen, så gamla hashar kan verifieras och uppgraderas. |
+| Nya PBKDF2-hashar har högst 32 byte (`of(..., ..., 33)` ger `IllegalArgumentException`) | PBKDF2-HMAC-SHA256 räknar hashen i block om 32 byte, och varje block kostar alla iterationer. En hash på 33–64 byte kostar servern dubbelt, men en angripare behöver bara första blocket för att pröva ett lösenord. Lagrade hashar på upp till 64 byte verifieras fortfarande, och `needsRehash` är `true` för dem, så uppgraderingen flyttar dem till 32 byte. |
 | BCrypt-lösenord är 1–72 byte UTF-8 och får inte innehålla U+0000 | bcrypt läser bara 72 byte, så ett längre lösenord skulle tyst räknas som sina första 72 (CVE-2025-22228), och med NUL kan två olika lösenord ge samma nyckel. `hash` kastar och `matches` ger `false`; en användare med ett längre lösenord från Spring måste byta det. |
 | BCrypt-hashar kräver kanonisk Base64 (oanvända bitar noll) och exakt 60 tecken | Spring jämför hela strängen med en ny kodning av saltet, så en icke-kanonisk hash har aldrig verifierats där heller. Varje hash har en enda stavning, och en felaktig ger undantag. |
 | `needsRehash` bara vid lägre kostnad för BCrypt | Som Springs `upgradeEncoding`: versionen (`$2a$`, `$2b$`, `$2y$`) och en högre kostnad ger `false`. `Pbkdf2PasswordHasher` vill däremot ha en ny hash vid varje skillnad i inställningarna. Eftersom en högre kostnad aldrig sänks ska hasharens kostnad vara minst den högsta lagrade (`of(12)` för hashar från `new BCryptPasswordEncoder(12)`); annars tar kända användare för alltid längre tid än okända (dummyhashen har hasharens kostnad), och tiden avslöjar vilka användarnamn som finns. |
@@ -316,10 +344,10 @@ public final class BCryptExample {
 | Exakta id, ingen reservhasher för hashar utan prefix | Id:t jämförs skiftlägeskänsligt, och en hash utan `{id}` eller med okänt id är ett datafel (`IllegalArgumentException`), som med Springs standard; ingen `setDefaultPasswordEncoderForMatches`. Meddelandet innehåller aldrig texten mellan klamrarna, som kan vara en hash. En ren hash från `BCryptPasswordEncoder` verifieras med `BCryptPasswordHasher`. |
 | `{pbkdf2}` är Spolas format | Id:na är appens namn: `"pbkdf2"` läser Spolas PHC-format (`Pbkdf2PasswordHasher`), inte hex-formatet från Springs `Pbkdf2PasswordEncoder`, som inte stöds. |
 | `DISABLED` bara efter rätt lösenord | Spring kontrollerar avstängda konton före lösenordet; då kan den som inte kan lösenordet ta reda på att kontot är avstängt. |
-| En felaktig lagrad hash ger undantag i stället för `false` | Det är ett datafel och inte ett fel lösenord, och ska inte se ut som ett misslyckat inloggningsförsök. |
+| En felaktig lagrad hash ger undantag i stället för `false` i hasharna | Det är ett datafel och inte ett fel lösenord. `Authenticator` fångar det för en hittad användare, gör samma dummykontroll som för en okänd, loggar klassnamnet på `WARNING` och svarar `BAD_CREDENTIALS`: datafelet syns i loggen men inte utåt, och inget svar som skiljer sig (500 i stället för 401) avslöjar vilka konton som finns. |
 | Ingen normalisering av lösenord eller användarnamn | `"é"` (U+00E9) och `"e"` + U+0301 är olika lösenord; användarnamn jämförs skiftlägeskänsligt. |
 | Roller utan `ROLE_`-prefix | `hasRole("ADMIN")` jämför med exakt det som står i `User`. |
 | Resultat som värde (`AuthResult`) i stället för undantag | Ett misslyckat försök är ett vanligt utfall; `switch` över det förseglade `AuthResult` är fullständig. |
 | Ingen låsning och ingen hastighetsbegränsning | Utanför del 1; görs utanför modulen eller i ett senare uppdrag. |
-| Uppgraderingen är villkorad: den byter bara en hash som fortfarande `needsRehash` | Annars kan en inloggning med det gamla lösenordet, vars nya hash räknas fram medan lösenordet byts, skriva över bytet så att det gamla lösenordet fungerar igen. |
+| Uppgraderingen är en compare-and-set på den verifierade hashen (`upgrade(username, verifiedHash, newHash)`, `WHERE username = ? AND hash = ?`) | Annars kan en inloggning med det gamla lösenordet, vars nya hash räknas fram medan lösenordet byts, skriva över bytet så att det gamla lösenordet fungerar igen. Att bara kräva att hashen fortfarande `needsRehash` räcker inte: ett lösenordsbyte som en instans med äldre inställningar hashar behöver också en ny hash och skrevs då över. |
 | Ett fel i uppgraderingen stoppar inte inloggningen | Lösenordet var rätt; undantaget loggas på `WARNING` (bara klassnamnet) och den gamla hashen ligger kvar. |

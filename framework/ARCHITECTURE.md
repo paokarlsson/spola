@@ -2311,9 +2311,9 @@ människa.
 | `Pbkdf2PasswordHasher` | `defaults()`, `of(iterations, saltBytes, hashBytes)`, PHC-format, gränserna som konstanter |
 | `User` | record `(username, passwordHash, roles, enabled)`, `toString()` utan hash |
 | `UserStore` | funktionellt gränssnitt `Optional<User> find(String)` |
-| `InMemoryUserStore` | trådsäker: `add`, `find`, `updatePassword`, `upgrader(hasher)` |
+| `InMemoryUserStore` | trådsäker: `add`, `find`, `updatePassword`, `upgrader(hasher)` (sedan 15c `upgrader()`) |
 | `Authenticator` | `of(store, hasher)`, `of(store, hasher, upgrade)`, `authenticate(username, password)` |
-| `PasswordUpgrade` | funktionellt gränssnitt `upgrade(username, newHash)` |
+| `PasswordUpgrade` | funktionellt gränssnitt `upgrade(username, newHash)` (sedan 15c `upgrade(username, verifiedHash, newHash)`) |
 | `AuthResult` | sealed: `Authenticated(Identity)`, `Failed(Failure)` |
 | `Failure` | `BAD_CREDENTIALS`, `DISABLED` |
 | `Identity` | record `(name, roles)` med `hasRole` |
@@ -2348,8 +2348,9 @@ Intern klass: `Names` (regler för användarnamn och roller, escaping i `toStrin
   läggs inte till.
 - **Standardparametrar och två uppsättningar gränser.** `defaults()` är 600 000 iterationer,
   16 byte salt och 32 byte hash (OWASP:s rekommendation för PBKDF2-HMAC-SHA256). Vid skapande
-  (`of`) gäller 10 000–10 000 000 iterationer, 16–64 byte salt och 16–64 byte hash: färre
-  iterationer eller kortare salt är för svagt för nya hashar. Vid tolkning gäller 1–10 000 000
+  (`of`) gäller 10 000–10 000 000 iterationer, 16–64 byte salt och 16–64 byte hash (sedan 15c
+  16–32 byte hash, se "Säkerhetsgranskning del 3"): färre iterationer eller kortare salt är för
+  svagt för nya hashar. Vid tolkning gäller 1–10 000 000
   iterationer och 8–64 byte salt: äldre hashar med färre iterationer eller kortare salt kan
   verifieras och sedan uppgraderas, medan taket gör att en korrupt rad med miljarder
   iterationer inte kan låsa en tråd. Lösenordet är 1–1 024 tecken; längden kontrolleras före
@@ -2370,7 +2371,9 @@ Intern klass: `Names` (regler för användarnamn och roller, escaping i `toStrin
   `matches` och `needsRehash` tolkar hashen först och kastar `IllegalArgumentException`
   oavsett lösenord, med ett kort meddelande som bara säger vad som är fel, aldrig strängen
   eller delar av den (den kan vara en hash från databasen), och utan orsak (JDK:ns
-  Base64-fel namnger tecknet). `Authenticator` släpper undantaget igenom.
+  Base64-fel namnger tecknet). `Authenticator` släppte undantaget igenom; sedan 15c svarar den
+  `BAD_CREDENTIALS` och loggar datafelet (se "Säkerhetsgranskning del 3"), medan hasharna kastar
+  som förut.
 - **Okända användare kostar lika mycket.** När `Authenticator` skapas hashar den ett fast
   dummylösenord med samma hasher. För en okänd användare anropas `matches` exakt en gång mot
   dummyhashen, så arbetet blir detsamma som för en känd användare med fel lösenord (Springs
@@ -2378,7 +2381,9 @@ Intern klass: `Names` (regler för användarnamn och roller, escaping i `toStrin
   tecken och ett `null`-lösenord ger `BAD_CREDENTIALS` utan undantag och utan uppslag i
   lagringen, men dummyhashen kontrolleras ändå en gång (för `null`-lösenordet med
   dummylösenordet, eftersom `matches` kräver ett lösenord). Uppslagningen i `UserStore` och
-  skillnaden mellan en träff och en miss där ligger utanför skyddet.
+  skillnaden mellan en träff och en miss där ligger utanför skyddet. Lika tid gäller bara inom en
+  algoritm och kostnad: en känd användare kontrolleras med den lagrade hashens inställningar (se
+  "Säkerhetsgranskning del 3").
 - **`DISABLED` bara efter rätt lösenord.** Spring kontrollerar avstängda konton före
   lösenordet, så den som prövar ett konto utan att kunna lösenordet får veta att det är
   avstängt. Här kontrolleras lösenordet först; är det fel blir svaret `BAD_CREDENTIALS` oavsett
@@ -2396,21 +2401,18 @@ Intern klass: `Names` (regler för användarnamn och roller, escaping i `toStrin
 - **Villkorad uppgradering.** Den nya hashen räknas fram efter att lösenordet verifierats, och
   det tar lika lång tid som en hashning (cirka 125 ms med `defaults()`). Byts lösenordet under
   tiden skulle en ovillkorad skrivning lägga en hash av det *gamla* lösenordet över det nya, så
-  att bytet tyst ångras och det gamla (kanske läckta) lösenordet fungerar igen. Därför byter
+  att bytet tyst ångras och det gamla (kanske läckta) lösenordet fungerar igen. I 10a bytte
   `InMemoryUserStore.upgrader(hasher)` hashen bara om den lagrade hashen fortfarande
-  `needsRehash`, kontrollerat och bytt i samma `computeIfPresent` (atomärt). Ett lösenordsbyte
-  via `updatePassword` med hasharens aktuella inställningar skrivs därför aldrig över;
-  `updatePassword` själv är ovillkorad eftersom den är till för lösenordsbyten. Signaturen
-  `upgrade(username, newHash)` ger inte den lästa hashen, så villkoret är "behöver fortfarande
-  uppgraderas" och inte en exakt jämförelse; ett lösenordsbyte som sparas med gamla
-  inställningar kan fortfarande skrivas över, vilket Javadoc för `upgrader` säger. Egna
-  lagringar måste göra samma villkorade, atomära uppdatering (Javadoc för `PasswordUpgrade`).
-  Ett test håller uppgraderingen med en spärr, byter lösenordet, släpper spärren och visar att
-  det nya lösenordet fungerar och det gamla inte.
+  `needsRehash`; det räckte inte för ett lösenordsbyte som hashades med äldre inställningar.
+  **Sedan 15c** är uppgraderingen en compare-and-set på den verifierade hashen,
+  `upgrade(username, verifiedHash, newHash)` och `InMemoryUserStore.upgrader()`; beslutet och
+  motiveringen står i "Säkerhetsgranskning del 3". `updatePassword` är ovillkorad eftersom den är
+  till för lösenordsbyten.
 - **Resultat som värde.** `authenticate` ger det förseglade `AuthResult` i stället för att
   kasta som Springs `AuthenticationProvider`: ett misslyckat försök är ett vanligt utfall, och
   en `switch` över `Authenticated`/`Failed` är fullständig. Undantag är reserverade för datafel
-  (lagringens undantag, en felaktig hash, en lagring som ger `null`).
+  (lagringens undantag, en lagring som ger `null`; en felaktig hash fram till 15c, se
+  "Säkerhetsgranskning del 3").
 - **Användare och roller.** `User` och `Identity` gör en oföränderlig, sorterad kopia av rollerna
   (förutsägbar `toString()`); en roll är 1–100 tecken utskrivbar ASCII utan mellanslag, så den
   kan stå i en loggrad eller ett huvud utan escaping. Användarnamn har bara längdgränsen
@@ -3195,7 +3197,9 @@ Fyra nya huvudkällfiler, så `SourceRulesTests` räknar 17 filer i stället fö
   och vägen som formaterar hela strängen från ett givet salt (`BCrypt.format`) är paketprivata så
   att testerna kan köra alla publicerade vektorer, och `hash` och vektortesterna går genom samma
   `format`.
-- **`Authenticator` och `InMemoryUserStore` är oförändrade.** De arbetar genom `PasswordHasher`.
+- **`Authenticator` och `InMemoryUserStore` är oförändrade** (i uppdrag 12; 15c ändrade
+  uppgraderingen och svaret för en trasig hash, se "Säkerhetsgranskning del 3"). De arbetar genom
+  `PasswordHasher`.
   Dummyhashen för okända användare blir `{bcrypt}$2a$10$...` med standardalgoritmen, så en okänd
   användare kostar en bcrypt-kontroll. Medan användare flyttas mellan algoritmer kostar en känd
   användare med `{pbkdf2}` en PBKDF2-kontroll, alltså en annan tid än en okänd, så en angripare kan
@@ -4020,3 +4024,133 @@ borttaget), `Sessions` (id:t i minnet, `secure(true)` i produktion), `SessionOpt
   `CsrfExample` (README visar dem). 13b:s test "character for character" i `SchemeFlowTests`
   bygger sin säkerhet med `CaddyExample.security` i stället för en egen kopia av reglerna. Varje
   befintlig förväntan på svar och `Set-Cookie` gäller oförändrad.
+
+## Säkerhetsgranskning del 3: lösenord och autentisering (`spola.security`)
+
+Uppdrag 15c, tredje delen av rättningarna efter säkerhetsgranskningen 2026-10-18
+(`gauntlet/granskningar/2026-10-18-sakerhet.md`, fynden F1–F4 där, L1–L4 i uppdraget). Granskningen
+gjordes av AI-granskare och ersätter inte en mänsklig granskning. Alla fyra är rättade eller
+dokumenterade: uppgraderingen är en compare-and-set på den verifierade hashen (L1), en trasig lagrad
+hash ger `BAD_CREDENTIALS` i stället för 500 (L2), förbehållet om tid mellan algoritmer står i
+Javadoc, README och PROGRESS (L3), och nya PBKDF2-hashar har högst 32 byte (L4).
+
+### API
+
+| Typ | Ändring |
+|---|---|
+| `PasswordUpgrade` | `upgrade(username, newHash)` → `upgrade(username, verifiedHash, newHash)` |
+| `InMemoryUserStore` | `upgrader(hasher)` → `upgrader()`: byter bara om den lagrade hashen är `verifiedHash` |
+| `Authenticator` | `authenticate` svarar `BAD_CREDENTIALS` för en hittad användare vars hash `matches` inte kan tolka; ingen ny metod |
+| `Pbkdf2PasswordHasher` | `MAX_HASH_BYTES` 64 → 32; ny paketprivat `MAX_STORED_HASH_BYTES` (64) för tolkningen |
+
+Ändringar som bryter, tillåtna så länge Spola är `0.x`. `requires` och `exports` är oförändrade,
+ingen reflektion, inga nya filtyper och inga nya huvudkällfiler. `spola.security.web` och
+`spola.demo` anropar inte `PasswordUpgrade`, så deras huvudkod är oförändrad; ett nytt test i
+`spola.security.web` (`StoredHashTests`) visar svaret genom `HttpBasic`, eftersom kriterium 4 kräver
+det och testerna i `spola.security` inte når `spola.security.web`.
+
+### Beslut
+
+- **Compare-and-set på den verifierade hashen (L1).** Villkoret i 10a, "den lagrade hashen behöver
+  fortfarande en ny hash", skilde inte ett lösenordsbyte från den hash som inloggningen verifierade
+  när bytet också behövde en ny hash. Under en rullande driftsättning som höjer kostnaden hashar den
+  gamla instansen bytet med den gamla kostnaden, och uppgraderingen från den nya instansen skrev
+  över det med en hash av det gamla lösenordet (granskningens prob: det gamla lösenordet gav
+  `Authenticated`, det nya `BAD_CREDENTIALS`). Nu får `PasswordUpgrade` den hash som inloggningen
+  läste och verifierade (`user.passwordHash()`, samma sträng som gick till `matches`), och
+  `InMemoryUserStore.upgrader()` byter bara om den lagrade hashen fortfarande är exakt den
+  (`String.equals` i samma `computeIfPresent`, alltså atomärt). I SQL är det
+  `UPDATE users SET hash = ? WHERE username = ? AND hash = ?`, som Javadoc och README visar.
+  - **Varför en exakt jämförelse räcker.** En hashsträng bestämmer vilket lösenord som stämmer.
+    Är den lagrade strängen fortfarande `verifiedHash` är den en hash av lösenordet som just
+    verifierades, så bytet mot en ny hash av samma lösenord ändrar aldrig vilket lösenord som
+    gäller, inte ens om samma sträng skulle ha lagrats igen emellan (ABA ofarligt). Varje annan
+    sträng (ett lösenordsbyte med vilka inställningar som helst, en annan inloggnings uppgradering)
+    lämnas orörd, och ett byte som hinner före uppgraderingen vinner alltid.
+  - **`upgrader()` utan hasher.** Hasharen fanns bara för villkoret `needsRehash`. Med
+    jämförelsen behövs den inte: `Authenticator` har redan frågat `needsRehash` om just
+    `verifiedHash`, och ett andra anrop vore samma svar om samma sträng. Utan hasher tolkar
+    `upgrader()` inte heller den lagrade hashen, så den kastar aldrig för en trasig rad (den är bara
+    inte lika). En tom parameterlista gör också att anroparen inte kan ge en annan hasher än
+    autentiserarens. `updatePassword` är fortfarande ovillkorad.
+  - **`void`, inget svar om bytet.** `Authenticator` gör inget annat om bytet uteblev: inloggningen
+    lyckades ändå, och en annan hash ligger redan där. Ingen uppdaterad rad är alltså inget fel, och
+    Javadoc säger det.
+  - **Tester.** Probens förlopp (spärrad uppgradering, lösenordsbyte emellan, det nya lösenordet
+    fungerar och det gamla inte) körs för tre driftsättningar (bcrypt 4→5 som proben, PBKDF2
+    20 000→10 000 iterationer och `{pbkdf2}`→`{bcrypt}`) med bytet hashat av båda instanserna. I
+    testet med 200 virtuella trådar loggar varje tråd in och byter lösenord om vartannat (fyra
+    operationer, udda trådar börjar med ett byte), tre omgångar. Byten hashas av den gamla
+    instansen, så att de behöver uppgraderas. Varje byte läser, under samma lås som det skriver och
+    sätter "senaste lösenordet", vad lagringen har: det ska alltid vara en hash av lösenordet från
+    bytet före, eftersom en uppgradering bara får byta hash, aldrig lösenord. Det kontrolleras alltså
+    ungefär 400 gånger per omgång, och till sist att det sista lösenordet fungerar och inget av de
+    andra. En kontroll bara på slutet hade varit svag: med ett ovillkorat byte syntes felet där bara
+    om en gammal uppgradering landade efter det allra sista bytet (2 av 3 körningar under arbetet).
+    Med kontrollen vid varje byte fångades både ett ovillkorat byte och en ny läsning av hashen just
+    före uppgraderingen i varje körning.
+- **En trasig hash ger `BAD_CREDENTIALS` (L2).** För en känd användare med en lagrad hash som inte
+  gick att tolka kastade `matches` oavsett lösenord, vilket blev 500 genom `HttpBasic`, medan
+  okända användare fick 401: en förfrågan per namn visade vilka konton som fanns. Efter en flytt från
+  Springs `createDelegatingPasswordEncoder()` gäller det rader med `{noop}`, `{sha256}`, `{MD5}`,
+  Springs hex-`{pbkdf2}` och `$2$`. Nu fångar `Authenticator.authenticate` en
+  `IllegalArgumentException` från `matches` för en hittad användare, kontrollerar dummyhashen en
+  gång med det givna lösenordet, loggar och svarar `BAD_CREDENTIALS`.
+  - **Samma arbete som för en okänd användare.** Hasharna tolkar den lagrade hashen före allt annat
+    och kastar innan något räknas, så efter dummykontrollen har en trasig rad kostat lika mycket som
+    en okänd användare (plus tolkningen, mikrosekunder). Svaret är detsamma, och genom `HttpBasic`
+    är 401-svaret byte för byte detsamma (utom `Date`), vilket testet jämför.
+  - **Bara `IllegalArgumentException`.** Det är undantaget som `PasswordHasher.matches` lovar för en
+    hash som inte är välformad; alla Spolas hashare kastar det och bara det för trasiga hashar. Ett
+    annat undantag (`NullPointerException`, `IllegalStateException` från en egen hasher) är ett fel i
+    koden eller i hasharen, inte ett datafel i en rad, och släpps igenom som förut. En underklass
+    (`NumberFormatException`) fångas, och loggraden visar dess klassnamn.
+  - **Loggraden.** `login refused, the stored password hash is malformed: <klassnamn>` på `WARNING`,
+    samma logger och samma form som raden för en misslyckad uppgradering. Bara klassnamnet, som
+    uppdraget säger: inte undantagets meddelande (Spolas meddelanden innehåller aldrig hashen, men en
+    egen hashers kan), inte hashen, lösenordet eller användarnamnet, och inget `Throwable` till
+    loggern (stackspåret skulle bära meddelandet). Datafelet syns alltså i loggen men inte utåt; den
+    som letar efter raden ser tiden och kan söka efter hashar som Spola inte läser. En rad per
+    försök, ingen spärr: den som känner till ett sådant användarnamn kan ge en rad per förfrågan, men
+    varje förfrågan kostar också en dummykontroll, och en rad som aldrig upprepas kunde missas.
+    Hastighetsbegränsning ligger utanför uppdraget.
+  - **Också för ett avstängt konto.** Lösenordet kan inte verifieras, så `DISABLED` (som bara ges
+    efter rätt lösenord) är uteslutet; svaret är `BAD_CREDENTIALS`.
+  - **Hasharna kastar som förut.** `matches` och `needsRehash` i `Pbkdf2PasswordHasher`,
+    `BCryptPasswordHasher` och den delegerande hasharen är oförändrade: utanför `Authenticator` är
+    en trasig hash fortfarande ett datafel som inte ska se ut som ett fel lösenord. `needsRehash`
+    anropas bara efter att `matches` lyckats, och då har samma sträng redan tolkats.
+- **Tiden mellan algoritmer dokumenteras (L3).** Dummyhashen görs med hasharens aktuella
+  inställningar, och en känd användare kontrolleras med den lagrade hashens. Lika tid gäller därför
+  bara inom en algoritm och kostnad, och användare som ligger kvar i en gammal algoritm eller med en
+  annan kostnad kan särskiljas tills de har loggat in en gång och fått en ny hash (bara med
+  uppgradering; en högre bcrypt-kostnad byts aldrig). Ett lösenord över 72 byte gör skillnaden
+  brusfri: bcrypt avvisar det utan arbete medan PBKDF2 räknar. Det står i Javadoc för
+  `Authenticator` (reglerna) och `PasswordHasher.delegating` (nytt avsnitt "Time"), i README och i
+  PROGRESS. Att jämna ut tiden (till exempel en dummykontroll med den långsammaste delegaten) ligger
+  utanför uppdraget.
+- **Högst 32 byte i nya PBKDF2-hashar (L4).** PBKDF2-HMAC-SHA256 räknar hashen i block om 32 byte,
+  och varje block kostar alla iterationer. En hash på 33–64 byte kostar alltså servern dubbelt, men
+  en angripare som prövar lösenord behöver bara räkna första blocket och jämföra det med de första
+  32 byten. `of` godtar därför 16–32 byte (`MAX_HASH_BYTES` är 32). Tolkningen godtar fortfarande
+  16–64 byte (`MAX_STORED_HASH_BYTES`, paketprivat som `MIN_STORED_SALT_BYTES`), så att hashar från
+  tidigare versioner verifieras, och `needsRehash` är redan `true` för dem eftersom längden skiljer
+  sig från varje hashers (högst 32), så uppgraderingen flyttar dem. Konstanten för tolkningen är
+  paketprivat: den är en detalj i tolkningen, inte en inställning, och Javadoc för klassen säger
+  gränserna i klartext. Taket på 10 000 000 iterationer gäller fortfarande vid tolkningen, så en
+  korrupt rad kan kosta två block med maximalt antal iterationer (dokumenterat i PROGRESS).
+- **Tester.** I `spola.security`: `UpgradeRaceTests` (ovan), `MalformedLoginTests` (nio trasiga
+  eller okända hashar, bland dem `{noop}x`, `{sha256}...`, en avkortad bcrypt-hash och den tomma
+  strängen, mot den delegerande hasharen, bcrypt och PBKDF2: `BAD_CREDENTIALS` för en aktiv och en
+  avstängd användare med fyra lösenord, `matches` först med den lagrade hashen (som kastar) och
+  sedan exakt en gång med dummyhashen, ingen `needsRehash` och ingen uppgradering, exakt loggraden
+  utan hash, lösenord, användarnamn eller markörer; en okänd användare ger bara dummykontrollen och
+  ingen rad; en underklass loggas med sitt klassnamn; ett annat undantag släpps igenom), två nya test
+  i `HasherTests` (L4: `of` med 33, 48 och 64 byte, lagrade hashar med 33, 48 och 64 byte verifieras och
+  behöver en ny hash, och en inloggning flyttar en hash på 64 byte till 32) och ett nytt i
+  `ReadmeTests` (SQL:en och de nya texterna). I `spola.security.web`: `StoredHashTests` (fyra
+  användare med trasiga hashar får samma 401 som en okänd användare, också `{noop}x` med lösenordet
+  `x`; en riktig användare kommer in). Under arbetet kördes testerna mot mutationer av koden: ett
+  ovillkorat byte i `upgrader()`, en ny läsning av hashen just före uppgraderingen, undantaget släppt
+  igenom igen, ingen dummykontroll efter undantaget och `MAX_HASH_BYTES` tillbaka på 64; varje
+  mutation fångades.

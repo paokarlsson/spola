@@ -515,7 +515,7 @@
   `1 <= lengthBytes <= 1024`.
 - `PasswordHasher` (`hash`, `matches`, `needsRehash`) och `Pbkdf2PasswordHasher` (`defaults()`:
   600 000 iterationer, 16 byte salt, 32 byte hash; `of(...)` inom 10 000–10 000 000, 16–64,
-  16–64). Lösenord: UTF-8 med `REPORT`, 1–1 024 tecken (kontrolleras före kodningen), ingen
+  16–64; sedan 15c högst 32 byte hash). Lösenord: UTF-8 med `REPORT`, 1–1 024 tecken (kontrolleras före kodningen), ingen
   normalisering, byte-arrayen nollställs. PHC-format `$pbkdf2-sha256$i=N$salt$hash` (Base64
   utan utfyllnad) med strikt tolkning: högst 256 tecken, utskrivbar ASCII, fem delar, `i` utan
   inledande nolla 1–10 000 000, kanonisk Base64, salt 8–64 och hash 16–64 byte. En felaktig
@@ -523,7 +523,8 @@
 - `User` (record; användarnamn 1–256 tecken, roller 1–100 tecken utskrivbar ASCII utan
   mellanslag, oföränderlig sorterad kopia, `toString()` utan hash och med escapade styrtecken),
   `UserStore`, `InMemoryUserStore` (`add`, `find`, `updatePassword`, `upgrader(hasher)` som
-  bara byter en hash som fortfarande `needsRehash`, atomärt; trådsäker, skiftlägeskänslig), `Identity` (`hasRole`), `AuthResult` (sealed: `Authenticated`,
+  bara byter en hash som fortfarande `needsRehash`, atomärt; sedan 15c `upgrader()`, en
+  compare-and-set på den verifierade hashen; trådsäker, skiftlägeskänslig), `Identity` (`hasRole`), `AuthResult` (sealed: `Authenticated`,
   `Failed`), `Failure` (`BAD_CREDENTIALS`, `DISABLED`), `PasswordUpgrade` och `Authenticator`
   (dummyhash för okända och ogiltiga användarnamn och `null`-lösenord, `DISABLED` bara efter rätt
   lösenord, uppgradering vid `needsRehash` där ett `RuntimeException` loggas med klassnamnet och
@@ -749,8 +750,9 @@
   den delegerande implementationen är paketprivata. Antalet varv räknas som `long` (kostnad 31 ger
   2^31 varv, inte noll).
 - `Authenticator` och `InMemoryUserStore` är oförändrade: med den delegerande hasharen och
-  `users.upgrader(hasher)` flyttas en användare med `{pbkdf2}` eller lägre bcrypt-kostnad till
-  standardinställningarna vid nästa inloggning, och dummyhashen blir `{bcrypt}$2a$10$...`.
+  `users.upgrader(hasher)` (sedan 15c `users.upgrader()`) flyttas en användare med `{pbkdf2}`
+  eller lägre bcrypt-kostnad till standardinställningarna vid nästa inloggning, och dummyhashen
+  blir `{bcrypt}$2a$10$...`.
 - Inga ändrade `requires` eller `exports`, inga ändringar i `Build.java` eller andra moduler. Fyra
   nya huvudkällfiler (`BCryptPasswordHasher`, `BCrypt`, `Blowfish`, `DelegatingPasswordHasher`),
   så `SourceRulesTests` räknar 17 filer. Av de befintliga testfilerna ändrades bara
@@ -912,8 +914,8 @@
   kunde fylla `maxSessions` och ge alla andras inloggningar 503), G2 (en inloggning som en annan
   användare ärvde den förras attribut), G3 (`public`/`s-maxage` från handlern på ett svar med
   sessions- eller CSRF-cookien), G4 (inget `Cache-Control` på inloggade svar) och G5 (städningen
-  vid gränsen kunde köras parallellt). 15b (proxy och dokumentation) är klar sedan dess; 15c
-  (lösenord) och 15d (`spola.client`) återstår.
+  vid gränsen kunde köras parallellt). 15b (proxy och dokumentation) och 15c (lösenord) är klara
+  sedan dess; 15d (`spola.client`) återstår.
 - **Granskningen ersätter inte en mänsklig granskning.** Den gjordes av AI-granskare, och
   rättningarna är testade av samma slags granskare. Koden är säkerhetskritisk, och **en människa
   bör granska den** innan ramverket används på riktigt.
@@ -986,7 +988,7 @@
   `ForwardedHeaders` inte litar på tog tyst bort `Secure` från sessions- och CSRF-cookien), P2
   (Docker-exemplen lyssnade på loopback), P3 (ingen tydlig produktionsinställning mot cookie
   tossing), P4 (påståendet om id:n i minnet) och P5 (privata klientadresser som behörighet). 15c
-  (lösenord) och 15d (`spola.client`) återstår.
+  (lösenord) är klar sedan dess; 15d (`spola.client`) återstår.
 - **Granskningen ersätter inte en mänsklig granskning.** Koden är säkerhetskritisk, och **en
   människa bör granska den** innan ramverket används på riktigt.
 - **Varningen (P1).** `ForwardedHeaders` loggar en rad på `WARNING` (loggern `spola.web`) första
@@ -1035,6 +1037,84 @@
   `WARNING`-raden till byggets utdata, en per filter. Det är väntat; testerna som kontrollerar
   varningen fångar den med en egen logger.
 
+### Uppdrag 15c: säkerhetsgranskning del 3, lösenord och autentisering (`spola.security`)
+- **Tredje delen av rättningarna efter säkerhetsgranskningen 2026-10-18**
+  (`gauntlet/granskningar/2026-10-18-sakerhet.md`, fynden F1–F4 där, L1–L4 i uppdraget). Alla fyra
+  är rättade eller dokumenterade: L1 (en uppgradering kunde skriva tillbaka det gamla lösenordet
+  efter ett lösenordsbyte), L2 (en trasig lagrad hash gav 500 och avslöjade att kontot fanns), L3
+  (tidsskillnaden mellan algoritmer var odokumenterad) och L4 (PBKDF2 med över 32 byte hash kostade
+  servern dubbelt men inte angriparen). 15d (`spola.client`) återstår.
+- **Granskningen ersätter inte en mänsklig granskning.** Koden är säkerhetskritisk, och **en
+  människa bör granska den** innan ramverket används på riktigt.
+- **Uppgraderingen är en compare-and-set (L1).** `PasswordUpgrade.upgrade(username,
+  verifiedHash, newHash)` (förut `upgrade(username, newHash)`) får den lagrade hash som
+  inloggningen läste och verifierade. `InMemoryUserStore.upgrader()` (förut `upgrader(hasher)`;
+  hasharen behövs inte längre) byter hashen bara om den lagrade fortfarande är exakt
+  `verifiedHash` (`String.equals`), i en `computeIfPresent`. Ett lösenordsbyte som hinner emellan
+  skrivs därför aldrig över, vilka inställningar det än hashades med; förut kunde ett byte som en
+  instans med äldre inställningar hashade (en rullande driftsättning som höjer kostnaden) skrivas
+  över med en hash av det gamla lösenordet. Javadoc för `PasswordUpgrade` och README visar
+  motsvarande SQL: `UPDATE users SET hash = ? WHERE username = ? AND hash = ?` (`newHash`,
+  `username`, `verifiedHash`); ingen uppdaterad rad betyder att hashen har ändrats och att inget ska
+  göras. `updatePassword` är fortfarande ovillkorad (den är till för lösenordsbyten).
+- **En trasig lagrad hash ger `BAD_CREDENTIALS` (L2).** Kastar `matches` en
+  `IllegalArgumentException` för en användare som lagringen hittade, kontrollerar `Authenticator`
+  dummyhashen en gång, som för en okänd användare, loggar `login refused, the stored password hash
+  is malformed: <klassnamn>` på `WARNING` (loggern `spola.security`; aldrig hashen, lösenordet,
+  användarnamnet eller undantagets meddelande) och svarar `Failed(BAD_CREDENTIALS)`, också för ett
+  avstängt konto. Genom `HttpBasic` blir det 401 som för en okänd användare, samma svar byte för
+  byte (utom `Date`), i stället för 500. Gäller bland annat rader med `{noop}`, `{sha256}`,
+  `{MD5}`, Springs hex-`{pbkdf2}`, `$2$` och avkortade bcrypt-hashar efter en flytt från Springs
+  `createDelegatingPasswordEncoder()`. Hasharnas egna `matches` och `needsRehash` kastar som förut,
+  och andra undantag från `matches` (till exempel `IllegalStateException` från en egen hasher) och
+  från `UserStore.find` släpps igenom som förut.
+- **Tidsskillnaden är dokumenterad (L3).** Lika tid för okända och kända användare gäller bara inom
+  en algoritm och kostnad: dummyhashen har hasharens aktuella inställningar (med den delegerande
+  hasharen standard-id:ts algoritm), en känd användare kontrolleras med den lagrade hashens.
+  Användare som ligger kvar i en gammal algoritm (`{pbkdf2}` när standard är `{bcrypt}`) eller med
+  en annan kostnad kan därför särskiljas på tiden tills de har loggat in en gång och fått en ny hash
+  (bara med uppgradering; utan den består skillnaden, och en högre bcrypt-kostnad byts aldrig). Ett
+  lösenord över 72 byte gör skillnaden brusfri, eftersom bcrypt avvisar det utan arbete medan PBKDF2
+  räknar. Det står i Javadoc för `Authenticator` och `PasswordHasher.delegating`, i README och här;
+  tiden jämnas inte ut i koden (utanför uppdraget).
+- **Högst 32 byte i nya PBKDF2-hashar (L4).** `Pbkdf2PasswordHasher.MAX_HASH_BYTES` är 32 (var 64),
+  så `of(..., ..., 33)` till `of(..., ..., 64)` ger `IllegalArgumentException` (`hashBytes must be
+  16 to 32`). Lagrade hashar på upp till 64 byte verifieras fortfarande (en ny paketprivat gräns
+  för tolkningen), och `needsRehash` är `true` för dem eftersom längden skiljer sig från hasharens,
+  så uppgraderingen flyttar dem till 32 byte. `defaults()` är oförändrad (32 byte).
+- **API-ändringar som bryter (0.x):** `PasswordUpgrade.upgrade` tar tre argument,
+  `InMemoryUserStore.upgrader()` tar inget, och värdet av konstanten `MAX_HASH_BYTES` är 32. Inga
+  ändrade `requires` eller `exports`, ingen reflektion, inga nya filtyper och inga nya
+  huvudkällfiler; `spola.security.web` och `spola.demo` anropar inte `PasswordUpgrade`, så deras
+  huvudkod är oförändrad.
+- Javadoc för `Authenticator` (reglerna: förbehållet om tid, den trasiga hashen, uppgraderingen),
+  `PasswordUpgrade`, `InMemoryUserStore`, `PasswordHasher.delegating` (nytt avsnitt "Time") och
+  `Pbkdf2PasswordHasher`. README i `modules/security/` (punktlistan, texten och SQL:en under
+  exemplet, två nya punkter i "BCrypt och hashar från Spring", jämförelsetabellen och tre rader i
+  avvikelsetabellen).
+- Nya tester: `UpgradeRaceTests` (probens förlopp med en spärrad uppgradering och ett
+  lösenordsbyte emellan, för bcrypt 4→5, PBKDF2 20 000→10 000 iterationer och `{pbkdf2}`→`{bcrypt}`,
+  bytet hashat av den gamla och av den uppgraderade instansen; 200 virtuella trådar som loggar in
+  och byter lösenord om vartannat i tre omgångar) och `MalformedLoginTests` (nio trasiga eller
+  okända hashar mot tre hashare, exakt en dummykontroll, exakt loggraden, inga markörer) i
+  `spola.security`, och `StoredHashTests` i `spola.security.web` (401 genom `HttpBasic`, samma svar
+  som för en okänd användare). Två nya test i `HasherTests` (L4) och ett nytt i `ReadmeTests`.
+  `spola.security` har nu 346 tester (41 nya, ungefär 18 s), `spola.security.web` 287 (1 nytt).
+  Under arbetet kördes testerna mot fem mutationer (ovillkorat byte i `upgrader()`, en ny läsning
+  av hashen just före uppgraderingen, undantaget släppt igenom igen, ingen dummykontroll efter
+  undantaget, `MAX_HASH_BYTES` tillbaka på 64); varje mutation fångades.
+- Befintliga tester som ändrades med avsikt: `AuthenticatorTests` (den nya signaturen, testet för
+  `upgrader()` som nu jämför med den verifierade hashen, och "a malformed stored hash" som nu
+  väntar sig `BAD_CREDENTIALS` i stället för ett undantag), `BCryptAuthenticatorTests`,
+  `LoginExample` (README visar det), `HasherTests` (gränserna för `of` med 32 byte), `SecretTests`
+  och `BCryptSecretTests` (inloggningar med en trasig hash kastar inte längre, så de räknas inte
+  bland de provocerade undantagen; loggraderna kontrolleras i stället, och `upgrader()` tolkar inte
+  den lagrade hashen) samt registreringarna i `SecurityTests` och `SecurityWebTests`.
+- **Väntade varningar i bygget.** `StoredHashTests` går genom det publika `Authenticator.of`, som
+  loggar på `System.getLogger("spola.security")`, och skriver därför fem rader `WARNING: login
+  refused, the stored password hash is malformed: java.lang.IllegalArgumentException` till
+  byggets utdata. Det är väntat; `MalformedLoginTests` kontrollerar raden med en egen logger.
+
 ### Versioner och releaser (gjort för hand, utanför loopen)
 - `VERSION` i `Build.java` (nu `0.1.0`) sätts som modulversion i varje jar
   (`jar --module-version`). `java Build.java version` skriver ut den.
@@ -1052,8 +1132,8 @@
   lösenordshasher" (psykologen) i uppdrag 12 och behovet "Rätt schema och klientadress bakom en
   omvänd proxy" (psykologen) i 13a–13b och behovet "HTTP-klient för JSON-API:er" (psykologen) i
   uppdrag 14; appen byter sin Spring-konfiguration och sina klienter efter nästa release.
-  Rättningarna efter säkerhetsgranskningen 2026-10-18: 15a och 15b är klara, **15c** (lösenord)
-  och **15d** (`spola.client`) återstår. Idéerna i `uppdrag/PLAN.md` (JWT, PostgreSQL, pool och
+  Rättningarna efter säkerhetsgranskningen 2026-10-18: 15a, 15b och 15c är klara, **15d**
+  (`spola.client`) återstår. Idéerna i `uppdrag/PLAN.md` (JWT, PostgreSQL, pool och
   transaktioner, query-DSL, migreringar, schemaläggning, observability, starter) byggs när ett
   behov kommer.
 - **Kvar från friktionsrapporten i 05c** (`modules/demo/README.md`, avsnitt "Friktion"):
@@ -1103,6 +1183,20 @@
   - Ett `Cache-Control` som inte går att tolka ersätts med `no-store`, också på inloggade svar.
   - Tolkningen av `Cache-Control` finns i två kopior (`spola.web` och `spola.security.web`) som
     måste ändras tillsammans.
+- **Säkerhetsgranskningen 2026-10-18 (15c), lösenord:** gjord av AI-granskare; **bör granskas av en
+  människa**. Kända begränsningar efter rättningarna:
+  - Tidsskillnaden mellan algoritmer och kostnader finns kvar (se BCrypt nedan); den är bara
+    dokumenterad.
+  - En användare vars lagrade hash Spola inte läser (`{noop}`, `{sha256}`, `{MD5}`, Springs
+    hex-`{pbkdf2}` med flera) får `BAD_CREDENTIALS` också med rätt lösenord, och kan inte logga in
+    förrän raden har fått en hash som Spola läser (ett lösenordsbyte eller en migrering).
+  - Varje inloggningsförsök mot en sådan användare loggar en rad på `WARNING`; den som känner till
+    ett sådant användarnamn kan alltså ge en rad per förfrågan (varje försök kostar också en
+    kontroll mot dummyhashen). Ingen hastighetsbegränsning (utanför uppdraget).
+  - Bara `IllegalArgumentException` från `matches` räknas som en trasig hash; ett annat undantag
+    från en egen hasher släpps igenom (500 genom `HttpBasic`).
+  - Tolkningen godtar fortfarande hashar på upp till 64 byte med upp till 10 000 000 iterationer,
+    så en korrupt rad kan kosta två block med maximalt antal iterationer för en kontroll.
 - **REST-klienten (spola.client, 14):** säkerhetskritisk; **bör granskas av en människa** innan
   ramverket används på riktigt. Kända begränsningar:
   - **Sökvägen skickas som den står**, utan kodning och utan mallar, så värden utifrån måste
@@ -1287,9 +1381,13 @@
   - En lagrad kostnad på 31 kan låsa en tråd i dygn (kostnad 31 är ungefär 2 miljoner gånger
     kostnad 10); tolkningen godtar 4–31 som Spring, så den som kan skriva i användarlagringen kan
     göra det med en enda rad.
-  - Medan användare flyttas mellan algoritmer skiljer sig tiden för kända användare med en annan
-    algoritm (`{pbkdf2}`) från tiden för okända (dummyhashen är `{bcrypt}`), så en angripare kan se
-    vilka användarnamn som finns. Lika tid mellan algoritmer ingick inte.
+  - **Lika tid för okända användare gäller bara inom en algoritm och kostnad.** Medan användare
+    flyttas mellan algoritmer skiljer sig tiden för kända användare med en annan algoritm
+    (`{pbkdf2}`) eller en annan kostnad från tiden för okända (dummyhashen är `{bcrypt}` med
+    hasharens kostnad), så en angripare kan se vilka användarnamn som finns, tills användarna har
+    loggat in en gång och fått en ny hash (bara med uppgradering). Ett lösenord över 72 byte gör
+    skillnaden brusfri: bcrypt avvisar det utan arbete, PBKDF2 räknar. Dokumenterat sedan 15c;
+    tiden jämnas inte ut mellan algoritmer.
   - En lagrad bcrypt-hash med **högre kostnad** än hasharens byts aldrig ut (`needsRehash` är bara
     `true` för en lägre kostnad, som Springs `upgradeEncoding`), men dummyhashen för okända
     användare görs med hasharens kostnad. Kommer hasharna från `new BCryptPasswordEncoder(12)` och
@@ -1321,10 +1419,9 @@
   hasharens (inom tolkningsgränserna, t.ex. 1 iteration) verifieras med sina egna inställningar;
   den som kan skriva i användarlagringen kan alltså sänka kostnaden för sin egen rad.
   Konstanttid gäller jämförelsen av hashar, inte uppslagningen i `UserStore`. Uppgraderingen
-  via `InMemoryUserStore.upgrader` är villkorad på `needsRehash` (signaturen ger inte den lästa
-  hashen): ett lösenordsbyte som sparas med *gamla* inställningar medan en uppgradering pågår
-  kan fortfarande skrivas över; lösenordsbyten ska hashas med autentiserarens hasher. Egna
-  `PasswordUpgrade` måste själva vara villkorade och atomära.
+  är sedan 15c en compare-and-set på den verifierade hashen (`InMemoryUserStore.upgrader()`);
+  egna `PasswordUpgrade` måste själva göra samma atomära jämförelse (`UPDATE ... WHERE username =
+  ? AND hash = ?`), annars kan ett lösenordsbyte som hinner emellan skrivas över.
 - **Validering i webben (spola.web, 09b):** formulär är platta; nästlade namn
   (`address.city`, `items[0].qty`) binds inte till nästlade objekt (skicka JSON). Ingen
   generering av binders från records (allt skrivs i bindern). Ingen i18n av meddelanden eller

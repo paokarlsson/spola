@@ -60,11 +60,11 @@ final class BCryptAuthenticatorTests {
         var users = new InMemoryUserStore();
         accounts.forEach((name, hash) -> users.add(new User(name, hash, Set.of("USER"), true)));
         var upgrades = Collections.synchronizedList(new ArrayList<String>());
-        var upgrader = users.upgrader(hasher);
+        var upgrader = users.upgrader();
         var log = new RecordingLogger();
-        var authenticator = Authenticator.of(users, hasher, (username, newHash) -> {
+        var authenticator = Authenticator.of(users, hasher, (username, verifiedHash, newHash) -> {
             upgrades.add(username + " " + newHash);
-            upgrader.upgrade(username, newHash);
+            upgrader.upgrade(username, verifiedHash, newHash);
         }, log);
         var fixture = new Fixture(bcrypt, pbkdf2, hasher, users, upgrades, log, authenticator);
         fixture.reset();

@@ -23,6 +23,14 @@ import java.util.Objects;
  * {@value #MAX_HASH_BYTES} bytes of hash. Salts come from a {@link SecureRandom} created by the
  * hasher. A hasher is immutable and safe to use from any number of threads.
  *
+ * <p><b>At most 32 bytes of hash.</b> PBKDF2-HMAC-SHA256 computes the hash in blocks of 32
+ * bytes, each costing all the iterations, so a hash of 33 to 64 bytes costs the server twice as
+ * much. An attacker who guesses passwords only needs the first block to tell a right guess from
+ * a wrong one, so the second block adds nothing to the security. New hashes therefore have at
+ * most 32 bytes. Stored hashes of up to 64 bytes (from earlier versions, which allowed them) are
+ * still verified, and {@link #needsRehash} is {@code true} for them, so an upgrade moves them to
+ * this hasher's length.
+ *
  * <h2>Passwords</h2>
  * A password is encoded as UTF-8 (a lone surrogate is an error, not replaced). There is <b>no
  * normalisation</b>: neither Unicode normalisation nor trimming of whitespace, so {@code "é"}
@@ -44,11 +52,13 @@ import java.util.Objects;
  *       {@code pbkdf2-sha256} and the parameter exactly {@code i=} followed by decimal digits
  *       without a leading zero, from 1 to {@value #MAX_ITERATIONS};</li>
  *   <li>the Base64 is canonical (decoding and encoding again gives the same text), the salt has
- *       8 to 64 bytes and the hash 16 to 64 bytes.</li>
+ *       8 to 64 bytes and the hash 16 to 64 bytes (wider bounds than those of {@link #of}, so
+ *       that older hashes can be verified and upgraded).</li>
  * </ul>
  * Anything else makes {@link #matches} and {@link #needsRehash} throw
  * {@link IllegalArgumentException} whose message does not contain the string (it may be a hash
- * read from a database). A malformed stored hash is a data error, not a wrong password. The
+ * read from a database). A malformed stored hash is a data error, not a wrong password
+ * ({@link Authenticator} answers {@link Failure#BAD_CREDENTIALS} for it and logs it). The
  * lower bound of 1 iteration when parsing (against {@value #MIN_ITERATIONS} when creating)
  * lets older hashes be verified and upgraded; the upper bound means that a corrupt row cannot
  * hold a thread with billions of iterations. Hashes are compared in constant time
@@ -71,8 +81,11 @@ public final class Pbkdf2PasswordHasher implements PasswordHasher {
     public static final int MAX_SALT_BYTES = 64;
     /** The shortest hash {@link #of} accepts, and the shortest a stored hash may have, in bytes. */
     public static final int MIN_HASH_BYTES = 16;
-    /** The longest hash {@link #of} accepts, and the longest a stored hash may have, in bytes. */
-    public static final int MAX_HASH_BYTES = 64;
+    /**
+     * The longest hash {@link #of} accepts, in bytes: one block of HMAC-SHA-256. Stored hashes
+     * may have up to 64 bytes.
+     */
+    public static final int MAX_HASH_BYTES = 32;
     /** The longest stored hash that is parsed, in characters. */
     public static final int MAX_ENCODED_CHARS = 256;
 
@@ -85,6 +98,8 @@ public final class Pbkdf2PasswordHasher implements PasswordHasher {
 
     /** The shortest salt a stored hash may have, in bytes (older hashes; new ones have 16). */
     static final int MIN_STORED_SALT_BYTES = 8;
+    /** The longest hash in a stored hash that is parsed, in bytes (older hashes; new ones have at most 32). */
+    static final int MAX_STORED_HASH_BYTES = 64;
     static final String ID = "pbkdf2-sha256";
     private static final String MALFORMED = "malformed stored password hash: ";
 
@@ -117,6 +132,8 @@ public final class Pbkdf2PasswordHasher implements PasswordHasher {
      * @param iterations the iteration count, {@value #MIN_ITERATIONS} to {@value #MAX_ITERATIONS}
      * @param saltBytes  the salt length in bytes, {@value #MIN_SALT_BYTES} to {@value #MAX_SALT_BYTES}
      * @param hashBytes  the hash length in bytes, {@value #MIN_HASH_BYTES} to {@value #MAX_HASH_BYTES}
+     *                   (one block of HMAC-SHA-256; a longer hash costs the server more but not an
+     *                   attacker)
      * @return a new hasher
      * @throws IllegalArgumentException if a setting is outside its bounds
      */
@@ -189,7 +206,8 @@ public final class Pbkdf2PasswordHasher implements PasswordHasher {
      * {@inheritDoc}
      *
      * <p>{@code true} when the stored iterations, salt length or hash length differ from this
-     * hasher's settings (also when they are higher).
+     * hasher's settings (also when they are higher), so always for a stored hash of more than
+     * {@value #MAX_HASH_BYTES} bytes.
      */
     @Override
     public boolean needsRehash(String encoded) {
@@ -265,8 +283,8 @@ public final class Pbkdf2PasswordHasher implements PasswordHasher {
                 throw malformed("salt must be " + MIN_STORED_SALT_BYTES + " to " + MAX_SALT_BYTES + " bytes");
             }
             var hash = base64(parts[4], "hash");
-            if (hash.length < MIN_HASH_BYTES || hash.length > MAX_HASH_BYTES) {
-                throw malformed("hash must be " + MIN_HASH_BYTES + " to " + MAX_HASH_BYTES + " bytes");
+            if (hash.length < MIN_HASH_BYTES || hash.length > MAX_STORED_HASH_BYTES) {
+                throw malformed("hash must be " + MIN_HASH_BYTES + " to " + MAX_STORED_HASH_BYTES + " bytes");
             }
             return new Stored(iterations, salt, hash);
         }

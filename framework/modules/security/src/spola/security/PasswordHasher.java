@@ -96,7 +96,8 @@ public interface PasswordHasher {
      *       there is no fallback hasher for unprefixed hashes (Spring's
      *       {@code setDefaultPasswordEncoderForMatches}). A bare hash from Spring's
      *       {@code BCryptPasswordEncoder} is verified with {@link BCryptPasswordHasher}
-     *       directly.</li>
+     *       directly. {@link Authenticator} answers a user with such a hash
+     *       {@link Failure#BAD_CREDENTIALS} and logs the data error.</li>
      *   <li>{@code needsRehash(encoded)} parses the prefix the same way and always asks the
      *       id's hasher about the rest, so a malformed rest throws for every id. It is
      *       {@code true} if the id is not the default id or that hasher says so. Within the
@@ -109,6 +110,19 @@ public interface PasswordHasher {
      * </ul>
      * The map is copied, so later changes to it are not seen. The result is immutable, and
      * safe to use from any number of threads if the delegates are.
+     *
+     * <h4>Time</h4>
+     * A check costs what the stored id's hasher costs with the stored settings. The dummy hash
+     * that {@link Authenticator} checks for unknown users is made with the default id's hasher,
+     * so equal time for unknown and known users holds only within one algorithm and cost.
+     * Users whose hashes are still stored with another id, or with other settings within the
+     * default id, can be told apart from unknown users by the time until they have logged in
+     * once and {@link Authenticator}'s upgrade has moved them to the default (without a
+     * {@link PasswordUpgrade}, or for a higher bcrypt cost, which is never moved, the
+     * difference stays). A password that one delegate refuses without any work and another
+     * computes makes the difference free of noise: {@link BCryptPasswordHasher} refuses more
+     * than 72 bytes, while {@link Pbkdf2PasswordHasher} computes up to 1 024 characters. The
+     * time is not evened out between algorithms.
      *
      * @param defaultId the id of the hasher for new hashes; one of the keys of {@code hashers}
      * @param hashers   the hashers by id; not empty
