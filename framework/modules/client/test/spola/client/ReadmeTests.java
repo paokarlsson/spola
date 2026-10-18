@@ -1,5 +1,6 @@
 package spola.client;
 
+import static spola.test.Assertions.assertFalse;
 import static spola.test.Assertions.assertTrue;
 import static spola.test.Tests.parameterized;
 import static spola.test.Tests.suite;
@@ -37,6 +38,16 @@ final class ReadmeTests {
         var header = "package spola.client;\n\n";
         assertTrue(source.startsWith(header), file);
         return "```java\n" + source.substring(header.length()) + "```\n";
+    }
+
+    /** A main source of the module. */
+    static String mainSource(String name) throws Exception {
+        return Files.readString(Path.of("modules/client/src/spola/client/" + name));
+    }
+
+    /** {@code text} with every line break, and the {@code *} that starts a Javadoc line, as one space. */
+    static String flat(String text) {
+        return text.replaceAll("[ \\t]*\\n[ \\t]*(\\*(?!/)[ \\t]*)?", " ");
     }
 
     static Suite tests() {
@@ -90,6 +101,52 @@ final class ReadmeTests {
                             "| `e.getResponseBodyAsString()` | `e.bodyExcerpt()`",
                             "| `@SpringBootTest(webEnvironment = RANDOM_PORT)` och `@LocalServerPort` |")) {
                         assertTrue(text.contains(row), "missing " + row);
+                    }
+                }),
+                test("15d K2: the examples log safeExcerpt(), not the raw bodyExcerpt(), and \"aldrig nyckeln\" is gone",
+                        () -> {
+                            var text = readme();
+                            assertFalse(text.contains("aldrig nyckeln"), "README still says \"aldrig nyckeln\"");
+                            assertTrue(block("AiClients.java").contains(
+                                    "log.warn(\"Anthropic svarade \" + e.status() + \": \" + e.safeExcerpt());"), "the log line");
+                            var javadoc = mainSource("RestClientException.java") + mainSource("RestClientResponseException.java")
+                                    + mainSource("RestClient.java");
+                            for (var source : List.of(text, javadoc)) {
+                                for (var line : source.lines().toList()) {
+                                    if (line.contains("log.warn(") || line.contains("case RestClientResponseException r ->")) {
+                                        assertFalse(line.contains("bodyExcerpt()"), "logs the raw excerpt: " + line);
+                                    }
+                                }
+                            }
+                            assertTrue(text.contains("case RestClientResponseException r -> \"status \" + r.status() + \": \""
+                                    + " + r.safeExcerpt();"), "the switch in the README");
+                            assertTrue(javadoc.contains("case RestClientResponseException r -> \"status \" + r.status() + \": \""
+                                    + " + r.safeExcerpt();"), "the switch in RestClientException's Javadoc");
+                            assertTrue(flat(text).contains("`bodyExcerpt()` är samma utdrag men **rått**"), "bodyExcerpt() is raw");
+                        }),
+                test("15d K3: the README and RestClient's Javadoc warn about the JDK's logging by name", () -> {
+                    var readme = flat(readme());
+                    assertTrue(readme.contains("Slå aldrig på JDK:ns loggning av `HttpClient` i produktion."), readme);
+                    var javadoc = flat(mainSource("RestClient.java"));
+                    assertTrue(javadoc.contains("Never turn on the JDK's logging of {@link HttpClient} in production."),
+                            "RestClient's Javadoc");
+                    for (var name : List.of("jdk.httpclient.HttpClient.log", "jdk.internal.httpclient.debug", "headers",
+                            "requests", "all")) {
+                        assertTrue(readme.contains("`" + name + "`") || readme.contains("-D" + name + "=")
+                                || readme.contains("=" + name + "`"), "the README lacks " + name);
+                        assertTrue(javadoc.contains("{@code " + name + "}"), "RestClient's Javadoc lacks " + name);
+                    }
+                }),
+                test("15d K5: the cause from spola.json quotes up to 40 characters per value in up to 100 problems", () -> {
+                    var readme = flat(readme());
+                    assertTrue(readme.contains("upp till 40 tecken per värde i upp till 100 problem (och 200 tecken av ett"
+                            + " undantagsmeddelande)"), "the README");
+                    assertFalse(readme.contains("upp till 40 tecken av svaret"), "the old text in the README");
+                    for (var name : List.of("RestClient.java", "RestClientResponseException.java")) {
+                        var javadoc = flat(mainSource(name));
+                        assertTrue(javadoc.contains("up to 40 characters per value in up to 100 problems (and 200 characters"
+                                + " of an exception's message)"), name);
+                        assertFalse(javadoc.contains("up to 40 characters of the response"), "the old text in " + name);
                     }
                 }),
                 parameterized("the deviation table covers", List.of(

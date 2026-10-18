@@ -133,6 +133,19 @@ final class AnthropicTests {
                         assertFalse(log.getFirst().contains(KEY));
                     }
                 }),
+                test("the need's log line hides the key when the server names it, and bodyExcerpt() has it", () -> {
+                    var log = new ArrayList<String>();
+                    var body = "{\"type\":\"error\",\"error\":{\"type\":\"authentication_error\","
+                            + "\"message\":\"invalid x-api-key: " + KEY + "\"}}";
+                    try (var anthropic = Anthropic.start(401, body); var clients = anthropic.clients(log)) {
+                        assertEquals(Optional.empty(), clients.askOrLog(REQUEST));
+                        assertEquals(List.of(), anthropic.problems());
+                        assertEquals(List.of("Anthropic svarade 401: {\"type\":\"error\",\"error\":{\"type\":"
+                                + "\"authentication_error\",\"message\":\"invalid x-api-key: <hidden>\"}}"), log);
+                        var e = assertThrows(RestClientResponseException.class, () -> clients.ask(REQUEST));
+                        assertEquals(body, e.bodyExcerpt());
+                    }
+                }),
                 test("askOrLog returns the response for 200 and logs nothing", () -> {
                     var log = new ArrayList<String>();
                     try (var anthropic = Anthropic.start(200, OK_BODY); var clients = anthropic.clients(log)) {

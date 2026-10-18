@@ -3494,7 +3494,7 @@ stannar i appen.
 | `RestClient.Builder` | `baseUri(URI)` (krävs), `defaultHeader(name, value)`, `timeout(Duration)`, `connectTimeout(Duration)`, `maxResponseSize(int)`, `build()` |
 | `RestRequest` | final och oföränderlig: `header(name, value)`, `json(T, JsonCodec<T>)`, `json(JsonValue)`, `retrieve(JsonCodec<T>)` → `T`, `retrieveJson()` → `JsonValue`, `retrieveBodiless()` → 2xx-statusen |
 | `RestClientException` | abstrakt, `sealed`, `RuntimeException`; `method()`, `uri()`; `MAX_MESSAGE` (1 000) |
-| `RestClientResponseException` | final: `status()`, `headers()` (`java.net.http.HttpHeaders`), `bodyExcerpt()`; `MAX_EXCERPT` (1 000) |
+| `RestClientResponseException` | final: `status()`, `headers()` (`java.net.http.HttpHeaders`), `bodyExcerpt()` (rått), `safeExcerpt()` (med förfrågans värden dolda, 15d); `MAX_EXCERPT` (1 000) |
 | `RestClientTransportException` | final: `timedOut()` |
 
 Interna klasser: `BodyReader` (`BodyHandler` och `BodySubscriber` som läser kroppen inom
@@ -3540,6 +3540,7 @@ sin text, och kopior utan text av resten).
   mallar. Förfrågan går därmed alltid till basens schema, värd och port; `//annan.example/x` är
   en sökväg på basens värd. `java.net.http` skickar `getRawPath()` och `getRawQuery()` som de är
   (ASCII påverkas inte av dess `Utils.encode`), utom att en tom query (`/x?`) skickas som `/x`.
+  Sedan 15d avvisas punktsegment i sökvägen och i basen (se "Säkerhetsgranskning del 4" nedan).
 - **HTTP/1.1, inga omdirigeringar, ingen proxy, inga cookies.** `HttpClient` byggs med
   `Version.HTTP_1_1`, `Redirect.NEVER`, `Builder.NO_PROXY` och utan `CookieHandler`. En 3xx ger
   `RestClientResponseException`, så huvudena med nyckeln skickas aldrig vidare till en annan värd.
@@ -3621,9 +3622,11 @@ sin text, och kopior utan text av resten).
     skickar för sig (en medlem i kroppen, en parameter i queryn) eller ändrar först (JSON som
     kodas om med andra mellanrum eller escapes) känns inte igen, och ett kort värde (`X-Page: 2`)
     döljer samma text också där servern skrev den själv. Att leta efter delar (varje sträng i
-    kroppen) gissar vad som är hemligt och döljer för mycket; det valdes bort. Orsaken från
-    `spola.json` (`JsonParseException`, `JsonMappingException`) behålls som uppdraget kräver och
-    kan citera upp till 40 tecken av svaret. Javadoc i `RestClient`, `RestClientException` och
+    kroppen) gissar vad som är hemligt och döljer för mycket; det valdes bort (med ett undantag
+    sedan 15d: nyckeln i `Authorization`, se nedan). Orsaken från `spola.json`
+    (`JsonParseException`, `JsonMappingException`) behålls som uppdraget kräver och kan citera
+    svaret: upp till 40 tecken per värde i upp till 100 problem (och 200 tecken av ett
+    undantagsmeddelande). Javadoc i `RestClient`, `RestClientException` och
     `RestClientResponseException` säger just detta och inget mer.
 - **Transportfelets orsak behåller bara text som inte kan komma från servern.** `java.net.http`
   citerar det servern skickade: en felaktig statusrad eller ett felaktigt huvud
@@ -4154,3 +4157,106 @@ det och testerna i `spola.security` inte når `spola.security.web`.
   ovillkorat byte i `upgrader()`, en ny läsning av hashen just före uppgraderingen, undantaget släppt
   igenom igen, ingen dummykontroll efter undantaget och `MAX_HASH_BYTES` tillbaka på 64; varje
   mutation fångades.
+
+## Säkerhetsgranskning del 4: hemligheter och sökvägar i `spola.client`
+
+Uppdrag 15d, fjärde och sista delen av rättningarna efter säkerhetsgranskningen 2026-10-18
+(`gauntlet/granskningar/2026-10-18-sakerhet.md`, fynden SEC-1–SEC-4 och BRK-2 där, K1–K5 i
+uppdraget). Granskningen gjordes av AI-granskare och ersätter inte en mänsklig granskning. Alla fem är
+rättade: nyckeln i `Authorization` döljs också för sig (K1), `safeExcerpt()` är utdraget att logga
+och exemplen använder det (K2), Javadoc och README varnar för JDK:ns loggning (K3), punktsegment i
+sökvägar och bas-URI:er avvisas (K4), och texten om orsaken från `spola.json` är rättad (K5).
+
+### API
+
+| Typ | Ändring |
+|---|---|
+| `RestClientResponseException` | ny `safeExcerpt()`: `bodyExcerpt()` med samma döljning som `getMessage()`; `bodyExcerpt()` är rått som förut |
+| `RestClient` | `get`/`post`/`put`/`patch`/`delete(path)` avvisar punktsegment; `Builder.build()` avvisar en bas-URI med punktsegment |
+
+`requires` och `exports` är oförändrade, `module-info.java` och testet som fäster den
+(`ModuleTests`) är oförändrade, ingen reflektion, inga nya filtyper och inga nya källfiler.
+
+### Beslut
+
+- **Nyckeln efter schemat är ett värde (K1).** För `Authorization` och `Proxy-Authorization`
+  (namnet i vilket skiftläge som helst, `HeaderRules.sameName`) lägger `RestRequest.secrets()` till,
+  utöver hela värdet, texten efter det första mellanslaget, trimmad: `credentials` i
+  `auth-scheme [ 1*SP ( token68 / #auth-param ) ]` (RFC 9110 11.4), oavsett schema. För schemat
+  `Basic` (`equalsIgnoreCase`; värden är ASCII) avkodas `credentials` med `Base64.getDecoder()`
+  (RFC 4648 utan radbrytningar, utfyllnad valfri), och `user:lösenord` och lösenordet efter det
+  första `:` (RFC 7617) läggs till. Avkodning som misslyckas ger inget extra, ett tomt lösenord tas
+  bort med de andra tomma värdena, och ett avkodat värde utan `:` ger bara sig självt.
+  Meddelandet, `safeExcerpt()` och `Causes.textIsSafe` läser samma lista och är oförändrade, som
+  uppdraget kräver. Granskningen provbyggde samma rättning.
+  - **Bara dessa två namn.** Uppdragets beslut, och det enda stället där en del av ett värde
+    behandlas som hemligt: schemat i `Authorization` är standardiserat, så delen efter det är
+    nyckeln och inget annat. För andra huvuden vore en gissning (`X-Auth: Bearer x`) lika godtycklig
+    som att dela upp kroppen, vilket 14 valde bort; de döljs bara hela, som förut (ett test visar
+    det).
+  - **Basic som UTF-8 och ISO-8859-1.** RFC 7617 säger inget om teckenkodningen utan
+    `charset`-parametern, och servrar avkodar på båda sätten. Klienten vet inte vilket, så båda
+    avkodningarna läggs till när de skiljer sig, som för kroppen. Det är uppdragets "det avkodade `user:lösenord`" för en server av vardera sorten.
+  - **Första mellanslaget, inte tab.** Uppdraget och RFC 9110 säger mellanslag (`1*SP`);
+    `Bearer<tab>x` är inte ett giltigt värde med schema och döljs bara helt (i PROGRESS).
+  - **Korta nycklar.** Ett kort avkodat lösenord döljer samma text också där servern skrev den
+    själv, som korta värden redan gör. Det döljer hellre för mycket än för lite.
+- **`safeExcerpt()` (K2).** `RestClientResponseException.of` räknade redan ut utdraget med
+  förfrågans värden dolda för meddelandet; nu sparas det i ett eget fält och ges av
+  `safeExcerpt()`. Det är alltså exakt texten som meddelandet visar början av, före ASCII-kodningen
+  och kortningen till meddelandets 1 000 tecken, och följer i övrigt reglerna för `bodyExcerpt()`
+  (högst 1 000 tecken av kroppen räknat efter döljningen, inga styrtecken, `...` efter en kortning,
+  bokstäver utanför ASCII behålls). Namnet är uppdragets förslag; "safe" står för vad som är säkert
+  att logga, och Javadoc säger vad döljningen inte känner igen. `bodyExcerpt()` är oförändrat och
+  rått, med en fet varning i Javadoc. Fältet är en `String` och serialiseras; `serialVersionUID`
+  är oförändrat (Spola är `0.x`, och ett gammalt serialiserat undantag får `null`). Exemplen i README
+  (`AiClients.java`, som ett test jämför med README), växeln i README och `SwitchTests`, och Javadoc
+  för `RestClientException` och `RestClientResponseException` loggar `safeExcerpt()`. Kommentaren
+  "aldrig nyckeln" bredvid det råa utdraget är borta.
+- **Varningen för JDK:ns loggning (K3)** står i Javadoc för `RestClient` (avsnittet "Secrets") och
+  i README, med egenskapernas namn och värden. Den bygger på en prob mot JDK 25 med en lokal server:
+  `headers` och `all` skrev ut `Authorization: Bearer ...`, och `requests`, `headers`, `all` och
+  `jdk.internal.httpclient.debug=true` skrev ut URI:n med query; `errors`, `content` och `trace` gjorde
+  det inte i proben. Att vägra starta när loggningen är på ligger utanför uppdraget.
+- **Punktsegment avvisas (K4).** `Uris.hasDotSegment` delar sökvägen (före `?`) vid `/` och
+  avvisar ett segment som är en eller två punkter, där varje punkt är `.`, `%2e` eller `%2E`
+  (RFC 3986 2.3 och 6.2.2.2: `%2E` är en kodad punkt, och servrar avkodar den innan de löser upp
+  punktsegment enligt 5.2.4). `URLEncoder.encode("..")` är `..`, så ett id från användaren kunde nå
+  en överordnad resurs med appens nycklar (`/v1/threads/` + `..` + `/runs`). Kontrollen görs i
+  `pathProblem` (vid anropet, efter teckenkontrollen, så att ett otillåtet tecken fortfarande
+  citeras som förut) och i `baseProblems` (en rad bland de andra i `build()`). Texten är fast och
+  citerar inte sökvägen, som uppdraget säger; den kunde annars visa ett värde från användaren. `...`,
+  `a..b`, `.x` och punkter i queryn är inga punktsegment och skickas som de står.
+  - **Utöver uppdraget: fram till första `;`.** Ett segment räknas fram till sitt första `;`, så
+    `/..;/x` och `/.;jsessionid=1/x` avvisas också. Tomcat och Jetty tar bort sökvägsparametrar
+    (RFC 2396 3.3, `;jsessionid=`) från varje segment innan de löser upp punktsegment, så för dem är
+    `..;` samma som `..` (det kända "`..;/`"-kringgåendet), och kodare för sökvägssegment enligt
+    RFC 3986 (Springs `UriUtils.encodePathSegment`) lämnar både `.` och `;` som de är. Uppdragets
+    kriterier håller fortfarande (`/a..b`, `/...` och `/a.b` godtas; `/a;../b`, `/a..;b` och
+    `/...;x` också). Den fasta texten nämner `;parameters`.
+  - **Inte avvisat:** ett kodat snedstreck (`..%2F`, som `URLEncoder.encode("../x")` ger), ett
+    kodat `;` (`..%3B`), ett kodat bakstreck (`..%5C`) och dubbelkodning (`%252e`). De är inga
+    punktsegment enligt RFC 3986, och servrar skiljer sig i om de avkodar dem först (Tomcat och
+    Spring Securitys `StrictHttpFirewall` avvisar `%2F` som standard). Att avvisa dem vore att
+    gissa på serverns avkodning; glappet står i PROGRESS.
+  - **Ändrade tester.** Två befintliga tester skickade `/a/../b` och `/x/../y` som giltiga
+    sökvägar ("skickas som den står"); de använder nu `/a..b/.../c` och `/x/.../y`.
+- **Rättad text (K5).** "Upp till 40 tecken av svaret" stämde inte: `JsonMappingException` har upp
+  till 100 problem (`Decoding.MAX_PROBLEMS`) och citerar upp till 40 tecken per värde eller namn
+  (`Messages.MAX_EXCERPT`) och 200 tecken av ett undantagsmeddelande (`MAX_EXCEPTION_MESSAGE`).
+  Javadoc för `RestClient` och `RestClientResponseException`, README, PROGRESS och avsnittet ovan
+  säger nu det, och att orsaken inte döljer något.
+- **Tester.** Tre nya fall i `Failures.all()`: ett 401 som nämner nyckeln efter `Bearer` ensam
+  (standardhuvudet från `SecretTests.SECRET`), ett med `bearer` och ett som nämner det avkodade
+  `user:lösenord` från `Basic`. De två senare skickar `Authorization` på förfrågan och tar bort
+  standardhuvudet, så att bara deras egen nyckel kan dölja markören (annars hade standardhuvudets
+  nyckel dolt den och testet inte märkt en trasig avkodning). De körs i alla meddelande- och
+  markörtester (`getMessage()`, `toString()`, `getLocalizedMessage()`, stackspåret med orsaker) och
+  i `SecretTests` ekotester. En tabell visar vad `secrets()` ger för 16 huvuden (schemat i olika
+  skiftlägen, två mellanslag, inget schema, Basic utan `:`, med tomt lösenord, utan giltig Base64,
+  med svenska tecken, `Basicx`, andra huvuden), både som standardhuvud och på förfrågan.
+  Punktsegmenten testas i tabeller (avvisade vid alla fem metoder med den fasta texten, godtagna och
+  skickade som de står mot en server, bas-URI:er åt båda hållen). `ReadmeTests` kontrollerar K2, K3
+  och K5 i README och Javadoc. Under arbetet kördes testerna mot mutationer (ingen döljning av
+  nyckeln, ingen Base64-avkodning, ingen kontroll av punktsegment, segment utan gränsen vid `;`);
+  varje mutation fångades (22, 9, 36 och 6 fel).

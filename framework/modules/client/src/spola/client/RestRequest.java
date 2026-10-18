@@ -3,6 +3,7 @@ package spola.client;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.Base64;
 import java.util.List;
 import java.util.Objects;
 import spola.client.HeaderRules.Header;
@@ -34,7 +35,11 @@ import spola.json.codec.JsonMappingException;
  *
  * <p>The path was appended to the base URI as it stands: nothing is encoded and there are no
  * templates ({@code {id}} is not a variable), so a value from outside must be percent-encoded by
- * the caller before it becomes part of the path.
+ * the caller before it becomes part of the path. Encoding does not change {@code .} and
+ * {@code ..} ({@code URLEncoder.encode("..")} is {@code ..}), so a path with a segment that is
+ * {@code .} or {@code ..} (also as {@code %2e} or {@code %2E}, or before a {@code ;}) is refused with
+ * {@link IllegalArgumentException} by {@link RestClient#get(String)} and the other methods that
+ * make a request.
  */
 public final class RestRequest {
 
@@ -62,7 +67,9 @@ public final class RestRequest {
      *
      * @param name  the name
      * @param value the value; the module never writes it into a message or {@code toString()},
-     *              and a failure's message hides it where the server sends it back whole
+     *              and a failure's message hides it where the server sends it back whole (for
+     *              {@code Authorization} and {@code Proxy-Authorization} also the credentials
+     *              on their own; see {@link RestClient})
      * @return the new request
      * @throws IllegalArgumentException if the name or value is not allowed; the message does not
      *                                  quote the value
@@ -215,16 +222,17 @@ public final class RestRequest {
     /**
      * What a message must not show of this request: the value of every header that the caller
      * gave (the defaults and the request's own; not the {@code application/json} that the client
-     * adds), the raw query, and the body as UTF-8 text and, when that differs, as ISO-8859-1 text
-     * (the way {@code java.net.http} quotes bytes it read). Empty values are left out.
+     * adds) with the credentials in it (see {@code addHeaderSecrets}), the raw query, and the
+     * body as UTF-8 text and, when that differs, as ISO-8859-1 text (the way
+     * {@code java.net.http} quotes bytes it read). Empty values are left out.
      */
     List<String> secrets() {
         var values = new ArrayList<String>();
         for (var header : client.defaultHeaders()) {
-            values.add(header.value());
+            addHeaderSecrets(values, header);
         }
         for (var header : headers) {
-            values.add(header.value());
+            addHeaderSecrets(values, header);
         }
         if (uri.getRawQuery() != null) {
             values.add(uri.getRawQuery());
@@ -239,6 +247,54 @@ public final class RestRequest {
         }
         values.removeIf(String::isEmpty);
         return values;
+    }
+
+    /**
+     * Adds the value of {@code header} to {@code values}. For {@code Authorization} and
+     * {@code Proxy-Authorization} (the name in any case) it also adds the credentials, which a
+     * server can name on their own ("Invalid token: ..."): the text after the first space (after
+     * the auth scheme, RFC 9110 11.4), stripped. For the scheme {@code Basic} (in any case) it
+     * adds as well the Base64-decoded user-pass and the password after its first {@code :}
+     * (RFC 7617), decoded as UTF-8 and, when that differs, as ISO-8859-1 (servers decode either
+     * way). Credentials that are not Base64 add nothing more.
+     */
+    private static void addHeaderSecrets(List<String> values, Header header) {
+        var value = header.value();
+        values.add(value);
+        if (!HeaderRules.sameName(header.name(), "Authorization")
+                && !HeaderRules.sameName(header.name(), "Proxy-Authorization")) {
+            return;
+        }
+        int space = value.indexOf(' ');
+        if (space < 0) {
+            return; // no scheme: the whole value is the credential, and it is in the list
+        }
+        var credentials = value.substring(space + 1).strip();
+        values.add(credentials);
+        if (!value.substring(0, space).equalsIgnoreCase("Basic")) {
+            return;
+        }
+        byte[] userPass;
+        try {
+            userPass = Base64.getDecoder().decode(credentials);
+        } catch (IllegalArgumentException notBase64) {
+            return;
+        }
+        var utf8 = new String(userPass, StandardCharsets.UTF_8);
+        addUserPass(values, utf8);
+        var bytewise = new String(userPass, StandardCharsets.ISO_8859_1);
+        if (!bytewise.equals(utf8)) {
+            addUserPass(values, bytewise);
+        }
+    }
+
+    /** Adds a decoded user-pass and, when it has a {@code :}, the password after the first one. */
+    private static void addUserPass(List<String> values, String userPass) {
+        values.add(userPass);
+        int colon = userPass.indexOf(':');
+        if (colon >= 0) {
+            values.add(userPass.substring(colon + 1));
+        }
     }
 
     String method() {

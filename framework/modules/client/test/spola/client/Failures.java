@@ -9,6 +9,8 @@ import java.net.ServerSocket;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.util.ArrayList;
+import java.util.Base64;
 import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.atomic.AtomicReference;
@@ -21,8 +23,9 @@ import spola.json.JsonString;
  * Every kind of failure of criteria 6–9, each made against its own local server with a given
  * setup: default headers, a request header, a path (with a query) and a JSON body. The message
  * and secret tests run them all. Some servers send back what they got, as ordinary servers do (a
- * validation error with the input, an echo endpoint, a problem with the path) or as a broken one
- * might (the request as the status line, a part of a header value in a bad header).
+ * validation error with the input, an echo endpoint, a problem with the path, a 401 that names
+ * the credentials of Authorization on their own) or as a broken one might (the request as the
+ * status line, a part of a header value in a bad header).
  */
 final class Failures {
 
@@ -52,6 +55,32 @@ final class Failures {
 
         RestRequest request(RestClient client) {
             return client.post(path).header(requestHeader.get(0), requestHeader.get(1)).json(body);
+        }
+
+        /** The credentials of the default Authorization header (after its scheme), or {@code plain-token}. */
+        String token() {
+            for (int i = 0; i < defaults.size(); i += 2) {
+                if (defaults.get(i).equalsIgnoreCase("Authorization")) {
+                    var value = defaults.get(i + 1);
+                    return value.substring(value.indexOf(' ') + 1);
+                }
+            }
+            return "plain-token";
+        }
+
+        /**
+         * This setup without a default Authorization header, so that its value and credentials are
+         * not among the request's values and only the request's own Authorization can hide them.
+         */
+        Setup withoutAuthorization() {
+            var kept = new ArrayList<String>();
+            for (int i = 0; i < defaults.size(); i += 2) {
+                if (!defaults.get(i).equalsIgnoreCase("Authorization")) {
+                    kept.add(defaults.get(i));
+                    kept.add(defaults.get(i + 1));
+                }
+            }
+            return new Setup(List.copyOf(kept), requestHeader, path, body);
         }
 
         /** The URI that messages may show: the base and the path without the query. */
@@ -169,12 +198,21 @@ final class Failures {
 
     /** The value of the first header {@code name} of the request, in any case. */
     static String headerValue(String request, String name) {
+        var value = headerValueOrNull(request, name);
+        if (value == null) {
+            throw new AssertionError("no header " + name + " in " + request);
+        }
+        return value;
+    }
+
+    /** The value of the first header {@code name} of the request, in any case, or {@code null}. */
+    static String headerValueOrNull(String request, String name) {
         for (var line : request.substring(0, request.indexOf("\r\n\r\n")).split("\r\n")) {
             if (line.toLowerCase(Locale.ROOT).startsWith(name.toLowerCase(Locale.ROOT) + ":")) {
                 return line.substring(name.length() + 1).strip();
             }
         }
-        throw new AssertionError("no header " + name + " in " + request);
+        return null;
     }
 
     /** A JSON response with {@code status} and {@code body} (UTF-8), as text. */
@@ -222,6 +260,47 @@ final class Failures {
     static final Support.Script PROBLEM_ECHO = sendsBack(request -> jsonResponse(404, Json.write(JsonObject.of(
             "title", new JsonString("Not Found"), "status", spola.json.JsonNumber.of(404),
             "instance", new JsonString(requestLine(request).split(" ")[1])))));
+
+    /**
+     * A 401 that names the credentials of the request's header {@code name} on their own, as some
+     * APIs do: the text after the scheme ("Invalid token: sk-..."), or for Basic the decoded
+     * user:password. Without the header: "Missing credentials".
+     */
+    static Support.Script namesCredentials(String name) {
+        return sendsBack(request -> {
+            var value = headerValueOrNull(request, name);
+            String message;
+            if (value == null) {
+                message = "Missing credentials";
+            } else {
+                var credentials = value.substring(value.indexOf(' ') + 1).strip();
+                message = value.regionMatches(true, 0, "Basic ", 0, 6)
+                        ? "Invalid credentials for " + new String(Base64.getDecoder().decode(credentials),
+                                StandardCharsets.UTF_8)
+                        : "Invalid token: " + credentials;
+            }
+            return jsonResponse(401, Json.write(JsonObject.of("error", JsonObject.of(
+                    "type", new JsonString("authentication_error"), "message", new JsonString(message)))));
+        });
+    }
+
+    static final Support.Script NAMES_CREDENTIALS = namesCredentials("Authorization");
+
+    /**
+     * Against {@link #NAMES_CREDENTIALS} with {@code authorization} as the request's own
+     * Authorization header, and the setup's default one left out.
+     */
+    static RestClientException namedCredentials(Setup setup, String authorization) throws IOException {
+        var withoutDefault = setup.withoutAuthorization();
+        try (var server = new Support.RawServer(NAMES_CREDENTIALS);
+                var client = withoutDefault.builder(server.base()).build()) {
+            return thrown(withoutDefault.request(client).header("Authorization", authorization), true);
+        }
+    }
+
+    static String base64(String text) {
+        return Base64.getEncoder().encodeToString(text.getBytes(StandardCharsets.UTF_8));
+    }
 
     static final Support.Script READS_FIRST_BYTE = (socket, raw) -> {
         raw.firstBytes.add(socket.getInputStream().read());
@@ -318,6 +397,12 @@ final class Failures {
                         }),
                 new Kind("a 404 problem that sends the path and query back", 404, false,
                         setup -> against(PROBLEM_ECHO, setup, Duration.ofSeconds(10), 1 << 20)),
+                new Kind("a 401 that names the bearer token on its own", 401, false,
+                        setup -> against(NAMES_CREDENTIALS, setup, Duration.ofSeconds(10), 1 << 20)),
+                new Kind("a 401 that names the token after a lower-case bearer", 401, false,
+                        setup -> namedCredentials(setup, "bearer " + setup.token())),
+                new Kind("a 401 that names the decoded user:password from Basic", 401, false,
+                        setup -> namedCredentials(setup, "Basic " + base64("anna:" + setup.token()))),
                 new Kind("a server that echoes the request", -1, false,
                         setup -> against(ECHOES, setup, Duration.ofSeconds(10), 1024)),
                 new Kind("a server that echoes the request body", -1, false,

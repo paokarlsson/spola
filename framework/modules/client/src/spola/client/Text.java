@@ -8,7 +8,8 @@ import java.util.function.IntPredicate;
 /**
  * Safe text for messages and excerpts: {@link #excerpt} turns a response body into
  * {@link RestClientResponseException#bodyExcerpt()} (and, with the request's values hidden, into
- * the excerpt in the message), {@link #ascii} makes any text one line of printable ASCII.
+ * {@link RestClientResponseException#safeExcerpt()}, which the message shows the start of),
+ * {@link #ascii} makes any text one line of printable ASCII.
  */
 final class Text {
 

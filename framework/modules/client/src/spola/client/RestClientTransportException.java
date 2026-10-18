@@ -28,7 +28,9 @@ import java.net.URI;
  *       connect timeout) has a text from the JDK or the operating system, never from the server.
  *       {@link #getCause()} is that exception and the message ends with its class and text (as
  *       ASCII, shortened), unless the text, or that of anything it carries, holds a header
- *       value, the query or the body of the request; then it is treated as below.</li>
+ *       value (or the credentials of an {@code Authorization} header on their own, as
+ *       {@link RestClientResponseException} describes), the query or the body of the request;
+ *       then it is treated as below.</li>
  *   <li>Every other failure, above all a response that is not valid HTTP/1.1, can quote what
  *       the server sent ({@code java.net.http} quotes a bad status line or header), and so the
  *       request, if the server sends that back. The message has only the class of the failure

@@ -26,8 +26,10 @@ import spola.test.Suite;
  * Criterion 11: markers in x-api-key, in Authorization, in a request header, in the query and in
  * the body (with Swedish letters, as the need's prompts have) never show in toString, messages,
  * printed stack traces (with causes) or the IllegalArgumentExceptions of the setup; the query's
- * marker is in uri(). Servers that send the request back are among the failures: the message
- * hides what they quote, and bodyExcerpt() keeps it.
+ * marker is in uri(). Servers that send the request back are among the failures: the message and
+ * safeExcerpt() hide what they quote, and bodyExcerpt() keeps it. Mission 15d: the credentials of
+ * Authorization on their own (after Bearer, bearer, and Basic decoded) are hidden too (K1), and
+ * safeExcerpt() is the excerpt to log (K2).
  */
 final class SecretTests {
 
@@ -50,7 +52,10 @@ final class SecretTests {
     /** The failures where a server sends back a value of the request that shows in bodyExcerpt(). */
     static final List<String> RESPONSE_ECHOES = List.of("a 422 that sends the request body back",
             "a 200 that sends the request headers back, with a codec that does not fit",
-            "a 404 problem that sends the path and query back");
+            "a 404 problem that sends the path and query back",
+            "a 401 that names the bearer token on its own",
+            "a 401 that names the token after a lower-case bearer",
+            "a 401 that names the decoded user:password from Basic");
 
     static Failures.Kind kind(String name) {
         return Failures.all().stream().filter(k -> k.name().equals(name)).findFirst().orElseThrow();
@@ -60,6 +65,48 @@ final class SecretTests {
         for (var marker : MARKERS) {
             assertFalse(text.contains(marker), where + " shows " + marker + ": " + text);
         }
+    }
+
+    /**
+     * A header and what {@code secrets()} has for it.
+     *
+     * @param name   the row's name
+     * @param header the header's name
+     * @param value  its value
+     * @param hidden what a message hides, in order
+     */
+    record SecretRow(String name, String header, String value, List<String> hidden) {
+    }
+
+    static List<SecretRow> secretRows() {
+        var basic = Failures.base64("anna:pw:1");
+        var swedish = Failures.base64("anna:lösen");
+        return List.of(
+                new SecretRow("Bearer", "Authorization", "Bearer sk-1", List.of("Bearer sk-1", "sk-1")),
+                new SecretRow("bearer, the name in lower case", "authorization", "bearer sk-1",
+                        List.of("bearer sk-1", "sk-1")),
+                new SecretRow("Proxy-Authorization", "Proxy-Authorization", "Bearer sk-1", List.of("Bearer sk-1", "sk-1")),
+                new SecretRow("PROXY-AUTHORIZATION, two spaces", "PROXY-AUTHORIZATION", "Token  sk-1",
+                        List.of("Token  sk-1", "sk-1")),
+                new SecretRow("credentials with a space", "Authorization", "Digest a=1, b=2",
+                        List.of("Digest a=1, b=2", "a=1, b=2")),
+                new SecretRow("no scheme", "Authorization", "sk-1", List.of("sk-1")),
+                new SecretRow("Basic", "Authorization", "Basic " + basic, List.of("Basic " + basic, basic, "anna:pw:1", "pw:1")),
+                new SecretRow("BASIC", "Authorization", "BASIC " + basic, List.of("BASIC " + basic, basic, "anna:pw:1", "pw:1")),
+                new SecretRow("basic without a colon", "Authorization", "basic " + Failures.base64("anna"),
+                        List.of("basic " + Failures.base64("anna"), Failures.base64("anna"), "anna")),
+                new SecretRow("Basic with an empty password", "Authorization", "Basic " + Failures.base64("anna:"),
+                        List.of("Basic " + Failures.base64("anna:"), Failures.base64("anna:"), "anna:")),
+                new SecretRow("Basic that is not Base64", "Authorization", "Basic not*base64",
+                        List.of("Basic not*base64", "not*base64")),
+                new SecretRow("Basic with Swedish letters: as UTF-8 and as ISO-8859-1", "Authorization", "Basic " + swedish,
+                        List.of("Basic " + swedish, swedish, "anna:lösen", "lösen", "anna:lÃ¶sen", "lÃ¶sen")),
+                new SecretRow("another scheme that starts with Basic", "Authorization", "Basicx " + basic,
+                        List.of("Basicx " + basic, basic)),
+                new SecretRow("another header", "X-Auth", "Bearer sk-1", List.of("Bearer sk-1")),
+                new SecretRow("x-api-key with Basic", "x-api-key", "Basic " + basic, List.of("Basic " + basic)),
+                new SecretRow("a name that only starts with Authorization", "Authorization-Extra", "Bearer sk-1",
+                        List.of("Bearer sk-1")));
     }
 
     static Suite tests() {
@@ -95,10 +142,83 @@ final class SecretTests {
                             var expected = switch (name) {
                                 case "a 422 that sends the request body back" -> List.of(BODY_MARKER);
                                 case "a 404 problem that sends the path and query back" -> List.of(QUERY_MARKER);
+                                case "a 401 that names the bearer token on its own",
+                                        "a 401 that names the token after a lower-case bearer",
+                                        "a 401 that names the decoded user:password from Basic" -> List.of(AUTH_MARKER);
                                 default -> List.of(KEY_MARKER, AUTH_MARKER, TRACE_MARKER);
                             };
                             for (var marker : expected) {
                                 assertTrue(e.bodyExcerpt().contains(marker), marker + " in " + e.bodyExcerpt());
+                            }
+                            assertTrue(e.safeExcerpt().contains(Text.HIDDEN), e.safeExcerpt());
+                            assertNoMarker(name + " safeExcerpt", e.safeExcerpt());
+                        }),
+                test("the 401s name the token alone and the decoded user:password, which the messages hide", () -> {
+                    var bearer = (RestClientResponseException) kind("a 401 that names the bearer token on its own")
+                            .make().make(SECRET);
+                    assertTrue(bearer.bodyExcerpt().contains("\"Invalid token: " + AUTH_MARKER + "\""), bearer.bodyExcerpt());
+                    assertTrue(bearer.getMessage().endsWith(": status 401: a client error: {\"error\":{\"type\":"
+                            + "\"authentication_error\",\"message\":\"Invalid token: <hidden>\"}}"), bearer.getMessage());
+                    var lower = (RestClientResponseException) kind("a 401 that names the token after a lower-case bearer")
+                            .make().make(SECRET);
+                    assertTrue(lower.bodyExcerpt().contains("\"Invalid token: " + AUTH_MARKER + "\""), lower.bodyExcerpt());
+                    assertTrue(lower.safeExcerpt().contains("\"Invalid token: <hidden>\""), lower.safeExcerpt());
+                    var basic = (RestClientResponseException) kind("a 401 that names the decoded user:password from Basic")
+                            .make().make(SECRET);
+                    assertTrue(basic.bodyExcerpt().contains("\"Invalid credentials for anna:" + AUTH_MARKER + "\""),
+                            basic.bodyExcerpt());
+                    assertTrue(basic.safeExcerpt().contains("\"Invalid credentials for <hidden>\""), basic.safeExcerpt());
+                }),
+                parameterized("the values of a header that the module hides", secretRows(), row -> row.name(), row -> {
+                    try (var client = RestClient.builder().baseUri(URI.create("https://h")).build();
+                            var withDefault = RestClient.builder().baseUri(URI.create("https://h"))
+                                    .defaultHeader(row.header(), row.value()).build()) {
+                        assertEquals(row.hidden(), client.get("/x").header(row.header(), row.value()).secrets());
+                        assertEquals(row.hidden(), withDefault.get("/x").secrets());
+                    }
+                }),
+                test("a header that is not Authorization is hidden only whole, as before: its part after a space shows",
+                        () -> {
+                            try (var server = new Support.RawServer(Failures.namesCredentials("X-Auth"));
+                                    var client = RestClient.builder().baseUri(server.base()).build()) {
+                                var e = (RestClientResponseException) Failures.thrown(
+                                        client.get("/x").header("X-Auth", "Bearer " + AUTH_MARKER), true);
+                                assertTrue(e.getMessage().contains("Invalid token: " + AUTH_MARKER), e.getMessage());
+                                assertTrue(e.safeExcerpt().contains("Invalid token: " + AUTH_MARKER), e.safeExcerpt());
+                            }
+                            try (var server = new Support.RawServer(Failures.sendsBack(request -> Failures.jsonResponse(401,
+                                    "{\"got\":\"" + Failures.headerValue(request, "X-Auth") + "\"}")));
+                                    var client = RestClient.builder().baseUri(server.base()).build()) {
+                                var e = (RestClientResponseException) Failures.thrown(
+                                        client.get("/x").header("X-Auth", "Bearer " + AUTH_MARKER), true);
+                                assertTrue(e.getMessage().endsWith(": {\"got\":\"<hidden>\"}"), e.getMessage());
+                            }
+                        }),
+                test("safeExcerpt() hides an echoed header value; bodyExcerpt() is raw", () -> {
+                    var e = (RestClientResponseException) kind(
+                            "a 200 that sends the request headers back, with a codec that does not fit").make().make(SECRET);
+                    for (var marker : List.of(KEY_MARKER, AUTH_MARKER, TRACE_MARKER)) {
+                        assertTrue(e.bodyExcerpt().contains(marker), marker + " in " + e.bodyExcerpt());
+                    }
+                    assertNoMarker("safeExcerpt", e.safeExcerpt());
+                    assertTrue(e.safeExcerpt().contains("\"x-api-key\":\"<hidden>\""), e.safeExcerpt());
+                    assertTrue(e.safeExcerpt().contains("\"Authorization\":\"<hidden>\""), e.safeExcerpt());
+                    assertTrue(e.safeExcerpt().contains("\"X-Trace\":\"<hidden>\""), e.safeExcerpt());
+                    assertTrue(e.safeExcerpt().contains("\"Accept\":\"application/json\""), e.safeExcerpt());
+                }),
+                parameterized("safeExcerpt() of every response failure: no marker, and it is the excerpt in the message",
+                        Failures.all().stream().filter(k -> k.status() >= 0).toList(), kind -> {
+                            var e = (RestClientResponseException) kind.make().make(SECRET);
+                            assertNoMarker(kind + " safeExcerpt", e.safeExcerpt());
+                            var message = e.getMessage();
+                            var shown = Text.ascii(e.safeExcerpt());
+                            if (shown.isEmpty()) {
+                                assertEquals("", e.bodyExcerpt());
+                            } else if (!message.endsWith(": " + shown)) { // the message was cut inside the excerpt
+                                assertEquals(RestClientException.MAX_MESSAGE, message.length(), message);
+                                int start = message.indexOf(": " + shown.substring(0, Math.min(20, shown.length())));
+                                assertTrue(start > 0, message);
+                                assertTrue(shown.startsWith(message.substring(start + 2, message.length() - 3)), message);
                             }
                         }),
                 test("a 422 with the body's Swedish text: the message hides the body and keeps the rest", () -> {

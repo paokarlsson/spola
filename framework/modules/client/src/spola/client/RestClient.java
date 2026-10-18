@@ -57,7 +57,14 @@ import spola.json.JsonLimits;
  *       {@link URI#resolve}). Nothing is encoded and there are no templates, so the path is sent
  *       as it stands, and a value from outside must be percent-encoded by the caller. A request
  *       always goes to the base's scheme, host and port: {@code //other.example/x} is a path
- *       on the base's host.</li>
+ *       on the base's host. A segment that is {@code .} or {@code ..}, also as {@code %2e} or
+ *       {@code %2E}, is refused in the path and in the base URI with
+ *       {@link IllegalArgumentException}: a server resolves it, so the request with the
+ *       client's keys would reach another resource, and percent-encoding does not change it
+ *       ({@code URLEncoder.encode("..")} is {@code ..}). A segment counts up to its first
+ *       {@code ;}, so {@code /..;/x} is refused too: Tomcat and Jetty drop path parameters
+ *       before they resolve dot segments. {@code /a..b}, {@code /...} and {@code /a.b} have no
+ *       dot segment.</li>
  *   <li><b>Headers.</b> The default headers go with every request; a request's
  *       {@link RestRequest#header header} replaces a default with the same name in any case.
  *       {@code Accept: application/json} is sent when neither has an {@code Accept}.
@@ -106,15 +113,28 @@ import spola.json.JsonLimits;
  * send them back, though, and the module keeps them out of a logged exception as far as it can
  * recognise them:
  * <ul>
- *   <li>{@link RestClientResponseException#getMessage()} shows {@code <hidden>} for every whole
- *       occurrence of them in the excerpt. A part of one that the server sends back on its own,
- *       or changes first, shows. The {@code spola.json} exception that is the cause when the
- *       body is not JSON or does not fit the codec can quote up to 40 characters of the
- *       response.</li>
+ *   <li>{@link RestClientResponseException#getMessage()} and
+ *       {@link RestClientResponseException#safeExcerpt()} show {@code <hidden>} for every whole
+ *       occurrence of them in the excerpt. For {@code Authorization} and
+ *       {@code Proxy-Authorization} that also holds for the credentials on their own: the text
+ *       after the scheme ({@code Bearer}, {@code bearer}, any scheme) and, for {@code Basic}, the
+ *       decoded {@code user:password} and the password. A part of a value that the server sends
+ *       back on its own, or changes first, shows. The {@code spola.json} exception that is the
+ *       cause when the body is not JSON or does not fit the codec can quote the response: up to
+ *       40 characters per value in up to 100 problems (and 200 characters of an exception's
+ *       message).</li>
  *   <li>A {@link RestClientTransportException} keeps the text of a JDK exception only when that
  *       text cannot come from the server.</li>
- *   <li>{@link RestClientResponseException#bodyExcerpt()} is the server's text as it is.</li>
+ *   <li>{@link RestClientResponseException#bodyExcerpt()} is the server's text as it is and hides
+ *       nothing; log {@code safeExcerpt()} or {@code getMessage()} instead.</li>
  * </ul>
+ *
+ * <p><b>Never turn on the JDK's logging of {@link HttpClient} in production.</b> With the system
+ * property {@code jdk.httpclient.HttpClient.log} set to {@code headers}, {@code requests} or
+ * {@code all} (alone or in a list), or with {@code jdk.internal.httpclient.debug} set to
+ * {@code true}, {@code java.net.http} itself writes header values (the API keys: {@code headers}
+ * and {@code all}) and every URI with its query (all four) to the log or to standard error. The
+ * module cannot turn that off and does not check for it.
  *
  * <h2>Deviations from Spring's {@code RestClient}</h2>
  * <ul>
@@ -123,7 +143,8 @@ import spola.json.JsonLimits;
  *       per status.</li>
  *   <li>{@code Content-Type} does not decide how a response is read: every 2xx body is JSON.</li>
  *   <li>Redirects are never followed; HTTP/1.1 only.</li>
- *   <li>The path is sent as it stands: no templates ({@code {id}}) and no encoding.</li>
+ *   <li>The path is sent as it stands: no templates ({@code {id}}) and no encoding; a segment
+ *       {@code .} or {@code ..} (also {@code %2e}) is refused.</li>
  *   <li>No cookies, no proxy and no {@code SSLContext} of one's own.</li>
  *   <li>The request's {@code Content-Type} cannot be set: {@code json(...)} sends
  *       {@code application/json}, and only JSON bodies can be sent.</li>
@@ -197,11 +218,15 @@ public final class RestClient implements AutoCloseable {
      *
      * @param path the path after the base URI's path, starting with {@code /}, with an optional
      *             query; sent as it stands (see {@link RestRequest}), except that
-     *             {@code java.net.http} drops an empty query ({@code /x?} is sent as {@code /x})
+     *             {@code java.net.http} drops an empty query ({@code /x?} is sent as {@code /x});
+     *             no segment of it (before the query, each up to its first {@code ;}) may be
+     *             {@code .} or {@code ..}, also not as {@code %2e} or {@code %2E}
      * @return the request
-     * @throws IllegalArgumentException if the path does not start with {@code /}, has a fragment
-     *                                  or has a character that is not allowed in a URI path or
-     *                                  query (RFC 3986), such as a space
+     * @throws IllegalArgumentException if the path does not start with {@code /}, has a fragment,
+     *                                  has a character that is not allowed in a URI path or
+     *                                  query (RFC 3986), such as a space, or has a segment that
+     *                                  is {@code .} or {@code ..} (also percent-encoded; the
+     *                                  message is a fixed text then)
      * @throws NullPointerException     if {@code path} is {@code null}
      */
     public RestRequest get(String path) {
@@ -487,8 +512,9 @@ public final class RestClient implements AutoCloseable {
         /**
          * The base URI, required: absolute, with the scheme {@code http} or {@code https} and a
          * host, without userinfo, query or fragment. Its path may be empty or a prefix such as
-         * {@code /api}; one trailing {@code /} is dropped. Every request goes to this scheme, host
-         * and port.
+         * {@code /api}, without a segment that is {@code .} or {@code ..} (also as {@code %2e} or
+         * {@code %2E}, or before a {@code ;}); one trailing {@code /} is dropped. Every request goes to this scheme,
+         * host and port.
          *
          * @param baseUri the base URI, such as {@code URI.create("https://api.anthropic.com")}
          * @return this builder
@@ -566,8 +592,9 @@ public final class RestClient implements AutoCloseable {
          *
          * @return the client
          * @throws IllegalArgumentException with one line per problem: a missing or invalid base
-         *                                  URI, an invalid or refused header, the same header
-         *                                  twice, a timeout that is not positive, a
+         *                                  URI (also one with a segment {@code .} or {@code ..}
+         *                                  in its path), an invalid or refused header, the same
+         *                                  header twice, a timeout that is not positive, a
          *                                  {@code maxResponseSize} under 1. No line quotes a
          *                                  header value or the base URI.
          */

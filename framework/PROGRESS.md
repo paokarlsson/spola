@@ -914,8 +914,8 @@
   kunde fylla `maxSessions` och ge alla andras inloggningar 503), G2 (en inloggning som en annan
   användare ärvde den förras attribut), G3 (`public`/`s-maxage` från handlern på ett svar med
   sessions- eller CSRF-cookien), G4 (inget `Cache-Control` på inloggade svar) och G5 (städningen
-  vid gränsen kunde köras parallellt). 15b (proxy och dokumentation) och 15c (lösenord) är klara
-  sedan dess; 15d (`spola.client`) återstår.
+  vid gränsen kunde köras parallellt). 15b (proxy och dokumentation), 15c (lösenord) och 15d
+  (`spola.client`) är klara sedan dess.
 - **Granskningen ersätter inte en mänsklig granskning.** Den gjordes av AI-granskare, och
   rättningarna är testade av samma slags granskare. Koden är säkerhetskritisk, och **en människa
   bör granska den** innan ramverket används på riktigt.
@@ -988,7 +988,7 @@
   `ForwardedHeaders` inte litar på tog tyst bort `Secure` från sessions- och CSRF-cookien), P2
   (Docker-exemplen lyssnade på loopback), P3 (ingen tydlig produktionsinställning mot cookie
   tossing), P4 (påståendet om id:n i minnet) och P5 (privata klientadresser som behörighet). 15c
-  (lösenord) är klar sedan dess; 15d (`spola.client`) återstår.
+  (lösenord) och 15d (`spola.client`) är klara sedan dess.
 - **Granskningen ersätter inte en mänsklig granskning.** Koden är säkerhetskritisk, och **en
   människa bör granska den** innan ramverket används på riktigt.
 - **Varningen (P1).** `ForwardedHeaders` loggar en rad på `WARNING` (loggern `spola.web`) första
@@ -1043,7 +1043,7 @@
   är rättade eller dokumenterade: L1 (en uppgradering kunde skriva tillbaka det gamla lösenordet
   efter ett lösenordsbyte), L2 (en trasig lagrad hash gav 500 och avslöjade att kontot fanns), L3
   (tidsskillnaden mellan algoritmer var odokumenterad) och L4 (PBKDF2 med över 32 byte hash kostade
-  servern dubbelt men inte angriparen). 15d (`spola.client`) återstår.
+  servern dubbelt men inte angriparen). 15d (`spola.client`) är klar sedan dess.
 - **Granskningen ersätter inte en mänsklig granskning.** Koden är säkerhetskritisk, och **en
   människa bör granska den** innan ramverket används på riktigt.
 - **Uppgraderingen är en compare-and-set (L1).** `PasswordUpgrade.upgrade(username,
@@ -1115,6 +1115,60 @@
   refused, the stored password hash is malformed: java.lang.IllegalArgumentException` till
   byggets utdata. Det är väntat; `MalformedLoginTests` kontrollerar raden med en egen logger.
 
+### Uppdrag 15d: säkerhetsgranskning del 4, hemligheter och sökvägar i `spola.client`
+- **Fjärde och sista delen av rättningarna efter säkerhetsgranskningen 2026-10-18**
+  (`gauntlet/granskningar/2026-10-18-sakerhet.md`, fynden SEC-1–SEC-4 och BRK-2 där, K1–K5 i
+  uppdraget). Alla fem är rättade: K1 (MEDIUM, nyckeln efter `Bearer` läckte när servern nämnde den
+  ensam), K2 (README:s loggexempel loggade det råa utdraget), K3 (JDK:ns egen loggning var
+  odokumenterad), K4 (`.` och `..` i en sökväg nådde andra resurser) och K5 (texten om orsaken från
+  `spola.json`). Därmed är 15a–15d klara.
+- **Granskningen ersätter inte en mänsklig granskning.** Koden är säkerhetskritisk, och **en
+  människa bör granska den** innan ramverket används på riktigt.
+- **Nyckeln i `Authorization` döljs också för sig (K1).** För `Authorization` och
+  `Proxy-Authorization` (namnet i vilket skiftläge som helst) räknas nu också texten efter det första
+  mellanslaget, trimmad, som ett värde från förfrågan, och för schemat `Basic` (i vilket skiftläge
+  som helst) det Base64-avkodade `user:lösenord` och lösenordet efter det första `:`, avkodade som
+  UTF-8 och, när det skiljer sig, som ISO-8859-1. Avkodning som misslyckas ger inget extra. Listan
+  (`RestRequest.secrets()`) läses som förut av meddelandet, `safeExcerpt()` och orsaken till ett
+  transportfel (`Causes.textIsSafe`); de är oförändrade. Ett svar som `Invalid token: <nyckel>`,
+  med `Bearer`, `bearer` eller ett avkodat `Basic`, visar `<hidden>`. Andra huvuden döljs bara hela,
+  som förut.
+- **`safeExcerpt()` (K2).** `RestClientResponseException.safeExcerpt()` är utdraget med samma
+  döljning som `getMessage()` (samma text som meddelandet visar början av, men inte ASCII-kodad
+  och inte kortad till meddelandets längd). `bodyExcerpt()` är rått som förut och dokumenteras så.
+  README:s exempel (`AiClients.java`), växeln i README och Javadoc för `RestClientException` och
+  `RestClientResponseException` loggar `safeExcerpt()`; "aldrig nyckeln" står inte längre i README.
+- **Varning för JDK:ns loggning (K3).** Javadoc för `RestClient` och README säger att
+  `jdk.httpclient.HttpClient.log` (`headers`, `requests`, `all`) och `jdk.internal.httpclient.debug`
+  aldrig ska slås på i produktion. En prob mot JDK 25 visade att `headers` och `all` skriver ut
+  huvudvärden och att alla fyra skriver ut URI:n med query. Modulen kontrollerar det inte
+  (utanför scope).
+- **Inga punktsegment (K4).** En sökväg eller en bas-URI med ett segment som är `.` eller `..`,
+  också procentkodat (`%2e`, `%2E`, blandat som `.%2E`), ger `IllegalArgumentException` med en fast
+  text som inte citerar sökvägen (vid anropet respektive i `build()`, där den blir en rad bland de
+  andra). Ett segment räknas fram till sitt första `;`, så `/..;/x` avvisas också (utöver uppdraget,
+  se ARCHITECTURE). `/a..b`, `/...`, `/a.b`, `/.well-known` och punkter i queryn godtas och skickas
+  som de står. Javadoc för sökvägsparametrarna, `baseUri` och `build()` säger det.
+- **Rättad text (K5).** Javadoc för `RestClient` och `RestClientResponseException` och README säger
+  att orsaken från `spola.json` kan citera upp till 40 tecken per värde i upp till 100 problem (och
+  200 tecken av ett undantagsmeddelande).
+- **API-ändringar:** ny metod `RestClientResponseException.safeExcerpt()` (ett nytt serialiserat
+  fält); sökvägar och bas-URI:er med punktsegment avvisas nu (förut skickades de). Inga ändrade
+  `requires` eller `exports`, `module-info.java` och `ModuleTests` är oförändrade, ingen reflektion,
+  inga nya filtyper och inga nya källfiler. Bara `modules/client/` och dokumentationen är ändrade.
+- Nya tester i `spola.client` (447, förut 330; ungefär 15 s): tre nya fall i `Failures.all()` (ett 401
+  som nämner nyckeln efter `Bearer` ensam, ett med `bearer` och ett som nämner det avkodade
+  `user:lösenord` från `Basic`), som körs i alla meddelande- och markörtester och i `SecretTests`
+  ekotester; en tabell över vad `secrets()` döljer för 16 huvuden; ett huvud som inte är
+  `Authorization` döljs bara helt; `safeExcerpt()` för ett ekat huvud och för varje svarsfel;
+  behovets loggrad mot en Anthropic som nämner nyckeln (`AnthropicTests`); tabelldrivna tester för
+  punktsegment i sökvägar och bas-URI:er och för punkter som inte är segment (`SetupTests`); tre nya
+  i `ReadmeTests` (K2, K3, K5). Ändrade med avsikt: `RequestTests` och `SetupTests` skickade
+  `/a/../b` och `/x/../y` (nu avvisade; ersatta med `/a..b/.../c` och `/x/.../y`), `SwitchTests`
+  läser `safeExcerpt()`. Under arbetet kördes testerna mot mutationer: ingen döljning av nyckeln
+  (22 fel), ingen Base64-avkodning (9 fel), ingen kontroll av punktsegment (36 fel) och segment
+  utan gränsen vid `;` (6 fel); varje mutation fångades.
+
 ### Versioner och releaser (gjort för hand, utanför loopen)
 - `VERSION` i `Build.java` (nu `0.1.0`) sätts som modulversion i varje jar
   (`jar --module-version`). `java Build.java version` skriver ut den.
@@ -1132,8 +1186,7 @@
   lösenordshasher" (psykologen) i uppdrag 12 och behovet "Rätt schema och klientadress bakom en
   omvänd proxy" (psykologen) i 13a–13b och behovet "HTTP-klient för JSON-API:er" (psykologen) i
   uppdrag 14; appen byter sin Spring-konfiguration och sina klienter efter nästa release.
-  Rättningarna efter säkerhetsgranskningen 2026-10-18: 15a, 15b och 15c är klara, **15d**
-  (`spola.client`) återstår. Idéerna i `uppdrag/PLAN.md` (JWT, PostgreSQL, pool och
+  Rättningarna efter säkerhetsgranskningen 2026-10-18 (15a–15d) är klara. Idéerna i `uppdrag/PLAN.md` (JWT, PostgreSQL, pool och
   transaktioner, query-DSL, migreringar, schemaläggning, observability, starter) byggs när ett
   behov kommer.
 - **Kvar från friktionsrapporten i 05c** (`modules/demo/README.md`, avsnitt "Friktion"):
@@ -1201,7 +1254,12 @@
   ramverket används på riktigt. Kända begränsningar:
   - **Sökvägen skickas som den står**, utan kodning och utan mallar, så värden utifrån måste
     kodas av appen innan de blir en del av sökvägen. En sökväg med tecken som inte får finnas i en
-    URI ger `IllegalArgumentException`. En tom query (`/x?`) skickas som `/x` (`java.net.http`).
+    URI ger `IllegalArgumentException`, och så gör ett punktsegment (`.`, `..`, `%2e`, också före
+    `;`). En tom query (`/x?`) skickas som `/x` (`java.net.http`). Kända glapp i kontrollen av
+    punktsegment (15d): ett kodat snedstreck (`..%2F`, det `URLEncoder.encode("../x")` ger),
+    dubbelkodning (`%252e`), ett kodat `;` (`..%3B`) och ett kodat bakstreck (`..%5C`) avvisas inte;
+    de är inga punktsegment enligt RFC 3986, men en server som avkodar dem innan den löser upp
+    punktsegment kan ändå nå en annan resurs.
   - **Inga cookies, ingen egen `SSLContext` och ingen proxy.** TLS använder JDK:ns
     standard-`SSLContext`; ingen proxy används, inte heller den som JVM:ens `https.proxyHost`
     anger. Ingen mTLS, inget eget truststore per klient.
@@ -1220,12 +1278,22 @@
   - Inga omförsök, ingen cirkelbrytare, inga interceptorer, ingen loggning och inga mätvärden.
     `java.net.http` gör själv ett nytt försök för `GET` när en återanvänd anslutning visar sig
     vara stängd, och provar ibland TLS-handslaget två gånger.
-  - **Värden som servern skickar tillbaka döljs bara hela.** Svarsfelets `getMessage()` döljer
-    varje hel förekomst av ett huvudvärde, queryn och förfrågans kropp. En del av ett värde som
-    servern skickar för sig (en medlem i kroppen, en parameter i queryn) eller ändrar först (JSON
-    som kodas om) syns, och ett kort värde (`X-Page: 2`) döljer samma text också där servern skrev
-    den själv. `bodyExcerpt()` döljer ingenting: en server som skickar tillbaka förfrågan får med
-    den där. Orsaken från `spola.json` kan citera upp till 40 tecken av svaret.
+  - **Värden som servern skickar tillbaka döljs bara hela.** Svarsfelets `getMessage()` och
+    `safeExcerpt()` döljer varje hel förekomst av ett huvudvärde, queryn och förfrågans kropp, och
+    för `Authorization` och `Proxy-Authorization` också nyckeln efter det första mellanslaget och
+    för `Basic` det avkodade `user:lösenord` och lösenordet (15d). En del av ett värde som servern
+    skickar för sig (en medlem i kroppen, en parameter i queryn, delen efter ett mellanslag i ett
+    annat huvud) eller ändrar först (JSON som kodas om, till exempel `/` som `\/`) syns, och ett
+    kort värde (`X-Page: 2`) döljer samma text också där servern skrev den själv. Ett schema som
+    skiljs från nyckeln med tab i stället för mellanslag (`Bearer<tab>nyckel`, inte tillåtet enligt
+    RFC 9110) döljs bara helt. `bodyExcerpt()` döljer ingenting: en server som skickar tillbaka
+    förfrågan får med den där, så loggen ska ha `safeExcerpt()` eller `getMessage()`. Orsaken från
+    `spola.json` döljer ingenting och kan citera upp till 40 tecken per värde i upp till 100 problem
+    (och 200 tecken av ett undantagsmeddelande).
+  - **JDK:ns egen loggning skriver ut nycklar.** Med `jdk.httpclient.HttpClient.log` (`headers`,
+    `requests`, `all`) eller `jdk.internal.httpclient.debug` skriver `java.net.http` ut huvudvärden
+    och URI:er med query. Modulen kan inte stänga av det och vägrar inte starta (utanför 15d);
+    Javadoc och README varnar.
   - **Transportfel visar bara klassnamn för felaktiga svar.** Orsaken till ett
     `RestClientTransportException` är JDK:ns undantag bara för `SocketException`,
     `SSLException` och `HttpTimeoutException` (utan värden från förfrågan i texten); för allt

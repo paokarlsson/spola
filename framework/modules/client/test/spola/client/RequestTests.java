@@ -152,8 +152,8 @@ final class RequestTests {
                             assertEquals("/v1/x", recorder.last().target(), "java.net.http drops an empty query");
                         }
                         try (var client = RestClient.builder().baseUri(recorder.base("")).build()) {
-                            client.get("/a/../b").retrieveJson();
-                            assertEquals("/a/../b", recorder.last().target(), "sent as it stands");
+                            client.get("/a..b/.../c").retrieveJson();
+                            assertEquals("/a..b/.../c", recorder.last().target(), "sent as it stands");
                         }
                     }
                 }),

@@ -74,13 +74,14 @@ final class AiClients implements AutoCloseable {
                 .retrieve(MessagesResponse.CODEC);              // 2xx: avkodat svar, annars RestClientException
     }
 
-    // Felhantering som appen behöver: status och en del av kroppen, aldrig nyckeln.
+    // Felhantering som appen behöver: status och en del av kroppen. safeExcerpt() döljer värden
+    // från förfrågan som servern skickar tillbaka hela (nyckeln, kroppen); bodyExcerpt() är rått.
     Optional<MessagesResponse> askOrLog(MessagesRequest request) {
         try {
             return Optional.of(anthropic.post("/v1/messages").json(request, MessagesRequest.CODEC)
                     .retrieve(MessagesResponse.CODEC));
         } catch (RestClientResponseException e) { // en tidsgräns eller nekad anslutning går vidare
-            log.warn("Anthropic svarade " + e.status() + ": " + e.bodyExcerpt());
+            log.warn("Anthropic svarade " + e.status() + ": " + e.safeExcerpt());
             return Optional.empty();
         }
     }

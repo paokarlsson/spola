@@ -25,22 +25,41 @@ import java.util.Objects;
  *
  * <p>{@link #bodyExcerpt()} is the first at most {@value #MAX_EXCERPT} characters of the body,
  * without control characters, line separators or bidi controls, so it cannot forge or break a
- * log line. For a status outside 2xx the client reads at most the first
+ * log line; it hides nothing, and {@link #safeExcerpt()} is the same with the request's values
+ * hidden (below). For a status outside 2xx the client reads at most the first
  * {@value RestClient#MAX_ERROR_BODY} bytes of the body and then closes the response without
  * waiting for the rest.
  *
  * <p><b>The server's text and the request's values.</b> {@link #bodyExcerpt()} is what the server
  * sent, so it holds whatever the server quotes of the request: some servers send back the body
- * (a validation error with the input) or the headers (an echo endpoint). {@link #getMessage()}
- * shows the start of the excerpt with every such value hidden: each whole occurrence of a header
+ * (a validation error with the input) or the headers (an echo endpoint), and some name the key
+ * they refused ("Invalid token: ..."). {@link #safeExcerpt()} is the excerpt with every such
+ * value hidden, and {@link #getMessage()} shows its start: each whole occurrence of a header
  * value that the caller gave, of the query or of the request body (as sent) is
- * {@code <hidden>}, and so is a value cut off where the client stopped reading. A part of a value
- * that the server sends back on its own (one member of the body, one parameter of the query) or
- * changes first (re-encoded JSON) is not recognised and shows. The search is for the text as it
- * is, so a short value (a header {@code X-Page: 2}) also hides the same text where the server
- * wrote it on its own; {@link #bodyExcerpt()} still has it. {@link #getCause()}, when there is
- * one, is {@code spola.json}'s exception, whose message can quote up to 40 characters of the
- * response.
+ * {@code <hidden>}, and so is a value cut off where the client stopped reading. For an
+ * {@code Authorization} or {@code Proxy-Authorization} header (the name in any case) the
+ * credentials count as values too: the text after the first space (after the scheme, such as
+ * {@code Bearer} or {@code bearer}), and for the scheme {@code Basic} the Base64-decoded
+ * {@code user:password} and the password after the first {@code :}. Every other header is hidden
+ * only whole. A part of a value that the server sends back on its own (one member of the body,
+ * one parameter of the query, the part after a space in another header) or changes first
+ * (re-encoded JSON) is not recognised and shows. The search is for the text as it is, so a short
+ * value (a header {@code X-Page: 2}) also hides the same text where the server wrote it on its
+ * own; {@link #bodyExcerpt()} still has it. Log {@link #safeExcerpt()} or {@link #getMessage()},
+ * never {@link #bodyExcerpt()}:
+ *
+ * <pre>{@code
+ * try {
+ *     return Optional.of(anthropic.post("/v1/messages").json(request, CODEC).retrieve(RESPONSE));
+ * } catch (RestClientResponseException e) {
+ *     log.warn("Anthropic answered " + e.status() + ": " + e.safeExcerpt());
+ *     return Optional.empty();
+ * }
+ * }</pre>
+ *
+ * <p>{@link #getCause()}, when there is one, is {@code spola.json}'s exception, which hides
+ * nothing and can quote the response: up to 40 characters per value in up to 100 problems (and
+ * 200 characters of an exception's message).
  */
 public final class RestClientResponseException extends RestClientException {
 
@@ -55,19 +74,22 @@ public final class RestClientResponseException extends RestClientException {
     private final int status;
     private final transient HttpHeaders headers; // not serializable; empty after deserialization
     private final String bodyExcerpt;
+    private final String safeExcerpt;
 
     private RestClientResponseException(String method, URI uri, int status, HttpHeaders headers, String bodyExcerpt,
-            String shownExcerpt, String what, Throwable cause) {
-        super(method, uri, "status " + status + ": " + what + (shownExcerpt.isEmpty() ? "" : ": " + shownExcerpt),
+            String safeExcerpt, String what, Throwable cause) {
+        super(method, uri, "status " + status + ": " + what + (safeExcerpt.isEmpty() ? "" : ": " + safeExcerpt),
                 cause);
         this.status = status;
         this.headers = Objects.requireNonNull(headers, "headers");
         this.bodyExcerpt = bodyExcerpt;
+        this.safeExcerpt = safeExcerpt;
     }
 
     /**
-     * The exception for a response to {@code request} that cannot be used. The message shows the
-     * excerpt with the request's values hidden; {@link #bodyExcerpt()} has it as it is.
+     * The exception for a response to {@code request} that cannot be used. The message and
+     * {@link #safeExcerpt()} show the excerpt with the request's values hidden;
+     * {@link #bodyExcerpt()} has it as it is.
      *
      * @param request the request
      * @param status  the status
@@ -125,12 +147,32 @@ public final class RestClientResponseException extends RestClientException {
      *       limit), gives an empty string.</li>
      * </ul>
      *
-     * <p>The body comes from the server: it may quote what the request sent, header values and
-     * body included. Unlike {@link #getMessage()}, the excerpt hides nothing.
+     * <p><b>It is raw.</b> The body comes from the server: it may quote what the request sent,
+     * header values (API keys), the query and the body included. Unlike {@link #getMessage()}
+     * and {@link #safeExcerpt()}, this excerpt hides nothing, so do not log it; log
+     * {@link #safeExcerpt()} or {@link #getMessage()}.
      *
      * @return the excerpt, never {@code null}
      */
     public String bodyExcerpt() {
         return bodyExcerpt;
+    }
+
+    /**
+     * The excerpt to log: {@link #bodyExcerpt()} with the request's values hidden as in
+     * {@link #getMessage()}. Every whole occurrence of a value of the request (a header value
+     * that the caller gave, the credentials of {@code Authorization} and
+     * {@code Proxy-Authorization}, the query, the request body), and a value cut off where the
+     * client stopped reading, is {@code <hidden>}; see the class description for what is not
+     * recognised. Otherwise it follows the rules of {@link #bodyExcerpt()}: at most
+     * {@value #MAX_EXCERPT} characters of the body (counted after the hiding), no line breaks,
+     * controls or bidi controls, and {@code ...} after a cut. Unlike the message, it keeps
+     * letters outside ASCII and is not shortened to fit {@link RestClientException#MAX_MESSAGE}.
+     *
+     * @return the excerpt with the request's values hidden, never {@code null}; empty when
+     *         {@link #bodyExcerpt()} is
+     */
+    public String safeExcerpt() {
+        return safeExcerpt;
     }
 }

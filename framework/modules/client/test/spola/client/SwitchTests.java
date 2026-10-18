@@ -19,7 +19,7 @@ final class SwitchTests {
             return "ok " + client.get(path).retrieveJson();
         } catch (RestClientException e) {
             return switch (e) {
-                case RestClientResponseException r -> "status " + r.status() + ": " + r.bodyExcerpt();
+                case RestClientResponseException r -> "status " + r.status() + ": " + r.safeExcerpt();
                 case RestClientTransportException t -> t.timedOut() ? "timed out" : "no response";
             };
         }

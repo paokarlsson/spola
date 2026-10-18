@@ -14,7 +14,7 @@ import java.util.Objects;
  *     return client.get("/items/7").retrieve(ITEM);
  * } catch (RestClientException e) {
  *     String what = switch (e) {
- *         case RestClientResponseException r -> "status " + r.status() + ": " + r.bodyExcerpt();
+ *         case RestClientResponseException r -> "status " + r.status() + ": " + r.safeExcerpt();
  *         case RestClientTransportException t -> t.timedOut() ? "timed out" : "no response";
  *     };
  *     ...
@@ -24,7 +24,8 @@ import java.util.Objects;
  * <ul>
  *   <li>{@link RestClientResponseException}: a response came but cannot be used (a status
  *       outside 2xx, a body over the limit, an empty body or one that is not JSON or does not fit
- *       the codec). It has {@code status()}, {@code headers()} and {@code bodyExcerpt()}.</li>
+ *       the codec). It has {@code status()}, {@code headers()}, {@code safeExcerpt()} (to log)
+ *       and {@code bodyExcerpt()} (raw).</li>
  *   <li>{@link RestClientTransportException}: no usable response came (connection refused, TLS,
  *       a broken connection or response, the timeout, an interrupt). It has
  *       {@code timedOut()}.</li>
@@ -45,9 +46,10 @@ import java.util.Objects;
  * got), and that text reaches a failure in two ways, which the module handles:
  *
  * <ul>
- *   <li>a response's excerpt: the message hides every whole occurrence of a value of the
- *       request, as {@link RestClientResponseException} describes; a part of a value that the
- *       server sends back on its own is not recognised and shows;</li>
+ *   <li>a response's excerpt: the message and {@code safeExcerpt()} hide every whole
+ *       occurrence of a value of the request, and the credentials of an {@code Authorization}
+ *       header on their own, as {@link RestClientResponseException} describes; a part of a value
+ *       that the server sends back on its own is not recognised and shows;</li>
  *   <li>the text of an exception from {@code java.net.http}: the message and the cause keep it
  *       only for failures whose text never comes from the server, as
  *       {@link RestClientTransportException} describes.</li>

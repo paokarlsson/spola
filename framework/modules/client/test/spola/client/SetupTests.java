@@ -16,7 +16,10 @@ import java.util.function.UnaryOperator;
 import spola.json.JsonObject;
 import spola.test.Suite;
 
-/** Criterion 12: every problem in build(), and the same checks in header(...) and in paths. */
+/**
+ * Criterion 12: every problem in build(), and the same checks in header(...) and in paths.
+ * Mission 15d (K4): a segment . or .. (also %2e, %2E) in a path or in the base URI is refused.
+ */
 final class SetupTests {
 
     private SetupTests() {
@@ -70,6 +73,31 @@ final class SetupTests {
                 List.of("outside ASCII", "nyckel-å", "\"nyckel-\" is followed by a character outside ASCII"),
                 List.of("a separator first", "(x)", "it starts with '('"),
                 List.of("a slash", "a/b", "\"a\" is followed by '/'"));
+    }
+
+    static final String DOT_SEGMENT = "the path has a segment that is . or .. (also as %2e or %2E, or with"
+            + " ;parameters), which is not allowed: a server resolves it to another path";
+
+    static final String BASE_DOT_SEGMENT = "baseUri has a path with a segment that is . or .. (also as %2e or %2E,"
+            + " or with ;parameters), which is not allowed: a server resolves it to another path";
+
+    /**
+     * Paths with a dot segment, as the mission lists them and more: at the start, the end,
+     * encoded, with a query, from URLEncoder, and with path parameters (Tomcat and Jetty drop
+     * them before they resolve dot segments).
+     */
+    static List<String> dotSegmentPaths() {
+        return List.of("/a/../b", "/..", "/./x", "/a/%2e%2e/b", "/a/%2E/b", "/.", "/a/..", "/a/.", "/../", "/./",
+                "/%2e", "/%2E%2e", "/a/.%2e/b", "/a/%2E./b", "//..//x", "/a/../b?q=1", "/..?q=../x", "/v1/threads/"
+                        + java.net.URLEncoder.encode("..", java.nio.charset.StandardCharsets.UTF_8) + "/runs",
+                "/a/..;/b", "/..;x", "/a/.;jsessionid=1/b", "/a/%2e%2e;p=1", "/a/..;");
+    }
+
+    /** Paths with dots that are not a whole segment, path parameters that are not one, and dots in the query only. */
+    static List<String> dottedPaths() {
+        return List.of("/a..b", "/...", "/a.b", "/.x", "/x.", "/..x", "/x..", "/a/.../b", "/....", "/.well-known/x",
+                "/%2e%2e%2e", "/%2ex", "/x%2E", "/v1.0/x", "/x?a=../b", "/x?..", "/x?q=/./", "/a;../b", "/a;v=1/b",
+                "/...;x", "/a..;b", "/;x");
     }
 
     static Suite tests() {
@@ -217,9 +245,55 @@ final class SetupTests {
                 test("valid paths: sub-delims, :, @, percent-encoding, an empty query and ? in the query", () -> {
                     try (var client = RestClient.builder().baseUri(BASE).build()) {
                         for (var path : List.of("/", "/v1/x", "/a:b@c!$&'()*+,;=-._~", "/caf%C3%A9", "/x?", "/x?a=1&b=/?c",
-                                "//other.example/x", "/x/../y")) {
+                                "//other.example/x", "/x/.../y")) {
                             assertTrue(client.get(path).toString().contains("GET "), path);
                         }
+                    }
+                }),
+                parameterized("a path with a segment . or .. (also %2e or %2E) is refused at the call, with a fixed text",
+                        dotSegmentPaths(), path -> {
+                            try (var client = RestClient.builder().baseUri(BASE).build()) {
+                                for (var call : List.<spola.test.Body>of(() -> client.get(path), () -> client.post(path),
+                                        () -> client.put(path), () -> client.patch(path), () -> client.delete(path))) {
+                                    var e = assertThrows(IllegalArgumentException.class, call);
+                                    assertEquals(DOT_SEGMENT, e.getMessage());
+                                }
+                            }
+                        }),
+                parameterized("dots that are not a whole segment are accepted and sent as they stand", dottedPaths(),
+                        path -> {
+                            try (var recorder = RequestTests.Recorder.start();
+                                    var client = RestClient.builder().baseUri(recorder.base("/api")).build()) {
+                                assertEquals(RequestTests.OK, client.get(path).retrieveJson());
+                                assertEquals("/api" + path, recorder.last().target());
+                            }
+                        }),
+                parameterized("a baseUri with a segment . or .. (also %2e or %2E) is refused by build(), with a fixed text",
+                        List.of("https://h/..", "https://h/.", "https://h/api/..", "https://h/api/../", "https://h/api/../x",
+                                "https://h/./api", "https://h/api/./", "https://h/api/%2e%2e", "https://h/api/%2E",
+                                "https://h/api/.%2E/x", "http://127.0.0.1:8080/a/%2E%2e", "https://h/api/..;x/v1"), base -> {
+                            var e = assertThrows(IllegalArgumentException.class,
+                                    () -> RestClient.builder().baseUri(URI.create(base)).build());
+                            assertEquals(BASE_DOT_SEGMENT, e.getMessage());
+                        }),
+                parameterized("a baseUri with dots that are not a whole segment is accepted", List.of("https://h/a..b",
+                        "https://h/...", "https://h/a.b", "https://h/v1.0/api", "https://h/api/.../x", "https://h/.well-known",
+                        "https://h/api/%2e%2e%2e", "https://h.example.com:8443/x.", "https://h/api;v=1"), base -> {
+                            try (var client = RestClient.builder().baseUri(URI.create(base)).build()) {
+                                assertTrue(client.toString().contains("baseUri "), client.toString());
+                            }
+                        }),
+                test("a dot segment with another problem: one line each, and the fixed text quotes nothing", () -> {
+                    var e = assertThrows(IllegalArgumentException.class, () -> RestClient.builder()
+                            .baseUri(URI.create("ftp://h/api/../" + SecretTests.QUERY_MARKER)).build());
+                    assertEquals(List.of("baseUri has the scheme ftp: only http and https are supported", BASE_DOT_SEGMENT),
+                            e.getMessage().lines().toList());
+                    try (var client = RestClient.builder().baseUri(BASE).build()) {
+                        var dots = assertThrows(IllegalArgumentException.class,
+                                () -> client.get("/v1/" + SecretTests.KEY_MARKER + "/../x?key=" + SecretTests.QUERY_MARKER));
+                        assertEquals(DOT_SEGMENT, dots.getMessage());
+                        var space = assertThrows(IllegalArgumentException.class, () -> client.get("/../a b"));
+                        assertTrue(space.getMessage().contains("has U+0020 (space) at index 5"), space.getMessage());
                     }
                 }),
                 test("null gives NullPointerException", () -> {
