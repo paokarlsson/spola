@@ -40,6 +40,12 @@ final class Support {
         }
     }
 
+    /**
+     * Five seconds for every server timeout. ConcurrencyTests relies on the idleTimeout: in about
+     * one run of three, a call among 200 concurrent ones completes only when the server closes an
+     * idle connection (the known stall in PROGRESS.md, also seen with java.net.http alone), so a
+     * longer idleTimeout makes that test slower.
+     */
     static final HttpTimeouts FAST = new HttpTimeouts(Duration.ofSeconds(5), Duration.ofSeconds(5),
             Duration.ofSeconds(5), Duration.ofSeconds(5), Duration.ofSeconds(5));
 

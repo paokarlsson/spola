@@ -12,8 +12,11 @@ import java.util.Optional;
  */
 final class Uris {
 
-    /** The longest part of a path quoted in a message. */
+    /** The longest part of a path quoted in a message, after escaping. */
     private static final int MAX_QUOTED_PATH = 200;
+
+    /** The longest scheme quoted in a message. */
+    private static final int MAX_QUOTED_SCHEME = 20;
 
     private Uris() {
     }
@@ -30,7 +33,7 @@ final class Uris {
         }
         var scheme = base.getScheme().toLowerCase(Locale.ROOT);
         if (!scheme.equals("http") && !scheme.equals("https")) {
-            problems.add("baseUri has the scheme " + Text.ascii(Text.limit(base.getScheme(), 20))
+            problems.add("baseUri has the scheme " + Text.limit(Text.ascii(base.getScheme()), MAX_QUOTED_SCHEME)
                     + ": only http and https are supported");
         }
         if (base.isOpaque()) {
@@ -56,7 +59,7 @@ final class Uris {
         var path = base.getRawPath() == null ? "" : base.getRawPath();
         int bad = firstInvalid(path, false);
         if (bad >= 0) {
-            problems.add("baseUri has a path with " + describe(path.charAt(bad)) + " at index " + bad
+            problems.add("baseUri has a path with " + Text.describe(path.charAt(bad)) + " at index " + bad
                     + ", which is not allowed in a URI path (RFC 3986 3.3)");
         }
         return problems;
@@ -86,7 +89,7 @@ final class Uris {
         if (fragment >= 0 && fragment < pathEnd) {
             pathEnd = fragment;
         }
-        var shown = "\"" + Text.ascii(Text.limit(path.substring(0, pathEnd), MAX_QUOTED_PATH)) + "\"";
+        var shown = "\"" + Text.limit(Text.ascii(path.substring(0, pathEnd)), MAX_QUOTED_PATH) + "\"";
         if (!path.startsWith("/")) {
             return Optional.of("the path " + shown + " must start with /");
         }
@@ -95,7 +98,7 @@ final class Uris {
         }
         int bad = firstInvalid(path.substring(0, pathEnd), false);
         if (bad >= 0) {
-            return Optional.of("the path " + shown + " has " + describe(path.charAt(bad)) + " at index " + bad
+            return Optional.of("the path " + shown + " has " + Text.describe(path.charAt(bad)) + " at index " + bad
                     + ", which is not allowed in a URI path (RFC 3986 3.3); percent-encode it");
         }
         if (query >= 0) {
@@ -138,13 +141,6 @@ final class Uris {
 
     private static boolean isHex(char c) {
         return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
-    }
-
-    private static String describe(char c) {
-        if (c >= 0x21 && c <= 0x7E) {
-            return c == '\'' ? "\"'\"" : "'" + c + "'";
-        }
-        return c < 0x80 ? String.format("U+%04X", (int) c) : "a character outside ASCII";
     }
 
     /** {@code uri} without query and fragment, as one line of ASCII: what messages show. */

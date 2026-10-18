@@ -11,7 +11,6 @@ import java.net.http.HttpHeaders;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.net.http.HttpTimeoutException;
-import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -100,9 +99,22 @@ import spola.json.JsonLimits;
  * that is already interrupted sends nothing.
  *
  * <h2>Secrets</h2>
- * No header value, query or request body appears in any message, {@code toString()} or cause that
- * the module creates; {@link #toString()} shows the names of the default headers only. The module
- * logs nothing.
+ * The module logs nothing. {@link #toString()} and {@link RestRequest#toString()} show the names
+ * of the headers only, and the {@link IllegalArgumentException}s of the setup never quote a
+ * header value, a query or the base URI. The module never puts a header value, the query or the
+ * request body into a failure; only {@link RestClientException#uri()} has the query. A server can
+ * send them back, though, and the module keeps them out of a logged exception as far as it can
+ * recognise them:
+ * <ul>
+ *   <li>{@link RestClientResponseException#getMessage()} shows {@code <hidden>} for every whole
+ *       occurrence of them in the excerpt. A part of one that the server sends back on its own,
+ *       or changes first, shows. The {@code spola.json} exception that is the cause when the
+ *       body is not JSON or does not fit the codec can quote up to 40 characters of the
+ *       response.</li>
+ *   <li>A {@link RestClientTransportException} keeps the text of a JDK exception only when that
+ *       text cannot come from the server.</li>
+ *   <li>{@link RestClientResponseException#bodyExcerpt()} is the server's text as it is.</li>
+ * </ul>
  *
  * <h2>Deviations from Spring's {@code RestClient}</h2>
  * <ul>
@@ -137,6 +149,9 @@ public final class RestClient implements AutoCloseable {
 
     /** How much of a body outside 2xx is read for the excerpt: the first 8 KiB. */
     public static final int MAX_ERROR_BODY = 8 << 10;
+
+    /** The longest {@code Content-Length} quoted in a message. */
+    private static final int MAX_QUOTED_LENGTH = 40;
 
     private final HttpClient http;
     private final URI baseUri;
@@ -315,31 +330,30 @@ public final class RestClient implements AutoCloseable {
      * anything else.
      */
     Success exchange(RestRequest request) {
-        var response = send(request);
-        int status = response.statusCode();
-        var body = response.body();
-        if (status < 200 || status > 299) {
-            throw new RestClientResponseException(request.method(), request.uri(), status, response.headers(),
-                    Text.excerpt(body.bytes(), body.length()), statusText(status) + notRead(body), null);
-        }
-        if (body.ending() == BodyReader.Ending.DECLARED_TOO_LARGE) {
-            throw new RestClientResponseException(request.method(), request.uri(), status, response.headers(), "",
-                    "the response body is larger than maxResponseSize" + notRead(body), null);
-        }
-        if (body.ending() == BodyReader.Ending.TOO_LARGE) {
-            throw new RestClientResponseException(request.method(), request.uri(), status, response.headers(),
-                    Text.excerpt(body.bytes(), body.length()), "the response body is larger than maxResponseSize ("
-                            + maxResponseSize + " bytes); reading stopped there", null);
+        var received = send(request);
+        int status = received.status();
+        var body = received.body();
+        boolean success = status >= 200 && status <= 299;
+        var problem = switch (body.ending()) {
+            case COMPLETE -> success ? null : statusText(status);
+            case CUT -> statusText(status);
+            case TOO_LARGE -> "the response body is larger than maxResponseSize (" + maxResponseSize
+                    + " bytes); reading stopped there";
+            case DECLARED_TOO_LARGE -> (success ? "the response body is larger than maxResponseSize" : statusText(status))
+                    + " (Content-Length " + declaredLength(received.headers()) + " is over maxResponseSize "
+                    + maxResponseSize + " bytes; the body was not read)";
+        };
+        if (problem != null) {
+            throw RestClientResponseException.of(request, status, received.headers(), body.bytes(), body.length(),
+                    body.cut(), problem, null);
         }
         var bytes = body.length() == body.bytes().length ? body.bytes() : Arrays.copyOf(body.bytes(), body.length());
-        return new Success(status, response.headers(), bytes);
+        return new Success(status, received.headers(), bytes);
     }
 
-    private String notRead(BodyReader.Body body) {
-        return body.ending() == BodyReader.Ending.DECLARED_TOO_LARGE
-                ? " (Content-Length " + body.declared() + " is over maxResponseSize " + maxResponseSize
-                        + " bytes; the body was not read)"
-                : "";
+    /** The {@code Content-Length} of a response that was refused for it: digits only, cut if long. */
+    private static String declaredLength(HttpHeaders headers) {
+        return Text.limit(Text.ascii(headers.firstValue("Content-Length").orElse("")), MAX_QUOTED_LENGTH);
     }
 
     private static String statusText(int status) {
@@ -356,7 +370,7 @@ public final class RestClient implements AutoCloseable {
     }
 
     /** Sends the request and waits for the response and its body, within the timeout. */
-    private HttpResponse<BodyReader.Body> send(RestRequest request) {
+    private BodyReader.Received send(RestRequest request) {
         if (closed) {
             throw new IllegalStateException("the RestClient is closed");
         }
@@ -386,7 +400,8 @@ public final class RestClient implements AutoCloseable {
             lifecycle.readLock().unlock();
         }
         try {
-            return pending.get(nanos(timeout), TimeUnit.NANOSECONDS);
+            var response = pending.get(nanos(timeout), TimeUnit.NANOSECONDS);
+            return new BodyReader.Received(response.statusCode(), response.headers(), response.body());
         } catch (TimeoutException e) {
             abort(pending, reader);
             throw new RestClientTransportException(method, uri, "timed out after " + millis(timeout) + " ms", true,
@@ -398,29 +413,18 @@ public final class RestClient implements AutoCloseable {
                     e);
         } catch (ExecutionException | CancellationException e) {
             abort(pending, reader);
+            var refused = reader.refusedUnread(); // a Content-Length too long for java.net.http's long
+            if (refused.isPresent()) {
+                return refused.get();
+            }
             var failure = e instanceof ExecutionException && e.getCause() != null ? e.getCause() : e;
-            throw transportFailure(method, uri, failure, secrets(request, headers));
+            throw transportFailure(method, uri, failure, request.secrets());
         }
     }
 
     private static void abort(CompletableFuture<?> pending, BodyReader reader) {
         reader.abort();
         pending.cancel(true); // aborts the exchange and closes the connection
-    }
-
-    /** Every value the request carries that must not show: the header values, the query and the body. */
-    private static List<String> secrets(RestRequest request, List<Header> headers) {
-        var secrets = new ArrayList<String>();
-        for (var header : headers) {
-            secrets.add(header.value());
-        }
-        if (request.uri().getRawQuery() != null) {
-            secrets.add(request.uri().getRawQuery());
-        }
-        if (request.body() != null) {
-            secrets.add(new String(request.body(), StandardCharsets.UTF_8)); // compact JSON: one line
-        }
-        return secrets;
     }
 
     private RestClientTransportException transportFailure(String method, URI uri, Throwable failure,
@@ -432,8 +436,8 @@ public final class RestClient implements AutoCloseable {
         if (failure instanceof Error error) {
             throw error;
         }
-        boolean clean = Causes.isClean(failure, secrets);
-        var cause = clean ? failure : Causes.safe(failure, secrets);
+        boolean textShown = Causes.textIsSafe(failure, secrets);
+        var cause = textShown ? failure : Causes.withoutText(failure);
         var what = switch (failure) {
             case HttpConnectTimeoutException _ -> "connect timed out after " + millis(connectTimeout) + " ms";
             case HttpTimeoutException _ -> "timed out";
@@ -444,7 +448,7 @@ public final class RestClient implements AutoCloseable {
             case CancellationException _ -> "the request was cancelled";
             default -> "the request failed";
         };
-        return new RestClientTransportException(method, uri, what + " (" + Causes.describe(failure, clean) + ")",
+        return new RestClientTransportException(method, uri, what + " (" + Causes.describe(failure, textShown) + ")",
                 failure instanceof HttpTimeoutException, cause);
     }
 
@@ -502,8 +506,9 @@ public final class RestClient implements AutoCloseable {
          * with a space or tab. Refused in any case: {@code Connection}, {@code Content-Length},
          * {@code Content-Type}, {@code Expect}, {@code Host}, {@code Keep-Alive},
          * {@code Proxy-Connection}, {@code TE}, {@code Trailer}, {@code Transfer-Encoding} and
-         * {@code Upgrade}. The same name twice, in any case, is an error. The value never appears
-         * in a message or {@code toString()}.
+         * {@code Upgrade}. The same name twice, in any case, is an error. The module never writes
+         * the value into a message or {@code toString()}, and a failure's message hides it where
+         * the server sends it back whole.
          *
          * @param name  the name, such as {@code x-api-key}
          * @param value the value

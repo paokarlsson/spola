@@ -1,0 +1,14 @@
+fix(client): keep request values out of messages and causes
+
+Response-exception messages now write <hidden> for every whole header
+value, query and body that a server echoes; bodyExcerpt() stays raw.
+Transport causes keep JDK text only for socket, TLS and timeout errors
+and otherwise become text-free IOExceptions, so non-ASCII bodies never
+leak. A Content-Length of 19+ digits now fails fast with the status.
+
+Gauntlet-Run: 20261014-0332-rest-klient
+Gauntlet-Round: 2/5
+Gauntlet-Verdict: PASS (0 blocker, 0 major, 18 minor upheld)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_016R1SyuZe48AGwQWbo2Xdkz

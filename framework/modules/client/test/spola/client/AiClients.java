@@ -17,7 +17,7 @@ final class AiClients implements AutoCloseable {
     static final URI ANTHROPIC = URI.create("https://api.anthropic.com");
     static final URI OPENAI = URI.create("https://api.openai.com");
 
-    // the app's logger
+    // appens logger
     interface Log {
         void warn(String message);
     }
@@ -41,7 +41,7 @@ final class AiClients implements AutoCloseable {
                 field("text", STRING, TextBlock::text));
     }
 
-    // the API adds members over time: read the ones the app uses
+    // API:t lägger till medlemmar med tiden: läs de som appen använder
     record MessagesResponse(String id, List<TextBlock> content, String stopReason) {
         static final JsonCodec<MessagesResponse> CODEC = JsonCodec.object(MessagesResponse::new,
                 field("id", STRING, MessagesResponse::id),
@@ -79,7 +79,7 @@ final class AiClients implements AutoCloseable {
         try {
             return Optional.of(anthropic.post("/v1/messages").json(request, MessagesRequest.CODEC)
                     .retrieve(MessagesResponse.CODEC));
-        } catch (RestClientResponseException e) { // a timeout or a refused connection goes on up
+        } catch (RestClientResponseException e) { // en tidsgräns eller nekad anslutning går vidare
             log.warn("Anthropic svarade " + e.status() + ": " + e.bodyExcerpt());
             return Optional.empty();
         }

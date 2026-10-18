@@ -56,7 +56,7 @@ final class HeaderRules {
             if (!isTchar(c)) {
                 var before = name.substring(0, Math.min(i, MAX_QUOTED_NAME)) + (i > MAX_QUOTED_NAME ? "..." : "");
                 return Optional.of("a header name is not a token (RFC 9110 5.6.2): "
-                        + (i == 0 ? "it starts with " : "\"" + before + "\" is followed by ") + describe(c));
+                        + (i == 0 ? "it starts with " : "\"" + before + "\" is followed by ") + Text.describe(c));
             }
         }
         return Optional.empty();
@@ -68,7 +68,7 @@ final class HeaderRules {
             char c = value.charAt(i);
             boolean allowed = (c >= 0x21 && c <= 0x7E) || c == ' ' || c == '\t';
             if (!allowed) {
-                return Optional.of("has " + (c < 0x20 || c == 0x7F ? describe(c) : "a character outside ASCII")
+                return Optional.of("has " + Text.describe(c)
                         + " at index " + i + " (allowed: visible ASCII, space and tab)");
             }
         }
@@ -79,22 +79,6 @@ final class HeaderRules {
             return Optional.of("ends with a space or tab");
         }
         return Optional.empty();
-    }
-
-    /** A character for a message: {@code ':'} for printable ASCII, {@code U+000D (CR)} otherwise. */
-    private static String describe(char c) {
-        if (c >= 0x21 && c <= 0x7E) {
-            return c == '\'' ? "\"'\"" : "'" + c + "'";
-        }
-        var name = switch (c) {
-            case '\r' -> " (CR)";
-            case '\n' -> " (LF)";
-            case '\0' -> " (NUL)";
-            case '\t' -> " (tab)";
-            case ' ' -> " (space)";
-            default -> "";
-        };
-        return c < 0x80 ? String.format("U+%04X", (int) c) + name : "a character outside ASCII";
     }
 
     private static boolean isBlank(char c) {

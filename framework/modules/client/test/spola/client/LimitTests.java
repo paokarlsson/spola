@@ -7,11 +7,13 @@ import static spola.test.Assertions.assertEquals;
 import static spola.test.Assertions.assertNull;
 import static spola.test.Assertions.assertThrows;
 import static spola.test.Assertions.assertTrue;
+import static spola.test.Tests.parameterized;
 import static spola.test.Tests.suite;
 import static spola.test.Tests.test;
 
 import java.io.IOException;
 import java.time.Duration;
+import java.util.List;
 import java.util.function.Function;
 import spola.http.Response;
 import spola.json.JsonString;
@@ -100,6 +102,37 @@ final class LimitTests {
                         awaitClosed(server, 1, start);
                     }
                 }),
+                parameterized("a Content-Length of 19 digits or more fails at once with the status, also one too long"
+                        + " for a long", List.of("1000000000000000000", "9223372036854775807", "9223372036854775808",
+                                "99999999999999999999", "1" + "0".repeat(100)), length -> {
+                            for (int status : new int[] {200, 500}) {
+                                try (var server = new Support.RawServer((socket, raw) -> {
+                                    var in = socket.getInputStream();
+                                    if (raw.readRequest(in) != null) {
+                                        socket.getOutputStream().write(ascii(head(status, "Content-Type", "application/json",
+                                                "Content-Length", length)));
+                                        socket.getOutputStream().flush();
+                                        raw.awaitClose(in);
+                                    }
+                                }); var client = RestClient.builder().baseUri(server.base()).maxResponseSize(LIMIT)
+                                        .timeout(Duration.ofSeconds(30)).build()) {
+                                    long start = System.nanoTime();
+                                    var e = assertThrows(RestClientResponseException.class,
+                                            () -> client.get("/x").retrieveJson());
+                                    assertTrue(since(start) < 2_000, "took " + since(start) + " ms");
+                                    assertEquals(status, e.status());
+                                    assertEquals("", e.bodyExcerpt());
+                                    assertEquals(length, e.headers().firstValue("Content-Length").orElseThrow());
+                                    var shown = length.length() <= 40 ? length : length.substring(0, 37) + "...";
+                                    assertTrue(e.getMessage().endsWith("(Content-Length " + shown + " is over maxResponseSize"
+                                            + " 1024 bytes; the body was not read)"), e.getMessage());
+                                    if (length.length() <= 19 && length.compareTo("9223372036854775807") <= 0) {
+                                        // java.net.http fails a longer one itself and leaves the connection open
+                                        awaitClosed(server, 1, start);
+                                    }
+                                }
+                            }
+                        }),
                 test("a chunked body that never ends fails within 2 s and the connection is closed", () -> {
                     try (var server = new Support.RawServer((socket, raw) -> {
                         var in = socket.getInputStream();

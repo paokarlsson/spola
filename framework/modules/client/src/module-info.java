@@ -31,8 +31,10 @@
  * </ul>
  *
  * <p>The client speaks HTTP/1.1, never follows redirects, uses no proxy and no cookies, and
- * reads every response body as JSON in UTF-8 whatever its {@code Content-Type}. No header value
- * appears in any message, {@code toString()} or cause that the module creates.
+ * reads every response body as JSON in UTF-8 whatever its {@code Content-Type}. The module never
+ * writes a header value, the query or the request body into a message, {@code toString()} or
+ * cause, and a failure's message hides them where the server sends them back (see
+ * {@link spola.client.RestClientException}).
  *
  * <p>At run time the module needs {@code java.net.http} and {@code spola.json} only; it uses no
  * reflection and logs nothing. {@code requires static spola.web} is for the module's tests only

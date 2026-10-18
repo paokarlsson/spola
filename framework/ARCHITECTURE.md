@@ -3451,8 +3451,8 @@ motsvarigheten till Spring Frameworks `RestClient`. En delbar, trådsäker klien
 `java.net.http.HttpClient` och `spola.json` som skickar en JSON-kropp med några huvuden och ger
 tillbaka ett typat svar via en `JsonCodec`, eller ett typat fel med status. Svaret är data
 utifrån, så klienten har en tidsgräns för hela anropet och en storleksgräns för kroppen, och
-inga huvudvärden syns i fel eller `toString`. Klienterna för Anthropic och OpenAI stannar i
-appen.
+modulen skriver aldrig huvudvärden i fel eller `toString`. Klienterna för Anthropic och OpenAI
+stannar i appen.
 
 ### API (paket `spola.client`)
 
@@ -3467,8 +3467,9 @@ appen.
 
 Interna klasser: `BodyReader` (`BodyHandler` och `BodySubscriber` som läser kroppen inom
 gränserna och kan avbrytas från den anropande tråden), `HeaderRules` (namn, värden och förbjudna
-namn), `Uris` (bas-URI, sökvägar och URI:n i meddelanden), `Text` (utdraget, escaping och
-ASCII-meddelanden) och `Causes` (orsaker som inte citerar förfrågans hemligheter).
+namn), `Uris` (bas-URI, sökvägar och URI:n i meddelanden), `Text` (utdraget, dolda värden,
+escaping och ASCII-meddelanden) och `Causes` (vilka undantag från `java.net.http` som får behålla
+sin text, och kopior utan text av resten).
 
 ### Beslut
 
@@ -3541,7 +3542,11 @@ ASCII-meddelanden) och `Causes` (orsaker som inte citerar förfrågans hemlighet
 - **Storleksgränsen i en egen `BodySubscriber`.** Prenumeranten begär obegränsat men behåller
   högst gränsen: för 2xx `maxResponseSize`, annars `min(8 KiB, maxResponseSize)`. Ett
   `Content-Length` över `maxResponseSize` (för vilken status som helst) avbryter innan en byte
-  läses. Går en 2xx-kropp förbi gränsen, eller når ett felsvar sina 8 KiB, avbryts prenumerationen
+  läses. Ett värde med bara siffror som är för långt för en `long` räknas som `Long.MAX_VALUE`,
+  alltså över gränsen; `java.net.http` tar självt värden upp till `Long.MAX_VALUE` och låter
+  utbytet misslyckas för längre värden efter att hanteraren sett huvudena, och då ger klienten
+  samma `RestClientResponseException` med statusen (`BodyReader.refusedUnread`) i stället för
+  ett transportfel. Går en 2xx-kropp förbi gränsen, eller når ett felsvar sina 8 KiB, avbryts prenumerationen
   och `java.net.http` stänger anslutningen (`Http1AsyncReceiver`), så en kropp utan slut kan
   inte hålla anropet. JSON tolkas med `JsonLimits.DEFAULT.withMaxInputSize(maxResponseSize)`.
   `retrieveBodiless()` läser kroppen inom gränserna och kastar den.
@@ -3553,21 +3558,57 @@ ASCII-meddelanden) och `Causes` (orsaker som inte citerar förfrågans hemlighet
   också för en ofullständig sekvens sist); 8 KiB ger alltid fler än 1 000 tecken, så kortningen
   efter 1 000 `char` påverkas inte av var byten tog slut. Ett surrogatpar delas aldrig. Efter
   kortningen skrivs styrtecken (U+0000–U+001F, U+007F–U+009F), U+2028, U+2029, bidi-tecknen
-  (U+200E, U+200F, U+202A–U+202E, U+2066–U+2069) och ensamma surrogat som `\uxxxx` (gemena
-  hexsiffror, som `spola.json`); bokstäver utanför ASCII behålls. En kortning slutar med `...`.
+  (alla med Unicode-egenskapen `Bidi_Control`: U+061C, U+200E, U+200F, U+202A–U+202E,
+  U+2066–U+2069) och ensamma surrogat som `\uxxxx` (gemena hexsiffror, som `spola.json`);
+  bokstäver utanför ASCII behålls. En kortning slutar med `...`. Det gör också ett utdrag av en
+  kropp som klienten slutade läsa vid en gräns, även när det är kortare än 1 000 tecken (det
+  händer med en `maxResponseSize` under ungefär 3 KB). Byten kortades då av klienten och inte av
+  servern, så en ofullständig UTF-8-sekvens sist tas bort i stället för att bli U+FFFD; en
+  ofullständig sekvens sist i en kropp som lästes hel är serverns och blir U+FFFD.
 - **`getMessage()`** är `METOD URI: vad` med URI:n utan query och fragment (högst 400 tecken, så
   att statusen alltid får plats), för svarsfel `status N: vad: utdrag`, som en rad utskrivbar ASCII
   (allt annat som `\uxxxx`) på högst 1 000 tecken, aldrig kapad mitt i en escape.
   `RestClient.toString()` och `RestRequest.toString()` visar bara huvudenas namn och URI:n utan
   query.
-- **Orsaker som inte citerar förfrågan.** `java.net.http` kan citera det servern skickade: en
-  server som ekar förfrågan får JDK:ns "Invalid status line" att citera förfrågans rad med query.
-  Därför letar `Causes` efter förfrågans huvudvärden, query och kropp (kompakt JSON, en rad) i
-  orsakens text (och i dess orsaker och undertryckta undantag, högst 64). Finns en är orsaken en `IOException` som namnger
-  originalets klass och har dess stackspår men inte dess text; annars är orsaken JDK:ns undantag
-  och meddelandet har dess text (ASCII, högst 300 tecken). Kontrollen har ingen minsta längd: ett
-  kort värde som `1` gör att fler orsaker byts ut, vilket bara kostar diagnostik. Tidsgränsen har
-  ingen orsak; ett avbrott har `InterruptedException`.
+- **Värden från förfrågan som servern skickar tillbaka.** Modulen skriver aldrig ett huvudvärde,
+  queryn eller kroppen i ett fel, men vanliga servrar skickar tillbaka dem: FastAPI:s 422 har
+  kroppen som `input`, en ekotjänst (httpbins `/anything`) svarar med huvudena, ett problem-svar
+  har sökvägen med query som `instance`. Uppdraget kräver "början av utdraget" i meddelandet och
+  att inga huvudvärden och ingen förfrågningskropp finns i något meddelande, så:
+  - **I svarsfelets meddelande** byts varje hel förekomst av ett värde från förfrågan mot
+    `<hidden>`: värdet av varje huvud som anroparen gav (standardhuvudena och förfrågans egna,
+    inte klientens `application/json`), den råa queryn och kroppen som UTF-8-text och, när den
+    skiljer sig, som ISO-8859-1-text. Det görs i texten av de första 8 KiB före kortningen till
+    1 000 tecken och före escapingen (efter `\uxxxx` skulle en kropp utanför ASCII inte längre
+    hittas), så ett värde som går över gränsen på 1 000 tecken döljs också. Förekomster som
+    överlappar eller ligger intill varandra blir ett `<hidden>`. Slutade klienten läsa vid en
+    gräns döljs också ett slut av texten som är början av ett värde (resten lästes aldrig).
+    `bodyExcerpt()` är serverns text som den är (dess Javadoc varnar för det), så att appen
+    kan se vad servern svarade.
+  - **Gränsen:** sökningen gäller hela värden som de skickades. En del av ett värde som servern
+    skickar för sig (en medlem i kroppen, en parameter i queryn) eller ändrar först (JSON som
+    kodas om med andra mellanrum eller escapes) känns inte igen, och ett kort värde (`X-Page: 2`)
+    döljer samma text också där servern skrev den själv. Att leta efter delar (varje sträng i
+    kroppen) gissar vad som är hemligt och döljer för mycket; det valdes bort. Orsaken från
+    `spola.json` (`JsonParseException`, `JsonMappingException`) behålls som uppdraget kräver och
+    kan citera upp till 40 tecken av svaret. Javadoc i `RestClient`, `RestClientException` och
+    `RestClientResponseException` säger just detta och inget mer.
+- **Transportfelets orsak behåller bara text som inte kan komma från servern.** `java.net.http`
+  citerar det servern skickade: en felaktig statusrad eller ett felaktigt huvud
+  (`ProtocolException`), början av en statusrad före en stängd anslutning (`IOException` med
+  "receiving [...]"), ett `Content-Length` som inte är ett tal. En server som skickar tillbaka
+  förfrågan får dem att citera förfrågans rad med query, dess huvuden eller dess kropp. JDK:n
+  avkodar statusraden som ISO-8859-1, så en kropp med `å` citeras inte som den skickades, och en
+  server kan skicka tillbaka bara en del av ett värde. Att leta efter förfrågans värden i texten
+  missar därför fall, så klassen avgör: bara `SocketException` (som
+  `ConnectException`), `SSLException` och `HttpTimeoutException` har text från JDK:n eller
+  operativsystemet. De är orsaken och meddelandet har deras text (ASCII, högst 300 tecken), om
+  inte texten eller något undantag de bär (orsaker, undertryckta, högst 64) ändå innehåller ett
+  värde från förfrågan. Alla andra undantag byts mot en kedja av `IOException` utan text, en per
+  orsak (högst 16), som namnger originalets klass och har dess stackspår, och meddelandet har
+  bara klassen och rotorsakens klass. Det kostar diagnostik för felaktiga svar, men inget servern
+  skickade når meddelandet eller orsaken. Tidsgränsen har ingen orsak; ett avbrott har
+  `InterruptedException`.
 - **Avbrott.** En tråd som avbryts medan den väntar avbryter utbytet, får flaggan satt igen och
   ett `RestClientTransportException` med `InterruptedException` som orsak. En tråd som redan är
   avbruten skickar ingenting.
@@ -3579,14 +3620,16 @@ ASCII-meddelanden) och `Causes` (orsaker som inte citerar förfrågans hemlighet
   därför antingen före (och `close()` väntar på det) eller får `IllegalStateException`, aldrig
   JDK:ns `IOException("closed")` som ett transportfel (ett test kör 20 trådar mot `close()`).
 - **Ingen loggning och ingen reflektion** i modulen (ett test läser källorna).
-- **Tester** (`spola.client.ClientTests`, ungefär 290 st, ungefär 15 s): behovets kod
+- **Tester** (`spola.client.ClientTests`, ungefär 330 st, ungefär 15 s): behovets kod
   (`AiClients`, README:s första exempel) mot servrar som spelar Anthropic och OpenAI;
   integrationstestet mot en router (`ItemApp` och `ItemApiTests`, README:s andra exempel);
   omdirigeringar till en andra server som inte får någon förfrågan; tomma, HTML-, trasiga och
   felmappade kroppar; gränsen med `Content-Length`, chunked och kroppar utan slut; tidsgränsen
   mot en server som aldrig svarar och en som skickar en byte var 100:e ms; nekad anslutning,
   skräp, avbruten kropp, TLS mot en server som inte talar TLS (första byten 0x16), avbrott;
-  utdraget som tabell; meddelanden och markörer för varje sorts fel (också en server som ekar
-  förfrågan); uppsättningen; vad servern tar emot; 200 virtuella trådar; `close()`; en `switch`
+  utdraget som tabell; meddelanden och markörer för varje sorts fel (också servrar som skickar
+  tillbaka förfrågan: ett 422 med kroppen, ett 200 med huvudena, ett problem med sökvägen och
+  queryn, förfrågan som statusrad, en del av raden och en del av nyckeln i ett felaktigt huvud);
+  `Content-Length` med 19 siffror och fler; uppsättningen; vad servern tar emot; 200 virtuella trådar; `close()`; en `switch`
   utan `default`; README mot testkällorna. Råa servrar på `ServerSocket` används där
   `spola.http` inte kan svara fel med avsikt.

@@ -37,8 +37,21 @@ import java.util.Objects;
  * <p>{@link #getMessage()} is one line of printable ASCII of at most {@value #MAX_MESSAGE}
  * characters: the method, the URI without query and fragment, and what went wrong (for a response
  * also the status and the start of the excerpt, with characters outside ASCII as
- * {@code \}{@code uXXXX}). No message, {@code toString()} or cause that this module creates holds
- * a header value, the query or the request body; {@link #uri()} has the query.
+ * {@code \}{@code uXXXX}); {@code toString()} is the class name and the message.
+ *
+ * <p><b>The request's values.</b> The module never writes a header value, the query or the
+ * request body into a message or a cause; of what it puts into a failure, only {@link #uri()}
+ * has the query. What the server sends can quote them, though (a server that sends back what it
+ * got), and that text reaches a failure in two ways, which the module handles:
+ *
+ * <ul>
+ *   <li>a response's excerpt: the message hides every whole occurrence of a value of the
+ *       request, as {@link RestClientResponseException} describes; a part of a value that the
+ *       server sends back on its own is not recognised and shows;</li>
+ *   <li>the text of an exception from {@code java.net.http}: the message and the cause keep it
+ *       only for failures whose text never comes from the server, as
+ *       {@link RestClientTransportException} describes.</li>
+ * </ul>
  *
  * <p>The constructors are not public: only the client makes these exceptions.
  */

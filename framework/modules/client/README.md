@@ -3,8 +3,9 @@
 En REST-klient för JSON-API:er i Spola, motsvarigheten till Springs `RestClient`. Den bygger på
 `java.net.http.HttpClient` och `spola.json`: en JSON-kropp in via en `JsonCodec`, ett typat svar
 ut, och ett typat fel med status när API:t svarar med något annat än 2xx. Svaret är data utifrån,
-så klienten har en tidsgräns för hela anropet och en storleksgräns för kroppen. Värdena i
-huvudena (API-nycklar) syns aldrig i fel eller `toString`. Samma klient och en `HttpServer` räcker
+så klienten har en tidsgräns för hela anropet och en storleksgräns för kroppen. Klienten skriver
+aldrig värdena i huvudena (API-nycklar) i fel eller `toString`, och felmeddelandet döljer hela
+värden när servern skickar tillbaka dem. Samma klient och en `HttpServer` räcker
 för integrationstester mot appens egen router, som `@SpringBootTest(webEnvironment = RANDOM_PORT)`
 med en `RestClient`.
 
@@ -31,7 +32,7 @@ integrationstesterna). Ingen reflektion, inga annoteringar och ingen loggning.
 | `ResourceAccessException` | `RestClientTransportException` (med `timedOut()`) |
 | `e.getStatusCode().value()` | `e.status()` |
 | `e.getResponseHeaders()` | `e.headers()` (`java.net.http.HttpHeaders`) |
-| `e.getResponseBodyAsString()` | `e.bodyExcerpt()` (högst 1 000 tecken, säkert att logga) |
+| `e.getResponseBodyAsString()` | `e.bodyExcerpt()` (högst 1 000 tecken, utan radbrytningar och styrtecken) |
 | `@SpringBootTest(webEnvironment = RANDOM_PORT)` och `@LocalServerPort` | `HttpServer.start(HttpServerOptions.DEFAULT.withPort(0), router)` och `server.port()` |
 | Ingen livscykel | `client.close()` (`AutoCloseable`) |
 
@@ -59,7 +60,7 @@ class AiClients {
     record TextBlock(String type, String text) {
     }
 
-    // Spring Boot's ObjectMapper ignores unknown members
+    // Spring Boots ObjectMapper ignorerar okända medlemmar
     record MessagesResponse(String id, List<TextBlock> content, @JsonProperty("stop_reason") String stopReason) {
     }
 
@@ -136,7 +137,7 @@ final class AiClients implements AutoCloseable {
     static final URI ANTHROPIC = URI.create("https://api.anthropic.com");
     static final URI OPENAI = URI.create("https://api.openai.com");
 
-    // the app's logger
+    // appens logger
     interface Log {
         void warn(String message);
     }
@@ -160,7 +161,7 @@ final class AiClients implements AutoCloseable {
                 field("text", STRING, TextBlock::text));
     }
 
-    // the API adds members over time: read the ones the app uses
+    // API:t lägger till medlemmar med tiden: läs de som appen använder
     record MessagesResponse(String id, List<TextBlock> content, String stopReason) {
         static final JsonCodec<MessagesResponse> CODEC = JsonCodec.object(MessagesResponse::new,
                 field("id", STRING, MessagesResponse::id),
@@ -198,7 +199,7 @@ final class AiClients implements AutoCloseable {
         try {
             return Optional.of(anthropic.post("/v1/messages").json(request, MessagesRequest.CODEC)
                     .retrieve(MessagesResponse.CODEC));
-        } catch (RestClientResponseException e) { // a timeout or a refused connection goes on up
+        } catch (RestClientResponseException e) { // en tidsgräns eller nekad anslutning går vidare
             log.warn("Anthropic svarade " + e.status() + ": " + e.bodyExcerpt());
             return Optional.empty();
         }
@@ -229,10 +230,18 @@ final class AiClients implements AutoCloseable {
       };
   }
   ```
-- **Loggraden** innehåller statusen och utdraget men aldrig nyckeln. Utdraget är högst 1 000
-  tecken och har inga radbrytningar, styrtecken eller bidi-tecken (de skrivs `\uXXXX`), så en
-  kropp från servern kan inte förfalska loggrader. Springs `getResponseBodyAsString()` ger hela
-  kroppen som den är.
+- **Loggraden** innehåller statusen och utdraget. Utdraget är högst 1 000 tecken och har inga
+  radbrytningar, styrtecken eller bidi-tecken (de skrivs `\uXXXX`), så en kropp från servern kan
+  inte förfalska loggrader. Springs `getResponseBodyAsString()` ger hela kroppen som den är.
+  Klienten lägger aldrig nyckeln i utdraget, men utdraget är serverns text: en server som skickar
+  tillbaka förfrågan (ett valideringsfel med indata, en ekotjänst) får med den i `bodyExcerpt()`.
+  Anthropic och OpenAI skickar inte tillbaka nyckeln.
+- **Hela undantaget i loggen** (`log.warn("...", e)`): klienten skriver aldrig nyckeln i ett
+  undantag, och när servern skickar tillbaka den döljer `getMessage()` varje hel förekomst av ett
+  huvudvärde, queryn och förfrågans kropp (de blir `<hidden>`). Ett transportfel visar bara JDK:ns
+  text när den inte kan komma från servern. En del av ett värde som servern skickar tillbaka för
+  sig (en medlem i kroppen) eller ändrar först känns inte igen, och orsaken från `spola.json`
+  (kroppen är inte JSON eller passar inte kodeken) kan citera upp till 40 tecken av svaret.
 - `MessagesResponse.CODEC` har `ignoringUnknown()`, eftersom API:t lägger till medlemmar. Spolas
   kodekar avvisar annars okända medlemmar.
 
@@ -439,8 +448,8 @@ final class ItemApiTests {
 | `connectTimeout(Duration)` | 10 s | Anslutningen, inom `timeout`. |
 | `maxResponseSize(int)` | 4 MiB (`JsonLimits.DEFAULT.maxInputSize()`) | Kroppen i alla avslutande anrop. Ett `Content-Length` över gränsen ger fel utan att kroppen läses; en längre kropp slutar läsas vid gränsen, också chunked och utan slut. JSON tolkas med `JsonLimits.DEFAULT.withMaxInputSize(maxResponseSize)`. |
 | Felsvar | 8 KiB | Bara de första 8 KiB av en kropp utanför 2xx läses till utdraget; sedan stängs svaret. |
-| `bodyExcerpt()` | 1 000 tecken | De första tecknen av kroppen (UTF-8, ogiltiga byte blir U+FFFD), aldrig ett delat surrogatpar, med `...` efter en kortning. Styrtecken, U+2028, U+2029, bidi-tecken och ensamma surrogat skrivs `\uXXXX`. |
-| `getMessage()` | 1 000 tecken | En rad utskrivbar ASCII: metoden, URI:n utan query, vad som gick fel och för svarsfel statusen och början av utdraget. |
+| `bodyExcerpt()` | 1 000 tecken | De första tecknen av kroppen (UTF-8, ogiltiga byte blir U+FFFD), aldrig ett delat surrogatpar, med `...` efter en kortning, också när läsningen stannade vid en gräns (ett tecken som gränsen delade tas bort). Styrtecken, U+2028, U+2029, bidi-tecknen (U+061C, U+200E, U+200F, U+202A–U+202E, U+2066–U+2069) och ensamma surrogat skrivs `\uXXXX`. |
+| `getMessage()` | 1 000 tecken | En rad utskrivbar ASCII: metoden, URI:n utan query, vad som gick fel och för svarsfel statusen och början av utdraget, där varje helt värde från förfrågan (huvudvärden, queryn, kroppen) är `<hidden>`. |
 
 `build()` samlar alla problem i ett `IllegalArgumentException` med en rad per problem: saknad
 eller felaktig `baseUri`, felaktigt eller förbjudet huvud, samma huvud två gånger, en tidsgräns
@@ -454,13 +463,14 @@ query.
 |---|---|---|
 | Undantagshierarkin | `RestClientException` med bland annat `RestClientResponseException` (och en underklass per status, `HttpClientErrorException.NotFound`), `UnknownContentTypeException` och `ResourceAccessException`. | `RestClientException` är `sealed` med exakt två slutliga fall: `RestClientResponseException` (ett svar kom: `status()`, `headers()`, `bodyExcerpt()`) och `RestClientTransportException` (inget användbart svar: `timedOut()`). Ingen underklass per status. En `switch` utan `default` är uttömmande. Konstruktorerna är inte publika. |
 | `Content-Type` i svaret | Styr vilken konverterare som läser kroppen; `text/html` på ett 200 ger `UnknownContentTypeException`. | Styr inte tolkningen. Varje 2xx-kropp tolkas som JSON (strikt, UTF-8) oavsett `Content-Type`. HTML ger `RestClientResponseException` med `JsonParseException` som orsak; `text/plain` med giltig JSON ger värdet. |
-| Omdirigeringar | Standardfabriken (`HttpURLConnection`) följer omdirigeringar för `GET`. | Följs aldrig. En 3xx ger `RestClientResponseException` med statusen och `Location` i `headers()`, så huvudena med nyckeln skickas aldrig vidare till en annan värd. |
+| Omdirigeringar | Beror på fabriken: `HttpURLConnection` följer omdirigeringar för `GET`, och JDK:ns `HttpClient` gör det om den är inställd så. | Följs aldrig. En 3xx ger `RestClientResponseException` med statusen och `Location` i `headers()`, så huvudena med nyckeln skickas aldrig vidare till en annan värd. |
 | HTTP-version | Beror på fabriken; JDK:ns `HttpClient` försöker med HTTP/2. | Bara HTTP/1.1, den version som `spola.http` talar. Anslutningar återanvänds (keep-alive). |
 | Sökvägen | `uri("/items/{id}", id)` fyller i mallar och kodar värdena; `uri(...)` mot en bas-URL följer URI-reglerna. | Sökvägen läggs som text efter basens sökväg (`https://h/api` + `/v1/x` blir `https://h/api/v1/x`) och skickas som den står: inga mallar och ingen kodning. Värden utifrån måste kodas av appen. En sökväg som inte börjar med `/`, har ett fragment eller har tecken som inte får finnas i en URI ger `IllegalArgumentException`. `//annan.example/x` går till basens värd. |
 | Cookies | Kan slås på i fabriken (`CookieManager`). | Inga cookies och ingen session mellan anrop. |
 | `SSLContext` och proxy | Ställs in i fabriken (`HttpClient.newBuilder().sslContext(...)`, `.proxy(...)`); JDK:ns `HttpClient` använder annars JVM:ens proxyinställningar. | Går inte att ange. TLS använder JDK:ns standard-`SSLContext` (truststore enligt `javax.net.ssl.*`, kontroll av värdnamnet). Ingen proxy används, inte heller den som `https.proxyHost` anger. |
 | `Content-Type` i förfrågan | `.contentType(...)` med vilken typ som helst. | Kan inte sättas. `json(...)` sätter `Content-Type: application/json`, och `header("Content-Type", ...)` ger `IllegalArgumentException`. Samma gäller `Connection`, `Content-Length`, `Expect`, `Host`, `Keep-Alive`, `Proxy-Connection`, `TE`, `Trailer`, `Transfer-Encoding` och `Upgrade`. Bara JSON-kroppar. |
 | Felkroppen | `getResponseBodyAsString()` ger hela kroppen som den är. | Högst de första 8 KiB läses, sedan stängs svaret. `bodyExcerpt()` är högst 1 000 tecken, utan styrtecken. |
+| Felmeddelandet | Meddelandet från `DefaultResponseErrorHandler` har statusen och kroppen som de är. | `getMessage()` har början av utdraget, men varje helt värde från förfrågan som servern skickar tillbaka är `<hidden>`. Ett transportfel visar JDK:ns text bara för fel i anslutning, TLS och tidsgräns; annars bara klassnamnen, och orsaken är en kopia utan text. |
 | Tidsgräns | `setReadTimeout` gäller varje läsning, så en server som skickar en byte i taget håller anropet hur länge som helst. | `timeout` är en deadline för hela anropet, också kroppen. Samma tidsgräns gäller alla anrop från en klient; ingen tidsgräns per förfrågan. |
 | Storleksgräns | Ingen; hela kroppen läses in. | `maxResponseSize`, standard 4 MiB. |
 | Tom kropp | `body(Type.class)` ger `null`. | `retrieve` och `retrieveJson` ger `RestClientResponseException` med `JsonParseException` som orsak. Använd `retrieveBodiless()` för 204. |

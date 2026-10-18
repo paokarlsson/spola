@@ -7,16 +7,22 @@ import static spola.client.Support.response;
 import java.io.IOException;
 import java.net.ServerSocket;
 import java.net.URI;
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.List;
+import java.util.Locale;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Function;
+import spola.json.Json;
 import spola.json.JsonObject;
 import spola.json.JsonString;
 
 /**
  * Every kind of failure of criteria 6–9, each made against its own local server with a given
  * setup: default headers, a request header, a path (with a query) and a JSON body. The message
- * and secret tests run them all.
+ * and secret tests run them all. Some servers send back what they got, as ordinary servers do (a
+ * validation error with the input, an echo endpoint, a problem with the path) or as a broken one
+ * might (the request as the status line, a part of a header value in a bad header).
  */
 final class Failures {
 
@@ -76,7 +82,7 @@ final class Failures {
         }
     }
 
-    /** Runs {@code call} on {@code request} and returns what it threw. */
+    /** Sends {@code request} with {@code retrieveJson()} ({@code json}) or {@code retrieve(POINT)} and returns what it threw. */
     static RestClientException thrown(RestRequest request, boolean json) {
         try {
             if (json) {
@@ -139,24 +145,83 @@ final class Failures {
         }
     };
 
-    static final Support.Script ECHOES = (socket, raw) -> {
-        var in = socket.getInputStream();
-        var request = raw.readRequest(in);
-        if (request != null) {
-            socket.getOutputStream().write(request.getBytes(java.nio.charset.StandardCharsets.ISO_8859_1));
-            socket.getOutputStream().flush();
-        }
-    };
+    /** A server that reads a request and writes what {@code answer} makes of it (the request's head and body as text). */
+    static Support.Script sendsBack(Function<String, String> answer) {
+        return (socket, raw) -> {
+            var in = socket.getInputStream();
+            var request = raw.readRequest(in);
+            if (request != null) {
+                socket.getOutputStream().write(answer.apply(request).getBytes(StandardCharsets.UTF_8));
+                socket.getOutputStream().flush();
+                socket.shutdownOutput();
+                raw.awaitClose(in);
+            }
+        };
+    }
 
-    static final Support.Script ECHOES_BODY = (socket, raw) -> {
-        var in = socket.getInputStream();
-        var request = raw.readRequest(in);
-        if (request != null) {
-            var body = request.substring(request.indexOf("\r\n\r\n") + 4);
-            socket.getOutputStream().write((body + "\r\n\r\n").getBytes(java.nio.charset.StandardCharsets.UTF_8));
-            socket.getOutputStream().flush();
+    static String requestLine(String request) {
+        return request.substring(0, request.indexOf("\r\n"));
+    }
+
+    static String requestBody(String request) {
+        return request.substring(request.indexOf("\r\n\r\n") + 4);
+    }
+
+    /** The value of the first header {@code name} of the request, in any case. */
+    static String headerValue(String request, String name) {
+        for (var line : request.substring(0, request.indexOf("\r\n\r\n")).split("\r\n")) {
+            if (line.toLowerCase(Locale.ROOT).startsWith(name.toLowerCase(Locale.ROOT) + ":")) {
+                return line.substring(name.length() + 1).strip();
+            }
         }
-    };
+        throw new AssertionError("no header " + name + " in " + request);
+    }
+
+    /** A JSON response with {@code status} and {@code body} (UTF-8), as text. */
+    static String jsonResponse(int status, String body) {
+        return head(status, "Content-Type", "application/json", "Content-Length",
+                String.valueOf(body.getBytes(StandardCharsets.UTF_8).length), "Connection", "close") + body;
+    }
+
+    /** The whole request back, as if it were the response. */
+    static final Support.Script ECHOES = sendsBack(request -> request);
+
+    /** The request body back as the status line. */
+    static final Support.Script ECHOES_BODY = sendsBack(request -> requestBody(request) + "\r\n\r\n");
+
+    /** The request line without its end, then the connection closes: the JDK quotes the part it got. */
+    static final Support.Script ECHOES_PART_OF_LINE = sendsBack(Failures::requestLine);
+
+    /**
+     * A header with the x-api-key value without its first three characters (so not the whole
+     * value) and a control character inside, which the JDK refuses and quotes (it would trim one at
+     * the end).
+     */
+    static final Support.Script ECHOES_PART_OF_KEY = sendsBack(request -> {
+        var key = headerValue(request, "x-api-key");
+        return "HTTP/1.1 200 OK\r\nX-Echo: [" + key.substring(Math.min(3, key.length())) + "\u0001]\r\n\r\n";
+    });
+
+    /** FastAPI's 422 for a missing member: the request body is the {@code input}. */
+    static final Support.Script VALIDATION_ECHO = sendsBack(request -> jsonResponse(422,
+            "{\"detail\":[{\"type\":\"missing\",\"loc\":[\"body\",\"max_tokens\"],\"msg\":\"Field required\","
+                    + "\"input\":" + requestBody(request) + "}]}"));
+
+    /** An echo endpoint (httpbin's /anything): 200 with the request's headers as JSON. */
+    static final Support.Script HEADER_ECHO = sendsBack(request -> {
+        var headers = JsonObject.builder();
+        for (var line : request.substring(request.indexOf("\r\n") + 2, request.indexOf("\r\n\r\n")).split("\r\n")) {
+            int colon = line.indexOf(':');
+            headers.put(line.substring(0, colon), line.substring(colon + 1).strip());
+        }
+        return jsonResponse(200, Json.write(JsonObject.of("headers", headers.build(),
+                "method", new JsonString("POST"))));
+    });
+
+    /** A 404 problem whose {@code instance} is the request's target with its query. */
+    static final Support.Script PROBLEM_ECHO = sendsBack(request -> jsonResponse(404, Json.write(JsonObject.of(
+            "title", new JsonString("Not Found"), "status", spola.json.JsonNumber.of(404),
+            "instance", new JsonString(requestLine(request).split(" ")[1])))));
 
     static final Support.Script READS_FIRST_BYTE = (socket, raw) -> {
         raw.firstBytes.add(socket.getInputStream().read());
@@ -242,10 +307,25 @@ final class Failures {
                 }),
                 new Kind("garbage instead of HTTP", -1, false,
                         setup -> against(GARBAGE, setup, Duration.ofSeconds(10), 1024)),
+                new Kind("a 422 that sends the request body back", 422, false,
+                        setup -> against(VALIDATION_ECHO, setup, Duration.ofSeconds(10), 1 << 20)),
+                new Kind("a 200 that sends the request headers back, with a codec that does not fit", 200, false,
+                        setup -> {
+                            try (var server = new Support.RawServer(HEADER_ECHO);
+                                    var client = setup.builder(server.base()).build()) {
+                                return thrown(setup.request(client), false);
+                            }
+                        }),
+                new Kind("a 404 problem that sends the path and query back", 404, false,
+                        setup -> against(PROBLEM_ECHO, setup, Duration.ofSeconds(10), 1 << 20)),
                 new Kind("a server that echoes the request", -1, false,
                         setup -> against(ECHOES, setup, Duration.ofSeconds(10), 1024)),
                 new Kind("a server that echoes the request body", -1, false,
                         setup -> against(ECHOES_BODY, setup, Duration.ofSeconds(10), 1024)),
+                new Kind("a server that sends part of the request line and closes", -1, false,
+                        setup -> against(ECHOES_PART_OF_LINE, setup, Duration.ofSeconds(10), 1024)),
+                new Kind("a server that sends part of a header value back in a bad header", -1, false,
+                        setup -> against(ECHOES_PART_OF_KEY, setup, Duration.ofSeconds(10), 1024)),
                 new Kind("a connection closed inside a body with Content-Length", -1, false,
                         setup -> against(CLOSES_IN_BODY, setup, Duration.ofSeconds(10), 1024)),
                 new Kind("https against a server that does not speak TLS", -1, false, setup -> {

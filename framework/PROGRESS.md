@@ -863,9 +863,11 @@
   Appen kan byta Anthropics SDK och sin handskrivna `java.net.http`-kod mot `RestClient`; klienterna
   för de två API:erna stannar i appen.
 - **Säkerhetskritisk kod** (svaret är data utifrån, huvudena bär API-nycklar). Testad mot råa
-  servrar med kroppar utan slut, enorma `Content-Length`, skräp, avbrutna kroppar, en server som
-  ekar förfrågan och markörer i huvuden, query och kropp, men **en människa bör granska den**
-  innan ramverket används på riktigt.
+  servrar med kroppar utan slut, enorma `Content-Length` (också 19 siffror och fler), skräp,
+  avbrutna kroppar, servrar som skickar tillbaka förfrågan (som statusrad, en del av den, ett
+  422 med kroppen, ett 200 med huvudena, ett problem med queryn) och markörer i huvuden, query
+  och kropp (med svenska tecken), men **en människa bör granska den** innan ramverket används på
+  riktigt.
 - Ny modul `spola.client` (`modules/client/`): `RestClient` (final, oföränderlig, trådsäker,
   `AutoCloseable`) med `RestClient.Builder` (`baseUri`, `defaultHeader`, `timeout` 30 s,
   `connectTimeout` 10 s, `maxResponseSize` 4 MiB), `RestRequest` (oföränderlig: `header`,
@@ -875,8 +877,11 @@
   `RestClientTransportException` (`timedOut()`). HTTP/1.1, inga omdirigeringar, ingen proxy,
   inga cookies, en deadline för hela anropet inklusive kroppen, en gräns för kroppen som också
   stoppar chunked kroppar utan slut, bara de första 8 KiB av ett felsvar, och ett utdrag på högst
-  1 000 tecken utan styr- och bidi-tecken. Inga huvudvärden, ingen query och ingen
-  förfrågningskropp i meddelanden, `toString()` eller orsaker som modulen skapar.
+  1 000 tecken utan styr- och bidi-tecken. Modulen skriver aldrig huvudvärden, queryn eller
+  förfrågningskroppen i meddelanden, `toString()` eller orsaker. Skickar servern tillbaka dem
+  döljer svarsfelets `getMessage()` varje hel förekomst (`<hidden>`) medan `bodyExcerpt()` är
+  serverns text som den är, och ett transportfel behåller JDK:ns text bara för undantag vars text
+  inte kan komma från servern (`SocketException`, `SSLException`, `HttpTimeoutException`).
 - **Avvikelse från behovet:** `status()` och `bodyExcerpt()` finns på
   `RestClientResponseException`, inte på `RestClientException` (en tidsgräns har ingen status),
   som i Spring.
@@ -893,7 +898,7 @@
   README. README har en jämförelsetabell, en tabell med gränserna och en avvikelsetabell.
   Modulkatalogen i `MONSTER.md` och modultabellen i rotens `README.md` har en rad för
   `spola.client`.
-- Nya tester: ungefär 290 i `spola.client` (`ClientTests`), ungefär 15 s.
+- Nya tester: ungefär 330 i `spola.client` (`ClientTests`), ungefär 15 s.
 
 ### Versioner och releaser (gjort för hand, utanför loopen)
 - `VERSION` i `Build.java` (nu `0.1.0`) sätts som modulversion i varje jar
@@ -953,10 +958,17 @@
   - Inga omförsök, ingen cirkelbrytare, inga interceptorer, ingen loggning och inga mätvärden.
     `java.net.http` gör själv ett nytt försök för `GET` när en återanvänd anslutning visar sig
     vara stängd, och provar ibland TLS-handslaget två gånger.
-  - Orsaken till ett `RestClientTransportException` byts mot en `IOException` utan text när
-    JDK:ns undantag citerar ett huvudvärde, förfrågans query eller dess kropp; ett kort värde (som
-    `1` eller kroppen `{}`) gör att det händer oftare än nödvändigt. Bara hela värden känns igen:
-    en server som ekar en del av ett värde och får JDK:n att citera den delen syns.
+  - **Värden som servern skickar tillbaka döljs bara hela.** Svarsfelets `getMessage()` döljer
+    varje hel förekomst av ett huvudvärde, queryn och förfrågans kropp. En del av ett värde som
+    servern skickar för sig (en medlem i kroppen, en parameter i queryn) eller ändrar först (JSON
+    som kodas om) syns, och ett kort värde (`X-Page: 2`) döljer samma text också där servern skrev
+    den själv. `bodyExcerpt()` döljer ingenting: en server som skickar tillbaka förfrågan får med
+    den där. Orsaken från `spola.json` kan citera upp till 40 tecken av svaret.
+  - **Transportfel visar bara klassnamn för felaktiga svar.** Orsaken till ett
+    `RestClientTransportException` är JDK:ns undantag bara för `SocketException`,
+    `SSLException` och `HttpTimeoutException` (utan värden från förfrågan i texten); för allt
+    annat, som en felaktig statusrad eller en kropp som tar slut, är den en kedja av `IOException`
+    utan text med originalens klasser och stackspår. Det kostar diagnostik.
   - `RestClientResponseException.headers()` är tom efter Java-serialisering (`HttpHeaders` är
     inte serialiserbar).
   - **Observerat, orsaken inte hittad:** med 200 samtidiga anrop mot en `spola.http`-server blir i

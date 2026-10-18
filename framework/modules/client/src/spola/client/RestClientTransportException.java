@@ -19,13 +19,23 @@ import java.net.URI;
  *       {@link InterruptedException}.</li>
  * </ul>
  *
- * <p>Otherwise {@link #getCause()} is the exception from {@code java.net.http}, such as a
- * {@link java.net.ConnectException} or a {@link javax.net.ssl.SSLException}, and the message ends
- * with its class and message (as ASCII, shortened). If its text (or that of anything it carries)
- * quotes a header value, the query or the body of the request, which a server that echoes the
- * request can cause, the cause is an {@link java.io.IOException} that names the original's class,
- * with its stack trace but without its message, and the message has only the class. A timeout
- * has no cause.
+ * <p>A timeout has no cause. Otherwise the cause comes from {@code java.net.http}, and what the
+ * message and the cause show of its text depends on where that text can come from:
+ *
+ * <ul>
+ *   <li>A {@link java.net.SocketException} (such as a {@link java.net.ConnectException}), a
+ *       {@link javax.net.ssl.SSLException} or a {@link java.net.http.HttpTimeoutException} (the
+ *       connect timeout) has a text from the JDK or the operating system, never from the server.
+ *       {@link #getCause()} is that exception and the message ends with its class and text (as
+ *       ASCII, shortened), unless the text, or that of anything it carries, holds a header
+ *       value, the query or the body of the request; then it is treated as below.</li>
+ *   <li>Every other failure, above all a response that is not valid HTTP/1.1, can quote what
+ *       the server sent ({@code java.net.http} quotes a bad status line or header), and so the
+ *       request, if the server sends that back. The message has only the class of the failure
+ *       and of its root cause, and {@link #getCause()} is a copy of the chain of causes without
+ *       any text: an {@link java.io.IOException} per exception that names its class and has its
+ *       stack trace.</li>
+ * </ul>
  */
 public final class RestClientTransportException extends RestClientException {
 

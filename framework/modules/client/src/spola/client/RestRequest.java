@@ -61,7 +61,8 @@ public final class RestRequest {
      * spaces and tabs as value without a space or tab first or last, and the same names refused.
      *
      * @param name  the name
-     * @param value the value; it never appears in a message or {@code toString()}
+     * @param value the value; the module never writes it into a message or {@code toString()},
+     *              and a failure's message hides it where the server sends it back whole
      * @return the new request
      * @throws IllegalArgumentException if the name or value is not allowed; the message does not
      *                                  quote the value
@@ -185,8 +186,8 @@ public final class RestRequest {
     }
 
     private RestClientResponseException unusable(RestClient.Success success, String what, RuntimeException cause) {
-        return new RestClientResponseException(method, uri, success.status(), success.headers(),
-                Text.excerpt(success.body(), success.body().length), what, cause);
+        return RestClientResponseException.of(this, success.status(), success.headers(), success.body(),
+                success.body().length, false, what, cause);
     }
 
     /**
@@ -209,6 +210,35 @@ public final class RestRequest {
             all.add(new Header("Accept", JSON_TYPE));
         }
         return all;
+    }
+
+    /**
+     * What a message must not show of this request: the value of every header that the caller
+     * gave (the defaults and the request's own; not the {@code application/json} that the client
+     * adds), the raw query, and the body as UTF-8 text and, when that differs, as ISO-8859-1 text
+     * (the way {@code java.net.http} quotes bytes it read). Empty values are left out.
+     */
+    List<String> secrets() {
+        var values = new ArrayList<String>();
+        for (var header : client.defaultHeaders()) {
+            values.add(header.value());
+        }
+        for (var header : headers) {
+            values.add(header.value());
+        }
+        if (uri.getRawQuery() != null) {
+            values.add(uri.getRawQuery());
+        }
+        if (body != null) {
+            var text = new String(body, StandardCharsets.UTF_8);
+            values.add(text);
+            var bytewise = new String(body, StandardCharsets.ISO_8859_1);
+            if (!bytewise.equals(text)) {
+                values.add(bytewise);
+            }
+        }
+        values.removeIf(String::isEmpty);
+        return values;
     }
 
     String method() {

@@ -5,10 +5,11 @@ import java.net.http.HttpResponse;
 import java.nio.ByteBuffer;
 import java.util.Arrays;
 import java.util.List;
-import java.util.OptionalLong;
+import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.Flow;
+import java.util.function.Consumer;
 
 /**
  * Reads one response body within the limits: for 2xx up to {@code maxResponseSize} bytes, for
@@ -39,13 +40,36 @@ final class BodyReader implements HttpResponse.BodyHandler<BodyReader.Body> {
      * @param bytes    the bytes (the array may be longer than {@code length})
      * @param length   how many bytes were read
      * @param ending   how the reading ended
-     * @param declared the {@code Content-Length}, or -1
+     * @param declared the {@code Content-Length}: -1 when there is none (or it is not a single
+     *                 number), {@code Long.MAX_VALUE} when it has more digits than a
+     *                 {@code long} holds
      */
     record Body(byte[] bytes, int length, Ending ending, long declared) {
+
+        /** Whether the body went on past what was read: reading stopped at a limit. */
+        boolean cut() {
+            return ending == Ending.TOO_LARGE || ending == Ending.CUT;
+        }
+    }
+
+    /**
+     * A response as it came back.
+     *
+     * @param status  the status
+     * @param headers the headers
+     * @param body    the body, as far as it was read
+     */
+    record Received(int status, HttpHeaders headers, Body body) {
     }
 
     /** The largest buffer allocated before the bytes arrive. */
     private static final int INITIAL_MAX = 64 << 10;
+
+    /** The first buffer for a body without {@code Content-Length}. */
+    private static final int INITIAL_UNKNOWN = 8 << 10;
+
+    /** The smallest first buffer. */
+    private static final int INITIAL_MIN = 16;
 
     private final int maxResponseSize;
     private volatile Collector collector;
@@ -59,9 +83,8 @@ final class BodyReader implements HttpResponse.BodyHandler<BodyReader.Body> {
     public HttpResponse.BodySubscriber<Body> apply(HttpResponse.ResponseInfo info) {
         int status = info.statusCode();
         boolean success = status >= 200 && status <= 299;
-        long declared = contentLength(info.headers());
         int limit = success ? maxResponseSize : Math.min(RestClient.MAX_ERROR_BODY, maxResponseSize);
-        var created = new Collector(limit, success, declared);
+        var created = new Collector(info, limit, success, contentLength(info.headers()));
         collector = created;
         if (aborted) {
             created.abort();
@@ -78,22 +101,44 @@ final class BodyReader implements HttpResponse.BodyHandler<BodyReader.Body> {
         }
     }
 
-    /** The {@code Content-Length}, or -1 when it is missing or not a single number. */
+    /**
+     * The response, with nothing read, if its {@code Content-Length} was over
+     * {@code maxResponseSize}. {@code java.net.http} fails such an exchange itself when the
+     * length has more digits than a {@code long} holds, after this handler has seen the head.
+     */
+    Optional<Received> refusedUnread() {
+        var current = collector;
+        if (current == null || current.declared <= maxResponseSize) {
+            return Optional.empty();
+        }
+        return Optional.of(new Received(current.info.statusCode(), current.info.headers(),
+                new Body(new byte[0], 0, Ending.DECLARED_TOO_LARGE, current.declared)));
+    }
+
+    /**
+     * The {@code Content-Length}: -1 when it is missing or not a single number of digits,
+     * {@code Long.MAX_VALUE} when it has more digits than a {@code long} holds.
+     */
     private static long contentLength(HttpHeaders headers) {
         var values = headers.allValues("Content-Length");
         if (values.size() != 1) {
             return -1;
         }
         var value = values.getFirst();
-        if (value.isEmpty() || value.length() > 18 || !value.chars().allMatch(c -> c >= '0' && c <= '9')) {
+        if (value.isEmpty() || !value.chars().allMatch(c -> c >= '0' && c <= '9')) {
             return -1;
         }
-        return Long.parseLong(value);
+        try {
+            return Long.parseLong(value);
+        } catch (NumberFormatException e) { // only digits: too many for a long, so over any limit
+            return Long.MAX_VALUE;
+        }
     }
 
     /** The subscriber for one body. */
     private final class Collector implements HttpResponse.BodySubscriber<Body> {
 
+        private final HttpResponse.ResponseInfo info;
         private final int limit;
         private final boolean success;
         private final long declared;
@@ -103,13 +148,14 @@ final class BodyReader implements HttpResponse.BodyHandler<BodyReader.Body> {
         private byte[] bytes;
         private int length;
 
-        Collector(int limit, boolean success, long declared) {
+        Collector(HttpResponse.ResponseInfo info, int limit, boolean success, long declared) {
+            this.info = info;
             this.limit = limit;
             this.success = success;
             this.declared = declared;
             // grows as bytes arrive: a Content-Length alone never makes the client allocate much
-            long expected = declared >= 0 ? Math.min(declared, limit) : Math.min(limit, 8_192);
-            this.bytes = new byte[(int) Math.max(16, Math.min(expected, INITIAL_MAX))];
+            long expected = declared >= 0 ? Math.min(declared, limit) : Math.min(limit, INITIAL_UNKNOWN);
+            this.bytes = new byte[(int) Math.max(INITIAL_MIN, Math.min(expected, INITIAL_MAX))];
         }
 
         @Override
@@ -128,17 +174,11 @@ final class BodyReader implements HttpResponse.BodyHandler<BodyReader.Body> {
             }
             if (cancel) {
                 s.cancel();
-                return;
-            }
-            if (declared > maxResponseSize) {
+            } else if (declared > maxResponseSize) {
                 finish(Ending.DECLARED_TOO_LARGE);
-                return;
+            } else {
+                s.request(Long.MAX_VALUE); // the limit bounds what is kept; cancelling stops the rest
             }
-            if (limit == 0) { // never: maxResponseSize is at least 1
-                finish(Ending.CUT);
-                return;
-            }
-            s.request(Long.MAX_VALUE); // the limit bounds what is kept; cancelling stops the rest
         }
 
         @Override
@@ -149,8 +189,7 @@ final class BodyReader implements HttpResponse.BodyHandler<BodyReader.Body> {
                 }
             }
             for (var buffer : buffers) {
-                int room = limit - length;
-                int take = Math.min(room, buffer.remaining());
+                int take = Math.min(limit - length, buffer.remaining());
                 if (take > 0) {
                     ensureCapacity(length + take);
                     buffer.get(bytes, length, take);
@@ -168,47 +207,30 @@ final class BodyReader implements HttpResponse.BodyHandler<BodyReader.Body> {
 
         @Override
         public void onError(Throwable failure) {
-            synchronized (this) {
-                if (done) {
-                    return;
-                }
-                done = true;
-                subscription = null;
-            }
-            result.completeExceptionally(failure);
+            end(future -> future.completeExceptionally(failure), false);
         }
 
         @Override
         public void onComplete() {
-            synchronized (this) {
-                if (done) {
-                    return;
-                }
-                done = true;
-                subscription = null;
-            }
-            result.complete(new Body(bytes, length, Ending.COMPLETE, declared));
+            end(future -> future.complete(new Body(bytes, length, Ending.COMPLETE, declared)), false);
         }
 
         /** Stops reading: completes the body and cancels the subscription (the connection closes). */
         private void finish(Ending ending) {
-            Flow.Subscription toCancel;
-            synchronized (this) {
-                if (done) {
-                    return;
-                }
-                done = true;
-                toCancel = subscription;
-                subscription = null;
-            }
-            result.complete(new Body(bytes, length, ending, declared));
-            if (toCancel != null) {
-                toCancel.cancel();
-            }
+            end(future -> future.complete(new Body(bytes, length, ending, declared)), true);
         }
 
         /** Cancels from another thread; the caller has given up on the result. */
         void abort() {
+            end(future -> future.cancel(false), true);
+        }
+
+        /**
+         * Ends the body once: the first call marks it done, settles the result with
+         * {@code outcome} and, if {@code cancel}, cancels the subscription; later calls do
+         * nothing.
+         */
+        private void end(Consumer<CompletableFuture<Body>> outcome, boolean cancel) {
             Flow.Subscription toCancel;
             synchronized (this) {
                 if (done) {
@@ -218,8 +240,8 @@ final class BodyReader implements HttpResponse.BodyHandler<BodyReader.Body> {
                 toCancel = subscription;
                 subscription = null;
             }
-            result.cancel(false);
-            if (toCancel != null) {
+            outcome.accept(result);
+            if (cancel && toCancel != null) {
                 toCancel.cancel();
             }
         }

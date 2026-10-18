@@ -8,16 +8,26 @@ import static spola.test.Tests.parameterized;
 import static spola.test.Tests.suite;
 import static spola.test.Tests.test;
 
+import java.io.EOFException;
+import java.io.IOException;
+import java.net.ConnectException;
+import java.net.ProtocolException;
 import java.net.URI;
+import java.net.http.HttpConnectTimeoutException;
+import java.nio.charset.StandardCharsets;
 import java.util.List;
+import javax.net.ssl.SSLHandshakeException;
+import spola.json.Json;
 import spola.json.JsonObject;
 import spola.json.JsonString;
 import spola.test.Suite;
 
 /**
  * Criterion 11: markers in x-api-key, in Authorization, in a request header, in the query and in
- * the body never show in toString, messages, printed stack traces (with causes) or the
- * IllegalArgumentExceptions of the setup; the query's marker is in uri().
+ * the body (with Swedish letters, as the need's prompts have) never show in toString, messages,
+ * printed stack traces (with causes) or the IllegalArgumentExceptions of the setup; the query's
+ * marker is in uri(). Servers that send the request back are among the failures: the message
+ * hides what they quote, and bodyExcerpt() keeps it.
  */
 final class SecretTests {
 
@@ -35,7 +45,16 @@ final class SecretTests {
     static final Failures.Setup SECRET = new Failures.Setup(
             List.of("x-api-key", "sk-" + KEY_MARKER, "Authorization", "Bearer " + AUTH_MARKER),
             List.of("X-Trace", TRACE_MARKER), "/v1/items?token=" + QUERY_MARKER + "&page=2",
-            JsonObject.of("prompt", new JsonString(BODY_MARKER)));
+            JsonObject.of("prompt", new JsonString("Hej, hur mår du? " + BODY_MARKER)));
+
+    /** The failures where a server sends back a value of the request that shows in bodyExcerpt(). */
+    static final List<String> RESPONSE_ECHOES = List.of("a 422 that sends the request body back",
+            "a 200 that sends the request headers back, with a codec that does not fit",
+            "a 404 problem that sends the path and query back");
+
+    static Failures.Kind kind(String name) {
+        return Failures.all().stream().filter(k -> k.name().equals(name)).findFirst().orElseThrow();
+    }
 
     static void assertNoMarker(String where, String text) {
         for (var marker : MARKERS) {
@@ -53,8 +72,10 @@ final class SecretTests {
                         assertEquals("RestClient[baseUri https://api.example.com/api, defaultHeaders [x-api-key,"
                                 + " Authorization], timeout 30000 ms, connectTimeout 10000 ms, maxResponseSize 4194304]",
                                 client.toString());
+                        int size = Json.write(SECRET.body()).getBytes(StandardCharsets.UTF_8).length;
                         assertEquals("RestRequest[POST https://api.example.com/api/v1/items, headers [x-api-key,"
-                                + " Authorization, X-Trace, Content-Type, Accept], body 25 bytes]", request.toString());
+                                + " Authorization, X-Trace, Content-Type, Accept], body " + size + " bytes]",
+                                request.toString());
                     }
                 }),
                 parameterized("no marker in getMessage, toString or the printed stack trace of any failure",
@@ -67,36 +88,98 @@ final class SecretTests {
                             assertTrue(e.uri().toString().contains(QUERY_MARKER), "uri() has the query: " + e.uri());
                             assertTrue(e.uri().getRawQuery().contains(QUERY_MARKER));
                         }),
-                test("the echo server: the JDK's message quotes the request line, so the cause is a stand-in", () -> {
-                    var kind = Failures.all().stream().filter(k -> k.name().endsWith("echoes the request")).findFirst()
-                            .orElseThrow();
-                    var e = kind.make().make(SECRET);
-                    var cause = e.getCause();
-                    assertEquals(java.io.IOException.class, cause.getClass());
-                    assertTrue(cause.getMessage().startsWith("java.net.ProtocolException"), cause.getMessage());
-                    assertTrue(cause.getStackTrace().length > 0, "the stand-in keeps the stack trace");
-                    // without a secret in it, the same failure keeps the JDK's exception
-                    var plain = kind.make().make(new Failures.Setup(List.of("x-api-key", "plain-key"),
-                            List.of("X-Trace", "trace-1"), "/v1/items", JsonObject.of()));
-                    assertEquals(java.net.ProtocolException.class, plain.getCause().getClass());
+                parameterized("a response that sends the request back: the message hides it, bodyExcerpt() keeps it",
+                        RESPONSE_ECHOES, name -> {
+                            var e = (RestClientResponseException) kind(name).make().make(SECRET);
+                            assertTrue(e.getMessage().contains(Text.HIDDEN), e.getMessage());
+                            var expected = switch (name) {
+                                case "a 422 that sends the request body back" -> List.of(BODY_MARKER);
+                                case "a 404 problem that sends the path and query back" -> List.of(QUERY_MARKER);
+                                default -> List.of(KEY_MARKER, AUTH_MARKER, TRACE_MARKER);
+                            };
+                            for (var marker : expected) {
+                                assertTrue(e.bodyExcerpt().contains(marker), marker + " in " + e.bodyExcerpt());
+                            }
+                        }),
+                test("a 422 with the body's Swedish text: the message hides the body and keeps the rest", () -> {
+                    var e = (RestClientResponseException) kind("a 422 that sends the request body back").make()
+                            .make(SECRET);
+                    assertTrue(e.getMessage().endsWith(": status 422: a client error: {\"detail\":[{\"type\":\"missing\","
+                            + "\"loc\":[\"body\",\"max_tokens\"],\"msg\":\"Field required\",\"input\":<hidden>}]}"),
+                            e.getMessage());
+                    assertTrue(e.bodyExcerpt().contains("\"input\":{\"prompt\":\"Hej, hur mår du? " + BODY_MARKER + "\"}"),
+                            e.bodyExcerpt());
                 }),
-                test("a server that sends the request body back as its status line: the cause is a stand-in", () -> {
-                    var kind = Failures.all().stream().filter(k -> k.name().endsWith("echoes the request body"))
-                            .findFirst().orElseThrow();
-                    var e = kind.make().make(SECRET);
-                    assertEquals(java.io.IOException.class, e.getCause().getClass());
-                    assertTrue(e.getMessage().endsWith("(java.net.ProtocolException)"), e.getMessage());
+                parameterized("a long body sent back and cut at the 8 KiB the client reads: the message hides its start",
+                        List.of(400, 200), status -> {
+                            var body = JsonObject.of("prompt", new JsonString(BODY_MARKER + " " + "Jag mår dåligt. ".repeat(2_000)));
+                            var setup = new Failures.Setup(SECRET.defaults(), SECRET.requestHeader(), SECRET.path(), body);
+                            try (var server = new Support.RawServer(Failures.sendsBack(request -> Failures.jsonResponse(
+                                    status, "{\"input\":" + Failures.requestBody(request) + "}")));
+                                    var client = setup.builder(server.base()).build()) {
+                                var e = (RestClientResponseException) Failures.thrown(setup.request(client), false);
+                                assertEquals(status, e.status());
+                                assertNoMarker("getMessage", e.getMessage());
+                                assertNoMarker("stack trace", Support.printed(e));
+                                assertTrue(e.getMessage().endsWith(": {\"input\":<hidden>..."), e.getMessage());
+                                assertTrue(e.bodyExcerpt().startsWith("{\"input\":{\"prompt\":\"" + BODY_MARKER), e.bodyExcerpt());
+                            }
+                        }),
+                test("a server that sends the request back as the response: the cause has no text, only classes", () -> {
+                    for (var setup : List.of(SECRET, Failures.Setup.PLAIN)) {
+                        var e = kind("a server that echoes the request").make().make(setup);
+                        var cause = e.getCause();
+                        assertEquals(IOException.class, cause.getClass());
+                        assertTrue(cause.getMessage().startsWith(ProtocolException.class.getName() + " ("), cause.getMessage());
+                        assertTrue(cause.getStackTrace().length > 0, "the stand-in keeps the stack trace");
+                        assertTrue(e.getMessage().endsWith(": the response is not valid HTTP/1.1 ("
+                                + ProtocolException.class.getName() + ")"), e.getMessage());
+                    }
                 }),
-                test("Causes.safe keeps a clean failure and replaces one that quotes a secret anywhere", () -> {
-                    var clean = new java.io.IOException("connection reset");
-                    assertTrue(Causes.safe(clean, List.of("secret")) == clean);
-                    var quoting = new java.io.IOException("outer", new IllegalStateException("inner secret"));
-                    var standIn = Causes.safe(quoting, List.of("secret"));
-                    assertFalse(Support.printed(standIn).contains("secret"));
-                    var suppressed = new java.io.IOException("outer");
-                    suppressed.addSuppressed(new java.io.IOException("the secret"));
-                    assertFalse(Support.printed(Causes.safe(suppressed, List.of("secret"))).contains("secret"));
-                    assertTrue(Causes.safe(clean, List.of("")) == clean, "an empty value is no secret");
+                test("a server that sends the body back as its status line, with Swedish letters: only the class", () -> {
+                    var e = kind("a server that echoes the request body").make().make(SECRET);
+                    assertEquals(IOException.class, e.getCause().getClass());
+                    assertTrue(e.getMessage().endsWith("(" + ProtocolException.class.getName() + ")"), e.getMessage());
+                }),
+                test("a server that sends part of the request line and closes: the chain of classes, no text", () -> {
+                    var e = kind("a server that sends part of the request line and closes").make().make(SECRET);
+                    assertTrue(e.getMessage().endsWith("(java.io.IOException, caused by java.io.EOFException)"),
+                            e.getMessage());
+                    var printed = Support.printed(e);
+                    assertTrue(printed.contains("Caused by: java.io.IOException: java.io.EOFException ("), printed);
+                    assertFalse(printed.contains("POST /v1/items"), "the request line: " + printed);
+                }),
+                test("Causes: only socket, TLS and timeout failures keep their text, and only without a value", () -> {
+                    var secrets = List.of("secret");
+                    assertTrue(Causes.textIsSafe(new ConnectException("Connection refused"), secrets));
+                    assertTrue(Causes.textIsSafe(new SSLHandshakeException("PKIX path building failed"), secrets));
+                    assertTrue(Causes.textIsSafe(new HttpConnectTimeoutException("HTTP connect timed out"), secrets));
+                    assertFalse(Causes.textIsSafe(new ConnectException("the secret"), secrets));
+                    var suppressed = new ConnectException("outer");
+                    suppressed.addSuppressed(new IOException("the secret"));
+                    assertFalse(Causes.textIsSafe(suppressed, secrets));
+                    assertFalse(Causes.textIsSafe(new SSLHandshakeException("outer", new IOException("the secret")),
+                            secrets));
+                    assertFalse(Causes.textIsSafe(new ProtocolException("Invalid status line: \"x\""), secrets));
+                    assertFalse(Causes.textIsSafe(new IOException("parsing HTTP/1.1 status line"), secrets));
+                    assertFalse(Causes.textIsSafe(new NumberFormatException("For input string: \"x\""), secrets));
+                    assertTrue(Causes.textIsSafe(new ConnectException("Connection refused"), List.of("")),
+                            "an empty value is no secret");
+                }),
+                test("Causes.withoutText copies the chain of classes and stack traces without any text", () -> {
+                    var root = new EOFException("the secret root");
+                    var failure = new IOException("parsing HTTP/1.1 status line, receiving [the secret]", root);
+                    var copy = Causes.withoutText(failure);
+                    var printed = Support.printed(copy);
+                    assertFalse(printed.contains("secret"), printed);
+                    assertTrue(copy.getMessage().startsWith("java.io.IOException ("), copy.getMessage());
+                    assertTrue(copy.getCause().getMessage().startsWith("java.io.EOFException ("));
+                    assertEquals(null, copy.getCause().getCause());
+                    assertEquals(List.of(failure.getStackTrace()), List.of(copy.getStackTrace()));
+                    assertEquals(List.of(root.getStackTrace()), List.of(copy.getCause().getStackTrace()));
+                    assertEquals("java.io.IOException, caused by java.io.EOFException", Causes.describe(failure, false));
+                    assertEquals("java.net.ConnectException: Connection refused",
+                            Causes.describe(new ConnectException("Connection refused"), true));
                 }),
                 test("IllegalArgumentException from build() does not quote header values", () -> {
                     var e = assertThrows(IllegalArgumentException.class, () -> RestClient.builder()
