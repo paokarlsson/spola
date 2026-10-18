@@ -28,3 +28,4 @@
 - 2026-10-18 15:53 · 20261018-1305-sakerhet-sessioner-och-inloggning · PASS · 2 rounds · Security review part 1: per-user session limit and cache headers · commits: e392fec, b4d95f7
 - 2026-10-18 17:23 · 20261018-1553-sakerhet-proxy-och-cookies · PASS · 2 rounds · Security review part 2: proxy warning, cookie hardening and doc fixes · commits: 236b800, 1f82568
 - 2026-10-18 18:22 · 20261018-1723-sakerhet-losenord · PASS · 1 rounds · Security review part 3: conditional hash upgrade and password hardening · commits: 0bc8e7b
+- 2026-10-18 19:16 · 20261018-1822-sakerhet-rest-klient · PASS · 1 rounds · Security review part 4: hide secrets and reject dot paths in client · commits: 53f304c
