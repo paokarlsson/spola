@@ -23,7 +23,10 @@ public final class CaddyExample {
 
     /**
      * The sessions for an application reached only over https: {@code __Host-SESSION} with
-     * {@code Secure} on every response, also when the scheme is {@code http}.
+     * {@code Secure} on every response, also over {@code http} and from a sender that
+     * {@code ForwardedHeaders} does not trust. The login sets
+     * {@code __Host-SESSION=<id>; Path=/; Secure; HttpOnly; SameSite=Lax} and the logout
+     * {@code __Host-SESSION=; Path=/; Max-Age=0; Secure; HttpOnly; SameSite=Lax}.
      *
      * @param clock {@code InstantSource.system()} in production; the tests move their own
      * @return the sessions
@@ -37,7 +40,8 @@ public final class CaddyExample {
 
     /**
      * The rules of {@link CsrfExample#security}, with {@code XSRF-TOKEN} {@code Secure} on every
-     * response.
+     * response that sets it, also over {@code http}:
+     * {@code XSRF-TOKEN=<token>; Path=/; Secure; SameSite=Lax}.
      *
      * @param sessions the sessions that keep the login
      * @return the security
@@ -88,10 +92,6 @@ public final class CaddyExample {
     public static HttpServer start(UserStore users) throws IOException {
         var router = router(TrustedProxies.of("172.18.0.5"), sessions(InstantSource.system()),
                 Authenticator.of(users, Pbkdf2PasswordHasher.defaults()));
-        // on every response, also over http and from a sender that ForwardedHeaders does not trust:
-        //   Set-Cookie: XSRF-TOKEN=<token>; Path=/; Secure; SameSite=Lax
-        //   Set-Cookie: __Host-SESSION=<id>; Path=/; Secure; HttpOnly; SameSite=Lax
-        //   Set-Cookie: __Host-SESSION=; Path=/; Max-Age=0; Secure; HttpOnly; SameSite=Lax   (logout)
         return HttpServer.start(options(), router);
     }
 }

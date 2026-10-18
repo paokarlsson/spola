@@ -202,15 +202,20 @@ public final class ForwardedHeaders implements Filter {
      * line names the sender's address and never a value; the values are not even read.
      */
     private void warnOnce(Request http, InetAddress sender) {
-        if (warned.get() || !(http.headers().contains(PROTO) || http.headers().contains(FOR))) {
-            return;
+        if (warned.get()) {
+            return; // said already: not even the names are looked at
         }
-        if (warned.compareAndSet(false, true)) {
+        boolean sent = http.headers().contains(PROTO) || http.headers().contains(FOR);
+        if (sent && warned.compareAndSet(false, true)) {
             log.log(Level.WARNING, warning(sender));
         }
     }
 
-    /** The warning's text: only the sender's address, never a value from the request. */
+    /**
+     * The warning's text: only the sender's address, never a value from the request. The fixed
+     * text must not contain {@code https}: the tests send {@code X-Forwarded-Proto: https} and
+     * check that the line does not contain the value.
+     */
     static String warning(InetAddress sender) {
         return PROTO + " or " + FOR + " from " + IpLiteral.format(sender.getAddress())
                 + " ignored: ForwardedHeaders does not trust this sender, so the request keeps the connection's"

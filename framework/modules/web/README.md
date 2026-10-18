@@ -759,10 +759,16 @@ kör det genom en riktig server med `HttpClient` och en `CookieManager`.
   Base64url utan utfyllnad: 43 tecken ur `[A-Za-z0-9_-]`, 256 bitar. Bara servern skapar id; ett
   id som klienten hittat på blir aldrig en session. Lagringen slår upp på SHA-256 av id:t och
   sparar aldrig själva id:t, så uppslagningen läcker ingen tid om hur mycket av ett id som är
-  rätt, och lagringen håller bara hashar av id:n. Medan en förfrågan hanteras finns id:t ändå som
-  text i förfrågans `Cookie`-huvud och, när svaret sätter cookien, i dess `Set-Cookie`.
-  `Session` har ingen `getId()`, och id:t syns aldrig i `toString()`, undantag, loggrader eller
-  problem-svar.
+  rätt, och lagringen håller bara hashar av id:n. Det är vad sessionslagret lovar, inte att
+  minnet saknar giltiga id: id:t finns som text som inget nollställer. Det ligger i förfrågans
+  `Cookie`-huvud och i svarets `Set-Cookie` som `String`, som finns kvar på heapen tills
+  skräpsamlaren tar dem, och dess byte ligger i anslutningens läs- och skrivbuffertar i
+  `spola.http`. Buffertarna behåller den senaste förfrågan och det senaste svaret, och nästa
+  förfrågan på samma anslutning skriver bara över så långt den når. De kan alltså hålla id:t så
+  länge anslutningen är öppen: på en keep-alive-anslutning som proxyn återanvänder så länge appen
+  kör, och när trafiken upphör tills `idleTimeout` (60 s som standard) stänger den och
+  skräpsamlaren tar buffertarna. `Session` har ingen `getId()`, och id:t syns aldrig i
+  `toString()`, undantag, loggrader eller problem-svar.
 - **Cookien in.** Alla värden med cookienamnet provas i ordning, och det första som pekar på en
   levande session används. Ett värde som inte är exakt 43 tecken ur `[A-Za-z0-9_-]` slås aldrig
   upp; ett felaktigt, okänt eller utgånget värde ger ingen session, inget 400 och inget
@@ -988,9 +994,9 @@ final class WhoamiApp {
 - **Appen lyssnar på `0.0.0.0` i Docker.** `HttpServerOptions.DEFAULT` lyssnar bara på loopback,
   och loopback nås bara inifrån appens egen container: Caddy i en annan container ansluter till
   appens adress på Dockers nät och skulle inte komma fram. `WhoamiApp.options()` lyssnar därför
-  på `0.0.0.0`, alla IPv4-adresser i containern (`InetAddress.ofLiteral("::")` tar också IPv6, där
-  systemet har det). Det gör porten nåbar för varje container på nätet, men inte utifrån så länge
-  den inte publiceras.
+  på `0.0.0.0`, alla IPv4-adresser i containern. (`InetAddress.ofLiteral("::")` tar också IPv6,
+  men bara där kärnan har IPv6; annars misslyckas `HttpServer.start` med `SocketException`.) Det
+  gör porten nåbar för varje container på nätet, men inte utifrån så länge den inte publiceras.
 - **`privateNetworks()` litar på hela nätet**, inte bara på proxyn: `10.0.0.0/8`,
   `172.16.0.0/12`, `192.168.0.0/16`, `127.0.0.0/8`, `::1` och `fc00::/7`. Med Dockers
   userland-proxy, och i Docker Desktop, kan en direkt anslutning till en publicerad port komma från

@@ -2632,15 +2632,23 @@ session med sitt id, bara mellan skapandet och förfrågans tillstånd). Inga ny
   krock dras ett nytt id.
 - **Uppslagningen på SHA-256.** Lagringen är en `ConcurrentHashMap<Key, SessionEntry>` där
   nyckeln är SHA-256 av id:ts ASCII-byte (fyra `long`, så `equals` och `hashCode` är billiga).
-  Själva id:t sparas inte i lagringen, i `SessionEntry`, i `Session` eller i något annat fält som
-  lever efter att svaret byggts: förfrågans tillstånd håller ett nytt id bara tills filtret har
-  lagt `Set-Cookie` på svaret och nollar fältet då. Tiden för en uppslagning beror därför bara
+  Själva id:t sparas inte i sessionslagret: inte i lagringen, i `SessionEntry` eller i `Session`,
+  och förfrågans sessionstillstånd håller ett nytt id bara tills filtret har byggt `Set-Cookie`
+  (eller förfrågan misslyckats) och nollar fältet då. Tiden för en uppslagning beror därför bara
   på hashvärdet av klientens text, inte på hur stor del av ett giltigt id den har gissat rätt
   (ingen jämförelse tecken för tecken med ett hemligt värde), och lagringen håller bara hashar
-  av id:n. Medan en förfrågan hanteras finns id:t ändå i minnet som `String`: i förfrågans
-  `Cookie`-huvud och, när svaret sätter cookien, i dess `Set-Cookie`, och sådana strängar kan
-  inte nollställas (rättat i 15b; meningen lovade tidigare mer än koden håller). Ett värde som
-  inte har exakt formatet (längd 43, alfabetet, alltså inga
+  av id:n. Mer än så lovar lagret inte: en minnesavbild av en körande server kan hålla giltiga
+  id, som text som inget nollställer. Id:t finns som `String` i förfrågans `Cookie`-huvud och i
+  svarets `Set-Cookie`, kvar på heapen tills skräpsamlaren tar dem, och som byte i anslutningens
+  läs- och skrivbuffertar i `spola.http` (`ConnectionInput` och `Connection`s
+  `BufferedOutputStream`). Buffertarna behåller den senaste förfrågan och det senaste svaret, och
+  nästa förfrågan på samma anslutning skriver bara över så långt den når, så de kan hålla id:t
+  så länge anslutningen är öppen: på en keep-alive-anslutning som proxyn återanvänder så länge
+  appen kör, och när trafiken upphör tills `idleTimeout` (60 s som standard) stänger den
+  (rättat i 15b: meningen lovade först att inga giltiga id fanns i minnet, och den första
+  rättelsen att id:t bara fanns där medan förfrågan hanterades). Att nollställa buffertarna efter
+  varje svar vore en ändring i `spola.http` och ligger utanför 15b; strängarna går inte att
+  nollställa alls. Ett värde som inte har exakt formatet (längd 43, alfabetet, alltså inga
   citattecken, ingen utfyllnad, inga `+` eller `/`) hashas aldrig. Id:t syns aldrig i
   `toString()` (`Session` visar antalet attribut, `Sessions` antal, gräns, tid och cookienamn,
   `Key` och de interna klasserna bara sitt namn), i undantag, loggrader eller problem-svar
@@ -2925,10 +2933,11 @@ i `java.base`, `ResponseCookie` och `Responses` i `spola.web`), och inget ändra
   exakt 43 tecken ur `[A-Za-z0-9_-]`, 256 bitar, samma form som sessions-id i 11a. Byte-arrayen
   nollställs efter kodningen. Ett cookie- eller huvudvärde med en annan form (citattecken,
   utfyllnad, `+` eller `/`, en annan längd) räknas som saknat: det jämförs aldrig och ger, för
-  cookien, en ny token på svaret. Token finns inte i något fält som lever efter svaret
-  (`Exchange` håller bara tre flaggor) och syns aldrig i `toString()` (`Csrf`,
-  `Csrf.Protection`, `Csrf.Exchange` och `WebSecurity` visar bara namn och antal), undantag,
-  loggrader eller problem-svar.
+  cookien, en ny token på svaret. Token finns inte i något fält i `Csrf` eller `WebSecurity` som
+  lever efter svaret (`Exchange` håller bara tre flaggor); som sessions-id:t finns den ändå som
+  text i `Cookie`, `X-XSRF-TOKEN`, `Set-Cookie` och anslutningens buffertar (se 15b, P4). Den
+  syns aldrig i `toString()` (`Csrf`, `Csrf.Protection`, `Csrf.Exchange` och `WebSecurity` visar
+  bara namn och antal), undantag, loggrader eller problem-svar.
 - **Jämförelsen i konstant tid.** Huvudets ASCII-byte jämförs med varje välformat
   `XSRF-TOKEN`-värde med `MessageDigest.isEqual`, som är konstanttid för lika långa arrayer (alla
   är 43 byte), och resultaten ELLER-as utan att avbryta vid första träff. Tiden avslöjar alltså
@@ -3249,10 +3258,10 @@ loggas i stället för att stoppa accepttråden.
   `http().scheme()` och `http().remoteAddress()` är proxyns anslutning, så både klienten och
   proxyn går att se.
 - **Regeln om betrodd avsändare.** Filtret frågar `proxies.trusts(request.http().remoteAddress()
-  .getAddress())`. Är svaret `false` går förfrågan vidare oförändrad och huvudena läses inte
-  alls: en obetrodd avsändare kan varken ändra värdena eller framkalla 400 med huvudena (annars
-  kunde vem som helst som når porten få en förfrågan nekad med ett skräpvärde, och fel i
-  tolkningen vore åtkomliga utifrån). Filtret räknar alltid från `request.http()` (avsändaren och
+  .getAddress())`. Är svaret `false` går förfrågan vidare oförändrad och huvudenas värden läses
+  inte (sedan 15b kontrolleras bara om fälten finns, för varningen): en obetrodd avsändare kan
+  varken ändra värdena eller framkalla 400 med huvudena (annars kunde vem som helst som når
+  porten få en förfrågan nekad med ett skräpvärde, och fel i tolkningen vore åtkomliga utifrån). Filtret räknar alltid från `request.http()` (avsändaren och
   huvudena) och aldrig från förfrågans nuvarande `scheme()` eller `clientAddress()`, så två
   `ForwardedHeaders` i samma kedja ger samma resultat som ett, och en adress i
   `X-Forwarded-For` kan aldrig göra sig själv till en betrodd avsändare.
@@ -3279,7 +3288,9 @@ loggas i stället för att stoppa accepttråden.
   inte att tolka säkert (Tomcat ger `http` för allt utom `https`). Filtret kastar
   `WebException(400, detail)`, så svaret är ett problem-svar genom routerns mappers, handlern och
   filtren innanför anropas inte, och det blir aldrig 500. `detail` namnger huvudet men aldrig
-  värdet (svaret kan hamna i loggar och värdet är data utifrån), och filtret loggar inget.
+  värdet (svaret kan hamna i loggar och värdet är data utifrån), och filtret loggar inget för
+  400-fallet (sedan 15b loggar det en varning, en gång per filter, när en obetrodd avsändare
+  skickar huvudena; se "Säkerhetsgranskning del 2").
 - **De strikta IP-literalerna, och varför `InetAddress.ofLiteral` inte räcker ensam.** IPv4 är
   fyra decimala delar med 1–3 ASCII-siffror, värdet 0–255 och ingen inledande nolla (utom `0`);
   IPv6 följer textformen i RFC 4291 §2.2: grupper med 1–4 hexsiffror i valfritt skiftläge, högst
@@ -3936,19 +3947,39 @@ borttaget), `Sessions` (id:t i minnet, `secure(true)` i produktion), `SessionOpt
   inte litar på och bakom en betrodd proxy med `X-Forwarded-Proto: http` och `https`. Exemplet
   återanvänder `CsrfExample.router` men har egna regler i `security`, eftersom
   `CsrfExample.security` bygger `Csrf.cookie()` och dess signatur används av ett femtiotal tester
-  och visas i README. Raderna med `CsrfExample` utan `secure(true)` bakom en betrodd proxy är kvar
-  i README som det de är: `Secure` efter schemat, som i Spring.
+  och visas i README. En överlagring `CsrfExample.security(sessions, csrf)` hade tagit bort
+  kopian, men då visar "Bakom Caddy" inte längre var `Csrf.cookie().withCookie(c ->
+  c.secure(true))` står i byggaren, och det är det delen ska lära ut. Reglerna finns därför i de två
+  exemplen; 13b:s test i `SchemeFlowTests` som byggde en tredje kopia använder nu
+  `CaddyExample.security`. Raderna som exemplet ger står i Javadoc för `sessions` och `security`
+  och direkt under koden i README, inte som en kommentar i `start`. Raderna med `CsrfExample` utan
+  `secure(true)` bakom en betrodd proxy är kvar i README som det de är: `Secure` efter schemat,
+  som i Spring.
 - **`0.0.0.0` i Docker-exemplen (P2).** `HttpServerOptions.DEFAULT` lyssnar på loopback, och det är
   rätt standard (en server blir inte nåbar utifrån av misstag), men i en container når Caddy i en
   annan container bara containerns adress på Dockers nät. `WhoamiApp.options()` och
   `CaddyExample.options()` lyssnar därför på `0.0.0.0` (`InetAddress.ofLiteral`, utan namnuppslag),
-  och README säger varför och att bara proxyns port ska publiceras. Testerna kontrollerar att
-  adressen är en jokeradress på port 8080 och att `DEFAULT` är loopback; de startar ingen server på
-  `0.0.0.0`.
+  och README säger varför och att bara proxyns port ska publiceras. `0.0.0.0` och inte `::`:
+  `::` tar också IPv6 men går bara att binda där kärnan har IPv6 (annars `SocketException:
+  Protocol family unavailable` från `HttpServer.start`), och README säger det. Testerna
+  kontrollerar att adressen är en jokeradress på port 8080 och att `DEFAULT` är loopback; de
+  startar ingen server på `0.0.0.0`. Utdraget "I produktion startas det så här" i "Inloggning med
+  session" lyssnar fortfarande på loopback (det är inget Docker-exempel) men pekar nu på "Bakom
+  Caddy" för `0.0.0.0` i en container.
 - **Id:t i minnet (P4).** Javadoc för `Sessions` och beslutet om uppslagningen på SHA-256 lovade att
-  inga giltiga id fanns i minnet. Det som håller är att lagringen bara har hashar av id:n; medan
-  en förfrågan hanteras finns id:t som `String` i `Cookie`-huvudet och i `Set-Cookie`. Texterna
-  säger nu det.
+  inga giltiga id fanns i minnet. Det som håller är att sessionslagret (lagringen, `SessionEntry`,
+  `Session` och förfrågans sessionstillstånd efter `Set-Cookie`) inte har något id och att
+  lagringen bara har hashar av id:n. Utanför lagret finns id:t som text som inget nollställer:
+  som `String` i `Cookie`-huvudet och i `Set-Cookie` tills skräpsamlaren tar dem, och i
+  anslutningens läs- och skrivbuffertar i `spola.http`, som behåller den senaste förfrågan och det
+  senaste svaret och bara skrivs över så långt nästa förfrågan når. De kan alltså hålla id:t så
+  länge anslutningen är öppen, på en keep-alive-anslutning som proxyn återanvänder så länge appen
+  kör. Texterna (Javadoc, README "Sessioner", beslutet ovan, PROGRESS) säger nu det. Den första
+  rättelsen sa att id:t fanns i minnet "medan en förfrågan hanteras" och att inget fält som lever
+  efter svaret höll det; en heapdump med bara levande objekt hittade id:t i buffertarna på en
+  öppen keep-alive-anslutning efter svaret, så den texten var också för stark. Buffertarna nollställs
+  inte: det vore en ändring i `spola.http`, som uppdraget inte rör (kriterium 2), och strängarna
+  går inte att nollställa alls. Ingen kod ändrades för P4.
 - **En privat klientadress är ingen behörighet (P5).** `WebRequest.clientAddress()`,
   `TrustedProxies.privateNetworks()` och README ("Bakom en omvänd proxy") säger att adressen
   säger var förfrågan kom ifrån, inte vem som skickade den: med `privateNetworks()` kan varje
@@ -3970,10 +4001,22 @@ borttaget), `Sessions` (id:t i minnet, `secure(true)` i produktion), `SessionOpt
   ger `__Host-SESSION=<id>; Path=/; Secure; HttpOnly; SameSite=Lax` över `http`. I
   `spola.security.web`: `CaddyExampleTests` (i `SchemeTests`, före läcktesterna) med flödet ovan,
   att `SESSION` inte läses, att `__Host-` kräver `secure(true)`, `options()` och README.
+  `SessionReadmeTests` kontrollerar också att punkten om id:t säger vad koden håller (P4). Texterna
+  jämförs med blanktecken hopslagna, så att en kontroll inte beror på var Markdown radbryts.
+  - **Varningar i ett grönt bygge.** Fem äldre och nya tester går genom det publika
+    `trusting(proxies)` med en avsändare som filtret inte litar på och skriver därför den riktiga
+    raden på `WARNING` till byggets utdata genom JDK:ns standardlogg, en per filter: i `spola.web`
+    `SessionSchemeTests` och `ForwardedChainTests` (13a/13b) och `ForwardedReadmeTests` (genom
+    `WhoamiApp.router`), i `spola.security.web` `SchemeFlowTests` (13b) och `CaddyExampleTests`
+    (genom `CaddyExample.router`). Det är väntat och inget fel. De testar det publika API:t och
+    exemplen som README visar dem, och `spola.security.web` når inte den paketprivata fabriken, så
+    de får ingen egen logger; testerna som kontrollerar varningen (`ForwardedWarningTests`,
+    `ForwardedLeakTests`) fångar den med fabriken.
 - **Ändringar i befintliga testfiler.** `SchemeFlowTests.flow` tar sessionscookiens namn (den
   gamla signaturen ger `SESSION`); `CsrfSupport` och `CsrfLeakTests` maskerar och registrerar
   också `__Host-SESSION`, så att läcktestet täcker de nya svaren; `SchemeReadmeTests` letar efter
   den nya texten i "Bakom Caddy" i stället för utdraget; `ForwardedLeakTests` ger filtret som inte
   litar på avsändaren en egen logg; kommentarerna i `WhoamiApp`, `CartApp`, `LoginExample` och
-  `CsrfExample` (README visar dem). Varje befintlig förväntan på svar och `Set-Cookie` gäller
-  oförändrad.
+  `CsrfExample` (README visar dem). 13b:s test "character for character" i `SchemeFlowTests`
+  bygger sin säkerhet med `CaddyExample.security` i stället för en egen kopia av reglerna. Varje
+  befintlig förväntan på svar och `Set-Cookie` gäller oförändrad.

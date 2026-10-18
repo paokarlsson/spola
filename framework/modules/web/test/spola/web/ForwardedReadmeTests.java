@@ -34,6 +34,11 @@ final class ForwardedReadmeTests {
         return text.substring(start, end);
     }
 
+    /** {@code text} with every run of whitespace as one space, so that a check does not depend on where Markdown wraps. */
+    static String flat(String text) {
+        return text.replaceAll("\\s+", " ");
+    }
+
     static final Case CADDY = new Case("Caddy's headers", "X-Forwarded-Proto: https", "X-Forwarded-For: 203.0.113.7");
 
     static Suite tests() {
@@ -87,9 +92,9 @@ final class ForwardedReadmeTests {
                     assertTrue(spola.http.HttpServerOptions.DEFAULT.address().isLoopbackAddress());
                     var source = Files.readString(Path.of("modules/web/test/spola/web/WhoamiApp.java"));
                     assertTrue(source.contains("HttpServer.start(options(), router)"), "main starts with options()");
-                    var section = section();
+                    var section = flat(section());
                     for (var text : List.of("**Appen lyssnar på `0.0.0.0` i Docker.**", "`HttpServerOptions.DEFAULT` lyssnar bara på loopback",
-                            "Caddy i en annan container")) {
+                            "Caddy i en annan container", "men bara där kärnan har IPv6")) {
                         assertTrue(section.contains(text), "the section lacks " + text);
                     }
                 }),
@@ -98,18 +103,19 @@ final class ForwardedReadmeTests {
                     var section = section();
                     int at = section.indexOf("`X-Forwarded-Proto or X-Forwarded-For from 172.18.0.6 ignored:");
                     assertTrue(at > 0, "the section shows the warning");
-                    var shown = section.substring(at + 1, section.indexOf(", ...`", at)).replaceAll("\\s+", " ");
+                    var shown = flat(section.substring(at + 1, section.indexOf(", ...`", at)));
                     var actual = ForwardedHeaders.warning(java.net.InetAddress.ofLiteral("172.18.0.6"));
                     assertTrue(actual.startsWith(shown), "the README's warning differs from " + actual);
+                    var flat = flat(section);
                     for (var text : List.of("**En varning, en gång, när avsändaren inte är betrodd.**", "(loggern `spola.web`)",
                             "aldrig huvudenas värden", "en gång per filter, inte per förfrågan",
-                            "**En app\n  som bara nås över https** sätter därför `secure(true)` på båda cookierna",
+                            "**En app som bara nås över https** sätter därför `secure(true)` på båda cookierna",
                             "`__Host-SESSION`", "**En privat klientadress är ingen behörighet.**",
-                            "Släpp därför aldrig in en förfrågan bara för\n  att klientadressen är privat")) {
-                        assertTrue(section.contains(text), "the section lacks " + text);
+                            "Släpp därför aldrig in en förfrågan bara för att klientadressen är privat")) {
+                        assertTrue(flat.contains(text), "the section lacks " + text);
                     }
                     for (var old : List.of("och cookierna får `Secure` utan `secure(true)`", "huvudena läses inte alls")) {
-                        assertFalse(section.contains(old), "the section still says " + old);
+                        assertFalse(flat.contains(old), "the section still says " + old);
                     }
                 }),
                 test("the Spring Boot code comes first: forward-headers-strategy, getScheme() and getRemoteAddr()", () -> {

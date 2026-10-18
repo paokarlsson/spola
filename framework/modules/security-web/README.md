@@ -489,6 +489,9 @@ var router = LoginExample.router(Router.builder(), LoginExample.security(session
 var server = HttpServer.start(HttpServerOptions.DEFAULT.withPort(8080), router);
 ```
 
+`HttpServerOptions.DEFAULT` lyssnar bara på loopback. I en container bakom en proxy i en annan
+container lyssnar appen på `0.0.0.0` i stället, som i [Bakom Caddy](#bakom-caddy).
+
 `router` tar en `RouterBuilder` bara för att testerna ska kunna ge en som loggar till dem och
 har fler vägar; i en app står `Router.builder()` direkt i metoden. Testerna kör exemplet genom en
 riktig server med `HttpClient` och `CookieManager`: `/actuator/health` ger 200 utan
@@ -847,7 +850,10 @@ public final class CaddyExample {
 
     /**
      * The sessions for an application reached only over https: {@code __Host-SESSION} with
-     * {@code Secure} on every response, also when the scheme is {@code http}.
+     * {@code Secure} on every response, also over {@code http} and from a sender that
+     * {@code ForwardedHeaders} does not trust. The login sets
+     * {@code __Host-SESSION=<id>; Path=/; Secure; HttpOnly; SameSite=Lax} and the logout
+     * {@code __Host-SESSION=; Path=/; Max-Age=0; Secure; HttpOnly; SameSite=Lax}.
      *
      * @param clock {@code InstantSource.system()} in production; the tests move their own
      * @return the sessions
@@ -861,7 +867,8 @@ public final class CaddyExample {
 
     /**
      * The rules of {@link CsrfExample#security}, with {@code XSRF-TOKEN} {@code Secure} on every
-     * response.
+     * response that sets it, also over {@code http}:
+     * {@code XSRF-TOKEN=<token>; Path=/; Secure; SameSite=Lax}.
      *
      * @param sessions the sessions that keep the login
      * @return the security
@@ -912,10 +919,6 @@ public final class CaddyExample {
     public static HttpServer start(UserStore users) throws IOException {
         var router = router(TrustedProxies.of("172.18.0.5"), sessions(InstantSource.system()),
                 Authenticator.of(users, Pbkdf2PasswordHasher.defaults()));
-        // on every response, also over http and from a sender that ForwardedHeaders does not trust:
-        //   Set-Cookie: XSRF-TOKEN=<token>; Path=/; Secure; SameSite=Lax
-        //   Set-Cookie: __Host-SESSION=<id>; Path=/; Secure; HttpOnly; SameSite=Lax
-        //   Set-Cookie: __Host-SESSION=; Path=/; Max-Age=0; Secure; HttpOnly; SameSite=Lax   (logout)
         return HttpServer.start(options(), router);
     }
 }
@@ -946,8 +949,9 @@ Set-Cookie: __Host-SESSION=; Path=/; Max-Age=0; Secure; HttpOnly; SameSite=Lax  
 - **Ordningen.** Schemat som gäller är det som förfrågan har när den når `security.filter()`.
   Registreras `ForwardedHeaders` efter säkerhetsfiltret ser handlern `https`, men cookierna får
   inget `Secure` från schemat.
-- **Bara från en betrodd proxy.** `X-Forwarded-Proto` och `X-Forwarded-For` läses bara när den
-  direkta avsändaren är betrodd. Lita helst bara på proxyns adress, som exemplet gör
+- **Bara från en betrodd proxy.** Värdena i `X-Forwarded-Proto` och `X-Forwarded-For` läses bara
+  när den direkta avsändaren är betrodd; från en annan avsändare kontrollerar filtret bara om
+  fälten finns, för varningen ovan. Lita helst bara på proxyns adress, som exemplet gör
   (`TrustedProxies.of("172.18.0.5")`, med en fast adress för Caddy, i Docker Compose
   `ipv4_address`; se "Bakom en omvänd proxy" i `spola.web`).
 - **Lyssna på `0.0.0.0`.** `HttpServerOptions.DEFAULT` lyssnar bara på loopback, som Caddy i en

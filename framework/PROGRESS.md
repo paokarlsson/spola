@@ -786,8 +786,9 @@
 - `spola.web`: `WebRequest.scheme()` och `clientAddress()` (anslutningens värden utan filtret),
   `TrustedProxies` (funktionellt gränssnitt med `privateNetworks()` och `of(String...)`) och
   `ForwardedHeaders.trusting(TrustedProxies)`, motsvarigheten till
-  `server.forward-headers-strategy=native` (Tomcats `RemoteIpValve`). Huvudena läses bara när den
-  direkta avsändaren (`http().remoteAddress()`) är betrodd. `X-Forwarded-For` gås igenom från
+  `server.forward-headers-strategy=native` (Tomcats `RemoteIpValve`). Huvudenas värden läses bara
+  när den direkta avsändaren (`http().remoteAddress()`) är betrodd (sedan 15b kontrolleras annars
+  bara om fälten finns, för varningen). `X-Forwarded-For` gås igenom från
   höger förbi betrodda adresser; den första obetrodda är klienten och inget till vänster läses.
   `X-Forwarded-Proto` är exakt ett fält med `http` eller `https`. Ogiltiga värden från en betrodd
   avsändare ger 400 (problem-svar som namnger huvudet men inte värdet), aldrig 500. Strikta
@@ -1008,10 +1009,14 @@
 - **Exempel som går att nå (P2).** `WhoamiApp.options()` och `CaddyExample.options()` lyssnar på
   `0.0.0.0` port 8080, och README säger varför (loopback nås inte från Caddys container). README
   visar källorna oförändrade, och testerna jämför dem.
-- **Rättade påståenden (P4, P5).** `Sessions` Javadoc, README och ARCHITECTURE säger att lagringen
-  bara håller hashar av id:n och att id:t finns som text i `Cookie` och `Set-Cookie` medan
-  förfrågan hanteras. `WebRequest.clientAddress()`, `TrustedProxies.privateNetworks()` och README
-  ("Bakom en omvänd proxy") säger att en privat klientadress inte är en behörighet.
+- **Rättade påståenden (P4, P5).** `Sessions` Javadoc, README och ARCHITECTURE säger att
+  sessionslagret inte har något id och att lagringen bara håller hashar av id:n, inte att minnet
+  saknar giltiga id: id:t finns som text som inget nollställer, som `String` i `Cookie` och
+  `Set-Cookie` tills skräpsamlaren tar dem, och i anslutningens läs- och skrivbuffertar i
+  `spola.http` så länge anslutningen är öppen (en keep-alive-anslutning som proxyn återanvänder
+  kan vara öppen så länge appen kör). `WebRequest.clientAddress()`,
+  `TrustedProxies.privateNetworks()` och README ("Bakom en omvänd proxy") säger att en privat
+  klientadress inte är en behörighet.
 - Javadoc för `ForwardedHeaders`, `Sessions`, `SessionOptions`, `WebRequest`, `TrustedProxies`,
   `Csrf`, `WebSecurity` och båda `module-info.java`. Inga ändrade `requires` eller `exports`, ingen
   reflektion, inga nya filtyper och inga nya huvudkällfiler.
@@ -1021,7 +1026,14 @@
   testfiler som ändrades: `SchemeFlowTests` (sessionscookiens namn som parameter), `CsrfSupport`
   och `CsrfLeakTests` (`__Host-SESSION` maskeras och räknas), `SchemeReadmeTests` (den nya texten
   i "Bakom Caddy"), `ForwardedLeakTests` (egen logg för filtret) och kommentarerna i `WhoamiApp`,
-  `CartApp`, `LoginExample` och `CsrfExample`.
+  `CartApp`, `LoginExample` och `CsrfExample`. `SessionReadmeTests` kontrollerar att punkten om
+  id:t säger vad koden håller (P4), och 13b:s test i `SchemeFlowTests` använder
+  `CaddyExample.security` i stället för en egen kopia av reglerna.
+- **Väntade varningar i bygget.** Fem tester går genom det publika `ForwardedHeaders.trusting`
+  med en avsändare som filtret inte litar på (`SessionSchemeTests`, `ForwardedChainTests`,
+  `ForwardedReadmeTests`, `SchemeFlowTests`, `CaddyExampleTests`) och skriver den riktiga
+  `WARNING`-raden till byggets utdata, en per filter. Det är väntat; testerna som kontrollerar
+  varningen fångar den med en egen logger.
 
 ### Versioner och releaser (gjort för hand, utanför loopen)
 - `VERSION` i `Build.java` (nu `0.1.0`) sätts som modulversion i varje jar
@@ -1244,7 +1256,10 @@
   får 400 på alla vägar bakom filtret (cookietolkningens gräns). Sätter funktionen `maxAge` (en
   beständig cookie) skickar JDK:ns `CookieManager` tillbaka id:t inom citattecken (RFC 2965, se
   08c nedan), och ett sådant värde slås aldrig upp; webbläsare berörs inte. Id:t finns som `String` i
-  förfrågans `Cookie`-huvud och i svarets `Set-Cookie` och kan inte nollställas. Utgången följer
+  förfrågans `Cookie`-huvud och i svarets `Set-Cookie` och kan inte nollställas, och anslutningens
+  läs- och skrivbuffertar i `spola.http` nollställs inte heller: de kan hålla id:t så länge
+  anslutningen är öppen, på en keep-alive-anslutning som proxyn återanvänder så länge appen kör
+  (15b). En minnesavbild av en körande server kan alltså hålla giltiga id. Utgången följer
   `InstantSource`; med systemklockan förlänger en klocka som går bakåt sessionerna och en som
   hoppar framåt avslutar dem.
 - **Säkerhet i webben (spola.security.web, 10b):** säkerhetskritisk; bör granskas av en

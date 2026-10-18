@@ -1,6 +1,7 @@
 package spola.web;
 
 import static spola.test.Assertions.assertEquals;
+import static spola.test.Assertions.assertFalse;
 import static spola.test.Assertions.assertTrue;
 import static spola.test.Tests.suite;
 import static spola.test.Tests.test;
@@ -141,7 +142,8 @@ final class SessionReadmeTests {
                         + " Secure over plain http", () -> {
                     var section = section();
                     assertTrue(section.contains(PRODUCTION), "the README shows the production setting");
-                    // the code of PRODUCTION
+                    // the code of PRODUCTION, copied by hand: PRODUCTION is the README's block as a string and this is
+                    // the same code compiled, so a change to one must be made to the other
                     Sessions sessions = Sessions.inMemory(SessionOptions.DEFAULT
                             .withCookieName("__Host-SESSION")
                             .withCookie(cookie -> cookie.secure(true)));
@@ -161,6 +163,19 @@ final class SessionReadmeTests {
                             "`Csrf.cookie().withCookie(c -> c.secure(true))`", "[Bakom en omvänd proxy](#bakom-en-omvänd-proxy)")) {
                         assertTrue(section.contains(text), "the section lacks " + text);
                     }
+                }),
+                test("15b: the id bullet promises what the code holds: only hashes in the store, and the id as text in"
+                        + " the headers and in the connection's buffers for as long as the connection is open", () -> {
+                    var section = ForwardedReadmeTests.flat(section());
+                    for (var text : List.of("lagringen håller bara hashar av id:n",
+                            "inte att minnet saknar giltiga id", "`Cookie`-huvud och i svarets `Set-Cookie` som `String`",
+                            "anslutningens läs- och skrivbuffertar i `spola.http`",
+                            "nästa förfrågan på samma anslutning skriver bara över så långt den når",
+                            "så länge anslutningen är öppen", "`idleTimeout`")) {
+                        assertTrue(section.contains(text), "the id bullet lacks " + text);
+                    }
+                    assertFalse(section.contains("Medan en förfrågan hanteras finns id:t"), "the section still says the id is"
+                            + " only in memory while a request is handled");
                 }),
                 test("the example with secure = true sets Secure", () -> {
                     try (var server = Support.serve(new CartApp(true).router())) {

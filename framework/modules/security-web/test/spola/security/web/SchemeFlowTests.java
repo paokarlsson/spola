@@ -163,8 +163,11 @@ final class SchemeFlowTests {
         return flow(client, base, sessions, proxy, "SESSION");
     }
 
-    /** {@link #flow(HttpClient, String, Sessions, List)} with the session cookie {@code cookie} (15b: {@code __Host-SESSION}). */
-    static Flow flow(HttpClient client, String base, Sessions sessions, List<String> proxy, String cookie)
+    /**
+     * {@link #flow(HttpClient, String, Sessions, List)} with the session cookie named
+     * {@code sessionCookieName} (15b: {@code __Host-SESSION}).
+     */
+    static Flow flow(HttpClient client, String base, Sessions sessions, List<String> proxy, String sessionCookieName)
             throws Exception {
         var health = send(client, base, "GET", "/actuator/health", null, proxy);
         assertEquals(200, health.statusCode());
@@ -176,19 +179,19 @@ final class SchemeFlowTests {
                 with(proxy, "Cookie: XSRF-TOKEN=" + first, "X-XSRF-TOKEN: " + first));
         assertEquals(200, login.statusCode(), login.body());
         assertEquals("{\"success\":true,\"username\":\"anna\"}", login.body());
-        var id = value(login, cookie);
+        var id = value(login, sessionCookieName);
         var second = value(login, Csrf.COOKIE_NAME);
         assertNotEquals(first, second);
         assertEquals(List.of("no-store"), login.headers().allValues("Cache-Control"));
         assertEquals(1, sessions.size());
 
         var me = send(client, base, "GET", "/api/auth/me", null,
-                with(proxy, "Cookie: " + cookie + "=" + id + "; XSRF-TOKEN=" + second));
+                with(proxy, "Cookie: " + sessionCookieName + "=" + id + "; XSRF-TOKEN=" + second));
         assertEquals(200, me.statusCode());
         assertEquals("{\"username\":\"anna\"}", me.body());
 
         var logout = send(client, base, "POST", "/api/auth/logout", null,
-                with(proxy, "Cookie: " + cookie + "=" + id + "; XSRF-TOKEN=" + second, "X-XSRF-TOKEN: " + second));
+                with(proxy, "Cookie: " + sessionCookieName + "=" + id + "; XSRF-TOKEN=" + second, "X-XSRF-TOKEN: " + second));
         assertEquals(200, logout.statusCode(), logout.body());
         assertEquals("{\"success\":true}", logout.body());
         var third = value(logout, Csrf.COOKIE_NAME);
@@ -198,7 +201,7 @@ final class SchemeFlowTests {
         var after = send(client, base, "GET", "/api/auth/me", null, with(proxy, "Cookie: XSRF-TOKEN=" + third));
         LoginFlowTests.assertPlain401(after);
         var oldId = send(client, base, "GET", "/api/auth/me", null,
-                with(proxy, "Cookie: " + cookie + "=" + id + "; XSRF-TOKEN=" + third));
+                with(proxy, "Cookie: " + sessionCookieName + "=" + id + "; XSRF-TOKEN=" + third));
         LoginFlowTests.assertPlain401(oldId);
         return new Flow(templates(health), templates(login), templates(me), templates(logout), templates(after));
     }
@@ -260,17 +263,10 @@ final class SchemeFlowTests {
                 test("character for character the lines that withCookie(c -> c.secure(true)) gives, but for the id and"
                         + " the token", () -> {
                     var behindCaddy = behind(TrustedProxies.privateNetworks(), CADDY);
-                    // the same application with secure(true) in both cookie functions, reached directly over http
+                    // the same application with secure(true) in both cookie functions, reached directly over http:
+                    // CaddyExample.security is CsrfExample's rules with Csrf.cookie().withCookie(c -> c.secure(true))
                     Sessions sessions = CsrfExample.sessions(true, InstantSource.system());
-                    var security = WebSecurity.builder()
-                            .sessions(sessions)
-                            .csrf(Csrf.cookie().withCookie(c -> c.secure(true)))
-                            .rule(RequestMatcher.exactly("/api/auth/login"), AccessRule.permitAll())
-                            .rule(RequestMatcher.exactly("/api/auth/logout"), AccessRule.permitAll())
-                            .rule(RequestMatcher.exactly("/actuator/health"), AccessRule.permitAll())
-                            .rule(RequestMatcher.anyRequest(), AccessRule.authenticated())
-                            .build();
-                    try (var server = Support.serve(CsrfExample.router(Router.builder(), security,
+                    try (var server = Support.serve(CsrfExample.router(Router.builder(), CaddyExample.security(sessions),
                             LoginSupport.authenticator()))) {
                         var secureTrue = flow(server, sessions, List.of());
                         assertEquals(SECURE, secureTrue);

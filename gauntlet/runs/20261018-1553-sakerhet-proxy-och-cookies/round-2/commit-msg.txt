@@ -1,0 +1,14 @@
+docs(web): say where a session id stays in memory
+
+The session layer keeps no id and the store holds only hashes, but the
+id stays as text in headers and in spola.http's connection buffers for
+as long as a keep-alive connection is open; the Javadoc, README,
+ARCHITECTURE and PROGRESS now say so. Also fixes older 13a sentences,
+the IPv6 bind note and README checks that depended on line wraps.
+
+Gauntlet-Run: 20261018-1553-sakerhet-proxy-och-cookies
+Gauntlet-Round: 2/4
+Gauntlet-Verdict: PASS (0 blocker, 0 major, 8 minor upheld)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_016R1SyuZe48AGwQWbo2Xdkz

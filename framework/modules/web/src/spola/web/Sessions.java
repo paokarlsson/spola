@@ -70,14 +70,22 @@ import spola.http.Response;
  * {@code new SecureRandom()} per {@code Sessions}, not {@code getInstanceStrong()}, which can
  * block), encoded as Base64url without padding: exactly 43 characters from
  * {@code [A-Za-z0-9_-]}, 256 bits. An id a client made up never becomes a session. The store is
- * a {@link ConcurrentHashMap} whose key is the SHA-256 of the id's ASCII bytes; the id itself
- * is not kept in the store, in a {@link Session} or in any field that outlives the response. A
+ * a {@link ConcurrentHashMap} whose key is the SHA-256 of the id's ASCII bytes. The session
+ * layer keeps no id: not in the store, not in a {@link Session}, and the request's session state
+ * drops a new id once the filter has built the {@code Set-Cookie} (or the request failed). A
  * lookup therefore takes a time that depends on the hash of the client's text, not on how much
- * of a valid id it guessed, and the store holds only hashes of ids. While a request is handled,
- * its id is still in memory as text: in the request's {@code Cookie} header and, when the
- * response sets the cookie, in its {@code Set-Cookie} line, as {@code String}s that cannot be
- * cleared. The id never appears in a {@code toString()}, an exception message, a log line or a
- * problem response.
+ * of a valid id it guessed, and the store holds only hashes of ids.
+ *
+ * <p>That is all this class promises: a heap dump of a running server can still hold valid ids,
+ * as text that nothing clears. The id is in the request's {@code Cookie} header and in the
+ * response's {@code Set-Cookie} as {@code String}s, which stay on the heap until the garbage
+ * collector reclaims them. Its bytes are also in the connection's read and write buffers in
+ * {@code spola.http}, which keep the last request and response; a later request on the same
+ * connection overwrites them only as far as it reaches. So they can hold the id for as long as
+ * the connection is open: on a keep-alive connection that a proxy keeps reusing, as long as the
+ * application runs, and once traffic stops, until {@code HttpTimeouts.idleTimeout} (60 s by
+ * default) closes it and the garbage collector reclaims them. The id never appears in a
+ * {@code toString()}, an exception message, a log line or a problem response.
  *
  * <h2>The cookie in</h2>
  * Every value of the cookie {@link SessionOptions#cookieName} ({@link WebRequest#cookieAll}) is
