@@ -24,6 +24,16 @@ public final class SecurityTests {
                 AuthenticatorTests.tests(),
                 ConcurrencyTests.tests(),
                 SecretTests.tests(),
+                BlowfishTests.tests(),
+                BCryptVectorTests.tests(),
+                BCryptHasherTests.tests(),
+                BCryptMalformedTests.tests(),
+                DelegatingTests.tests(),
+                BCryptAuthenticatorTests.tests(),
+                BCryptSecretTests.tests(),
+                BCryptExampleTests.tests(),
+                UpgradeRaceTests.tests(),
+                MalformedLoginTests.tests(),
                 ReadmeTests.tests(),
                 SourceRulesTests.tests())
                 .timeout(Duration.ofSeconds(60));

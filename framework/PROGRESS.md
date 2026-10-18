@@ -515,7 +515,7 @@
   `1 <= lengthBytes <= 1024`.
 - `PasswordHasher` (`hash`, `matches`, `needsRehash`) och `Pbkdf2PasswordHasher` (`defaults()`:
   600 000 iterationer, 16 byte salt, 32 byte hash; `of(...)` inom 10 000–10 000 000, 16–64,
-  16–64). Lösenord: UTF-8 med `REPORT`, 1–1 024 tecken (kontrolleras före kodningen), ingen
+  16–64; sedan 15c högst 32 byte hash). Lösenord: UTF-8 med `REPORT`, 1–1 024 tecken (kontrolleras före kodningen), ingen
   normalisering, byte-arrayen nollställs. PHC-format `$pbkdf2-sha256$i=N$salt$hash` (Base64
   utan utfyllnad) med strikt tolkning: högst 256 tecken, utskrivbar ASCII, fem delar, `i` utan
   inledande nolla 1–10 000 000, kanonisk Base64, salt 8–64 och hash 16–64 byte. En felaktig
@@ -523,7 +523,8 @@
 - `User` (record; användarnamn 1–256 tecken, roller 1–100 tecken utskrivbar ASCII utan
   mellanslag, oföränderlig sorterad kopia, `toString()` utan hash och med escapade styrtecken),
   `UserStore`, `InMemoryUserStore` (`add`, `find`, `updatePassword`, `upgrader(hasher)` som
-  bara byter en hash som fortfarande `needsRehash`, atomärt; trådsäker, skiftlägeskänslig), `Identity` (`hasRole`), `AuthResult` (sealed: `Authenticated`,
+  bara byter en hash som fortfarande `needsRehash`, atomärt; sedan 15c `upgrader()`, en
+  compare-and-set på den verifierade hashen; trådsäker, skiftlägeskänslig), `Identity` (`hasRole`), `AuthResult` (sealed: `Authenticated`,
   `Failed`), `Failure` (`BAD_CREDENTIALS`, `DISABLED`), `PasswordUpgrade` och `Authenticator`
   (dummyhash för okända och ogiltiga användarnamn och `null`-lösenord, `DISABLED` bara efter rätt
   lösenord, uppgradering vid `needsRehash` där ett `RuntimeException` loggas med klassnamnet och
@@ -583,6 +584,591 @@
   filter, routerns 400/404/405/`OPTIONS`, 200 virtuella trådar, markörer i alla svar och
   loggrader, README och källregler.
 
+### Uppdrag 11a: sessioner del 1, sessioner i minnet med sessionscookie (`spola.web`)
+- **Första delen av behovet "Inloggning med sessioner och CSRF-skydd för ett JSON-API"** (appen
+  psykologen). **11b** (inloggning och utloggning med sessionen i `spola.security.web`) och
+  **11c** (CSRF-skydd med `XSRF-TOKEN`) kom sedan (se nedan).
+- **Säkerhetskritisk kod.** Sessions-id:t ska bära inloggningen i 11b. Koden är testad med över
+  20 konstruerade cookievärden, 10 000 id, 200 samtidiga klienter och markörer för varje id i
+  loggrader, `toString()`, undantag och kroppar, men **en människa bör granska den** innan
+  ramverket används på riktigt.
+- `Sessions.inMemory(SessionOptions[, InstantSource])` i `spola.web`, motsvarigheten till
+  `HttpSession` med `server.servlet.session.*`: `filter()` registreras på routern, de statiska
+  `find` (`getSession(false)`), `getOrCreate` (`getSession()`), `renew` (`changeSessionId()`) och
+  `invalidate`, och `size()`. `Session` har `get`/`put`/`remove` med `AttributeKey<T>` och ingen
+  `id()`. `SessionOptions` (record med `DEFAULT` och `withX`): `idleTimeout` (30 minuter),
+  `maxSessions` (10 000), `cookieName` (`SESSION`) och `cookie` (funktion för cookiens
+  attribut); alla problem i ett `IllegalArgumentException` med en rad per problem.
+- Id: 32 byte från en `new SecureRandom()` per `Sessions`, Base64url utan utfyllnad (43 tecken,
+  256 bitar). Lagringen slår upp på SHA-256 av id:t och sparar aldrig id:t. Bara värden med
+  exakt formatet slås upp; felaktiga, okända och utgångna värden ger ingen session, inget 400
+  och inget `Set-Cookie`. Alla `SESSION`-värden provas i ordning.
+- Cookien: `SESSION=<id>; Path=/; HttpOnly; SameSite=Lax` med attributen från `withCookie`
+  (funktionen körs en gång, i `inMemory`, och fel i den ger `IllegalArgumentException` vid
+  uppstart); borttagningen med samma `Path`, `Domain` och `Secure` och `Max-Age=0`; högst ett
+  `Set-Cookie` per svar med det slutliga utfallet; `Cache-Control: no-store` om svaret saknar
+  `Cache-Control` (sedan 15a också när handlerns värde låter en delad cache spara svaret, se 15a
+  nedan). `Secure` i 11a bara uttryckligen; sedan 13b också när förfrågans schema är
+  `https` (se 13b nedan).
+- Utgång efter `idleTimeout` sedan senaste användningen (filtrets uppslagning räknas), borttagning
+  vid uppslagning, städning högst en gång per minut i filtret, ingen bakgrundstråd. Gränsen
+  `maxSessions` gäller också vid samtidiga skapanden; vid gränsen städas först och sedan ger
+  `getOrCreate` 503 (problem-svar utan `Set-Cookie`); befintliga sessioner tas aldrig bort.
+- `renew` gäller direkt också för förfrågningar som redan hanteras med det gamla id:t (deras
+  `Session` ser en avslutad session); samma förfrågans `Session` fungerar efter `renew`. Utan
+  filtret, och med filtret två gånger, ger metoderna 500 (`IllegalStateException`).
+- `module-info.java` har en punkt om sessionerna (inga ändrade `requires` eller `exports`).
+  `README.md` i `modules/web/` har avsnittet "Sessioner": Spring Boot-kod (`HttpSession`,
+  `changeSessionId`, `invalidate`, `server.servlet.session.*`) bredvid `CartApp.java`
+  (kompilerad testkälla som ett test jämför med README), nya rader i jämförelsetabellen och
+  avvikelsetabellen, och rekommendationen `__Host-SESSION` med `secure(true)` i produktion.
+- 93 nya tester i `spola.web` (registrerade i `WebTests` via `SessionTests`), ungefär 7 s.
+
+### Uppdrag 11b: sessioner del 2, inloggning och utloggning med session (`spola.security.web`)
+- **Andra delen av behovet "Inloggning med sessioner och CSRF-skydd för ett JSON-API"** (appen
+  psykologen). Ett JSON-API kan nu logga in med en sessionscookie och få 401 utan
+  `WWW-Authenticate`. **11c** (CSRF-skydd med `XSRF-TOKEN`) kom sedan (se nedan).
+- **Säkerhetskritisk kod.** Sessionen bär inloggningen. Koden är testad genom en riktig server
+  med session fixation, påhittade id, utgång, sessionsgränsen, felaktiga uppsättningar, 200
+  samtidiga klienter och markörer för varje lösenord och sessions-id i svar, loggrader och
+  undantag, men **en människa bör granska den** innan ramverket används på riktigt.
+- `WebSecurity.Builder.sessions(Sessions)`: säkerhetsfiltret kör `sessions.filter()` självt,
+  ytterst, så att bara `security.filter()` registreras. Registreras `sessions.filter()` också ger
+  förfrågan 500 (före säkerhetsfiltret: varje förfrågan, med ett meddelande om att bara
+  registrera `security.filter()`; efter det: varje förfrågan som reglerna släpper igenom).
+  `sessions(...)` två gånger ger en rad i `build()`s `IllegalArgumentException`.
+- Filtrets ordning: sessionsfiltret, 400 för flera `Authorization`-fält, identiteten ur
+  sessionen, mekanismerna (bara om sessionen inte gav någon identitet), reglerna. En
+  sessionscookie ger aldrig 401 i sig: ingen, en okänd eller utgången cookie, eller en session
+  utan identitet gör att mekanismerna provas som i 10b.
+- `WebSecurity.login(request, identity)`: `Sessions.renew` (nytt id, det gamla slutar gälla
+  direkt; utan session skapas en; sedan 15a `Sessions.renewFor` med gränsen per användare och en
+  ny session för en annan användare) och identiteten i sessionen under en nyckel som bara modulen
+  har. Vid sessionsgränsen 503 från 11a. `WebSecurity.logout(request)`: `Sessions.invalidate`
+  (sessionen tas bort och svaret tar bort cookien; utan session ingenting). Båda kastar
+  `IllegalStateException` (500) om förfrågan inte passerat filtret för en `WebSecurity` med
+  `sessions(...)`, också när appen själv registrerat `sessions.filter()`.
+- Säkerhetsfiltret skapar aldrig en session, så anonyma förfrågningar, 401, 403 och
+  `/actuator/health` får inget `Set-Cookie`. 401 utan `HttpBasic` saknar `WWW-Authenticate`
+  (som `HttpStatusEntryPoint(UNAUTHORIZED)`), så det finns ingen `unauthenticated(...)`.
+- `WebSecurity.toString()` visar `, sessions` när sessioner är påslagna. Inga ändrade
+  `requires` eller `exports`, inga nya huvudkällfiler och inga ändringar i `spola.web` eller
+  någon annan modul.
+- Klass-Javadoc för `WebSecurity` (filtrets steg, avsnittet "Login with a session"),
+  `module-info.java` och `README.md` i `modules/security-web/` (avsnittet "Inloggning med
+  session": behovets Spring-kod bredvid `LoginExample.java`, som är kompilerad testkälla och
+  jämförs med README av ett test, jämförelsetabell och avvikelsetabell).
+- 21 nya tester i `spola.security.web` (registrerade i `SecurityWebTests` via
+  `SessionLoginTests`), ungefär 3 s.
+
+### Uppdrag 11c: sessioner del 3, CSRF-skydd med `XSRF-TOKEN` (`spola.security.web`) — behovet levererat
+- **Sista delen av behovet "Inloggning med sessioner och CSRF-skydd för ett JSON-API"** (appen
+  psykologen). Behovet `2026-10-13-inloggning-sessioner-csrf` är därmed **levererat i sin helhet
+  (11a–11c)**: `GET` ger `XSRF-TOKEN`, inloggning utan huvudet ger 403, inloggning med huvudet ger
+  200 och en ny sessionscookie, `/api/auth/me` ger namnet, och efter utloggning ger
+  `/api/auth/me` 401. Appen kan byta Spring Securitys `csrf(...)` med
+  `CookieCsrfTokenRepository.withHttpOnlyFalse()`, `CsrfTokenRequestAttributeHandler` och
+  `CsrfCookieFilter` mot `.csrf(Csrf.cookie())`; Angulars `HttpClient` fungerar utan ändringar.
+- **Säkerhetskritisk kod.** Skyddet är testat genom en riktig server med 30 förfalskade och
+  felformade förfrågningar för fyra metoder, 200 samtidiga klienter med egna `CookieManager`,
+  mutationer av koden och markörer för varje lösenord, token och sessions-id i svar, loggrader och
+  undantag, men **en människa bör granska det** innan ramverket används på riktigt.
+- `Csrf` (ny publik klass, oföränderlig och trådsäker): `Csrf.cookie()`, `withCookie(UnaryOperator
+  <ResponseCookie.Builder>)` och konstanterna `COOKIE_NAME` (`XSRF-TOKEN`) och `HEADER_NAME`
+  (`X-XSRF-TOKEN`). `WebSecurity.Builder.csrf(Csrf)` slår på skyddet, med och utan
+  `sessions(...)`; två anrop är en rad i `build()`s `IllegalArgumentException`.
+- Dubbelinskickad cookie, tillståndslöst: servern sparar inga token. Token är 32 byte från en
+  `new SecureRandom()` per `WebSecurity`, Base64url utan utfyllnad (43 tecken). `GET`, `HEAD`,
+  `OPTIONS` och `TRACE` kontrolleras inte (exakt jämförelse, så `post` och `get` med gemener
+  kontrolleras); övriga metoder kräver exakt ett välformat `X-XSRF-TOKEN` som är lika med ett av
+  förfrågans välformade `XSRF-TOKEN`-värden (`MessageDigest.isEqual`), annars samma 403 som en
+  nekad regel. Kontrollen gäller alla vägar, också `permitAll`, inloggningen, utloggningen och
+  Basic.
+- Filtrets ordning: sessionsfiltret, 400 för flera `Authorization`-fält, CSRF-kontrollen,
+  identiteten (sessionen, sedan mekanismerna), reglerna. En förfalskad förfrågan når aldrig
+  `Authenticator`.
+- Cookien `XSRF-TOKEN=<token>; Path=/; SameSite=Lax` (utan `HttpOnly`; `Secure` med
+  `withCookie(c -> c.secure(true))` och sedan 13b också när schemat är `https`) sätts på varje
+  svar som går ut genom säkerhetsfiltret till en
+  förfrågan utan välformad cookie (200, 401, 403, 404, 405, mappade fel), och med en ny token av
+  `WebSecurity.login` och `WebSecurity.logout`; högst ett `Set-Cookie` per svar och
+  `Cache-Control: no-store` om svaret saknar `Cache-Control` (sedan 15a också när handlerns värde
+  låter en delad cache spara svaret). Cookie-funktionen körs en gång, i
+  `build()`; `null`, `HttpOnly`, en annan cookie, `Max-Age=0` och en cookie som
+  `ResponseCookie.Builder.build()` avvisar (`SameSite=None` utan `Secure`) ger
+  `IllegalArgumentException`.
+- `WebSecurity.toString()` visar `, csrf` när skyddet är på. Inga ändrade `requires` eller
+  `exports`, inga ändringar i `Build.java`, `spola.web` eller någon annan modul. En ny
+  huvudkällfil (`Csrf.java`), så `SourceRulesTests` räknar 12 filer i stället för 11 (se
+  ARCHITECTURE.md).
+- Klass-Javadoc för `Csrf` och `WebSecurity` (filtrets steg, avsnittet "CSRF protection"),
+  `module-info.java` och `README.md` i `modules/security-web/` (avsnittet "CSRF-skydd för en
+  SPA": Angulars `withXsrfConfiguration`, behovets Spring-kod med `CsrfCookieFilter` bredvid
+  `CsrfExample.java`, som är kompilerad testkälla och jämförs med README av ett test,
+  jämförelsetabell och avvikelsetabell).
+- 62 nya tester i `spola.security.web` (registrerade i `SecurityWebTests` via `CsrfTests`),
+  ungefär 3 s.
+
+### Uppdrag 12: lösenord från Spring, BCrypt och delegerande hasher med `{id}`-prefix (`spola.security`) — behovet levererat
+- **Behovet `2026-10-13-losenord-bcrypt`** ("BCrypt-hashar och delegerande lösenordshasher",
+  appen psykologen) är **levererat i sin helhet**. En hash från Springs `BCryptPasswordEncoder`
+  verifieras (utan prefix med `BCryptPasswordHasher`, med `{bcrypt}`-prefix med den delegerande
+  hasharen), och en hash som Spola skriver är byte för byte vad Spring skriver för samma salt, så
+  Springs `BCryptPasswordEncoder.matches` godtar den. Appen kan byta
+  `PasswordEncoderFactories.createDelegatingPasswordEncoder()` mot
+  `PasswordHasher.delegating("bcrypt", Map.of("bcrypt", BCryptPasswordHasher.defaults(), ...))`.
+- **Säkerhetskritisk kod.** bcrypt och Blowfish är implementerade i modulen (JDK:n har ingen
+  bcrypt, och dess Blowfish-`Cipher` tar inte bcrypts nyckelschema). Koden är testad mot alla 20
+  publicerade vektorer ur jBCrypt och alla Openwall-vektorer, mot oberoende vektorer från
+  libxcrypt, mot JDK:ns `Cipher` (250 slumpade nycklar och block) och Eric Youngs Blowfish-vektorer,
+  men **en människa bör granska den** innan ramverket används på riktigt.
+- `BCryptPasswordHasher` (ny, publik): `defaults()` (kostnad 10, som Spring), `of(cost)` med 4–31
+  (annars `IllegalArgumentException`), konstanterna `MIN_COST`, `MAX_COST`, `DEFAULT_COST` och
+  `MAX_PASSWORD_BYTES`, `toString()` `BCryptPasswordHasher[cost=10]`. Skriver
+  `$2a$<kostnad>$<22 tecken salt><31 tecken hash>` (60 tecken, bcrypts Base64, salt 16 byte från
+  en `new SecureRandom()` per hasher). Verifierar `$2a$`, `$2b$` och `$2y$` (räknas likadant, som
+  i jBCrypt); `$2x$` och `$2$` stöds inte. Strikt tolkning: exakt 60 tecken (först), kostnad som
+  två ASCII-siffror 04–31, kanoniskt salt och kanonisk hash; annars `IllegalArgumentException`
+  utan strängen. Jämförelse av de 23 byten med `MessageDigest.isEqual`. `needsRehash` är `true`
+  bara för en lägre lagrad kostnad, som Springs `upgradeEncoding`, så hasharens kostnad ska vara
+  minst den högsta lagrade (se kända begränsningar).
+- Lösenord: UTF-8 med `REPORT`, ingen normalisering, **1–72 byte och inget U+0000** (över 72
+  `char` avvisas före kodningen). Annars `IllegalArgumentException` i `hash` (utan lösenordet) och
+  `false` i `matches`, utan att någon bcrypt räknas. Så räknas två olika lösenord aldrig som samma
+  (CVE-2025-22228). Lösenordets byte, nyckeln, Blowfish-tillståndet och den räknade hashen
+  nollställs.
+- `PasswordHasher.delegating(defaultId, Map<String, ? extends PasswordHasher>)` (ny statisk
+  metod): lagrar `{id}<hash>` som Springs `DelegatingPasswordEncoder`. Id:t är texten fram till
+  första `}` (sökt högst 101 tecken in) och måste vara exakt ett av de konfigurerade; resten går
+  till den delegaten. En hash utan prefix, med okänt id eller med felaktigt prefix ger
+  `IllegalArgumentException` med ett fast meddelande, utan strängen och utan texten mellan
+  klamrarna. `needsRehash` frågar alltid delegaten och är `true` för ett annat id än standard-id:t.
+  Id:n är 1–100 tecken utskrivbar ASCII utan klamrar; kartan kopieras. `toString()`
+  `DelegatingPasswordHasher[default=bcrypt, ids=[bcrypt, pbkdf2]]`.
+- Blowfishs tabeller härleds från π (Machins formel med `BigInteger`) en gång per JVM, vid första
+  användningen; ingen tabell med konstanter finns i källkoden. Primitiven (`BCrypt`), Blowfish och
+  den delegerande implementationen är paketprivata. Antalet varv räknas som `long` (kostnad 31 ger
+  2^31 varv, inte noll).
+- `Authenticator` och `InMemoryUserStore` är oförändrade: med den delegerande hasharen och
+  `users.upgrader(hasher)` (sedan 15c `users.upgrader()`) flyttas en användare med `{pbkdf2}`
+  eller lägre bcrypt-kostnad till standardinställningarna vid nästa inloggning, och dummyhashen
+  blir `{bcrypt}$2a$10$...`.
+- Inga ändrade `requires` eller `exports`, inga ändringar i `Build.java` eller andra moduler. Fyra
+  nya huvudkällfiler (`BCryptPasswordHasher`, `BCrypt`, `Blowfish`, `DelegatingPasswordHasher`),
+  så `SourceRulesTests` räknar 17 filer. Av de befintliga testfilerna ändrades bara
+  `SecurityTests` (registreringen), `SourceRulesTests` (antalet filer, `new SecureRandom()` och
+  `MessageDigest.isEqual` i `BCryptPasswordHasher`) och `ReadmeTests` (de nya jämförelse- och
+  avvikelseraderna, och att raden "Bara PBKDF2-SHA256" är borta).
+- Javadoc för `BCryptPasswordHasher`, `PasswordHasher` (med hela beteendet för `delegating`) och
+  `module-info.java`, och `README.md` i `modules/security/` (avsnittet "BCrypt och hashar från
+  Spring": Spring-koden med `DelegatingPasswordEncoder` bredvid `BCryptExample.java`, som är
+  kompilerad testkälla och jämförs med README av ett test, och nya rader i jämförelse- och
+  avvikelsetabellen). Modulkatalogen i `MONSTER.md` och modultabellen i rotens `README.md` är
+  uppdaterade.
+- 202 nya tester i `spola.security` (registrerade i `SecurityTests`; modulen har nu 305), ungefär
+  13 s, varav ungefär 6 s för jBCrypt-vektorerna med kostnad 12. Under arbetet jämfördes dessutom
+  1 200 slumpade fall (UTF-8 och råa byte, 0–100 byte, kostnad 4–5, alla tre versionerna) med
+  libxcrypt:s `crypt(3)` via perl, utan avvikelser; testerna anropar inga externa program.
+
+### Uppdrag 13a: bakom en omvänd proxy del 1, schema och klientadress från `X-Forwarded-*` (`spola.web`, `spola.http`)
+- **Första delen av behovet `2026-10-13-proxyhuvuden`** ("Rätt schema och klientadress bakom en
+  omvänd proxy", appen psykologen). **13b** (`Secure` efter schemat på sessions- och CSRF-cookien)
+  kom sedan (se nedan). Behovets kod fungerar som det står: bakom Caddy ger `/api/whoami` `https 203.0.113.7`,
+  direkt `http 127.0.0.1`, och falska huvuden till en server som inte litar på avsändaren
+  ignoreras.
+- **Säkerhetskritisk kod.** Huvudena är data utifrån. Koden är testad genom en riktig server med
+  32 giltiga och 34 ogiltiga `X-Forwarded-For`, 8 giltiga och 13 ogiltiga `X-Forwarded-Proto`,
+  obs-text över rå socket, 200 samtidiga klienter, markörer i värdena som letas efter i svar,
+  loggrader och undantag, och tolken av IP-literaler jämförs med `InetAddress.ofLiteral` för
+  20 000 slumpade adresser, men **en människa bör granska den** innan ramverket används på
+  riktigt.
+- `spola.http`: `Request.remoteAddress()` (`InetSocketAddress`, som `getRemoteAddr()` och
+  `getRemotePort()`): TCP-anslutningens andra ände, över TLS TCP-socketen under TLS, tagen vid
+  accept, samma för varje förfrågan på anslutningen, aldrig `null` och utan namnuppslag.
+- `spola.web`: `WebRequest.scheme()` och `clientAddress()` (anslutningens värden utan filtret),
+  `TrustedProxies` (funktionellt gränssnitt med `privateNetworks()` och `of(String...)`) och
+  `ForwardedHeaders.trusting(TrustedProxies)`, motsvarigheten till
+  `server.forward-headers-strategy=native` (Tomcats `RemoteIpValve`). Huvudenas värden läses bara
+  när den direkta avsändaren (`http().remoteAddress()`) är betrodd (sedan 15b kontrolleras annars
+  bara om fälten finns, för varningen). `X-Forwarded-For` gås igenom från
+  höger förbi betrodda adresser; den första obetrodda är klienten och inget till vänster läses.
+  `X-Forwarded-Proto` är exakt ett fält med `http` eller `https`. Ogiltiga värden från en betrodd
+  avsändare ger 400 (problem-svar som namnger huvudet men inte värdet), aldrig 500. Strikta
+  IP-literaler (egen kontroll, sedan `InetAddress.ofLiteral`), inga namnuppslag. Bara
+  `ForwardedHeaders` kan ändra värdena, och `http()` beskriver alltid anslutningen.
+  `ForwardedHeaders` registreras först.
+- Inga ändrade `requires` eller `exports`, inga ändringar i `Build.java` eller andra moduler än
+  `spola.web` och `spola.http` (utom ett nytt test i `spola.security.web`). Nya huvudkällfiler i
+  `spola.web`: `ForwardedHeaders`, `TrustedProxies`, `ProxyNetworks` och `IpLiteral`. I
+  `spola.http` tar `Connection` adressen vid accept, och `HttpServer` skapar `Connection` inne i
+  sitt `try`-block.
+- Javadoc för `Request`, `WebRequest`, `ForwardedHeaders`, `TrustedProxies` och båda
+  `module-info.java`. `README.md` i `modules/web/` har avsnittet "Bakom en omvänd proxy" (Spring
+  Boot-koden bredvid `WhoamiApp.java`, som är kompilerad testkälla och jämförs med README av ett
+  test, Docker-fallet och nya rader i jämförelse- och avvikelsetabellen); `modules/http/README.md`
+  nämner `Request.remoteAddress()`. Modulkatalogen i `MONSTER.md` och modultabellen i rotens
+  `README.md` är uppdaterade.
+- Nya tester: 260 i `spola.web` (registrerade i `WebTests` via `ProxyTests`, och en källkodsregel i
+  `SourceRulesTests`), ungefär 4 s; 7 i `spola.http` (`RemoteAddressTests`, över TCP i `HttpTests`
+  och över TLS i `TlsTests`); 3 i `spola.security.web` (`ForwardedSecurityTests`).
+
+### Uppdrag 13b: bakom en omvänd proxy del 2, `Secure` efter schemat på sessions- och CSRF-cookien (`spola.web`, `spola.security.web`) — behovet levererat
+- **Sista delen av behovet `2026-10-13-proxyhuvuden`** ("Rätt schema och klientadress bakom en
+  omvänd proxy", appen psykologen). Behovet är därmed **levererat i sin helhet (13a–13b)**: bakom
+  Caddy, med `ForwardedHeaders` registrerat först, ser filter och handlers klientens schema och
+  adress, och flödet från 11c (`CsrfExample`, sessioner utan `secure(true)`) ger `XSRF-TOKEN`,
+  `SESSION` och borttagningen med `Secure`. Appen kan byta
+  `server.forward-headers-strategy=native` mot `ForwardedHeaders` och behöver inget
+  `secure(true)` bakom en proxy som filtret litar på. (Sedan 15b rekommenderas ändå `secure(true)`
+  för en app som bara nås över https, eftersom `Secure` annars beror på att `TrustedProxies`
+  stämmer med proxyns adress.)
+- **Säkerhetskritisk kod.** Cookierna bär inloggningen och CSRF-skyddet, och schemat kommer från
+  data utifrån (`X-Forwarded-Proto`). Koden är testad genom en riktig server med behovets flöde
+  (bakom en proxy och över direkt TLS), varje sorts svar, båda fel ordningar, obetrodda
+  avsändare, 200 samtidiga virtuella trådar som växlar schema och mutationer av koden, men **en människa bör granska den** innan ramverket
+  används på riktigt.
+- Regeln, som i Spring (Tomcats `JSESSIONID`, `CookieCsrfTokenRepository`): sessionscookien och
+  dess borttagning (`spola.web`) och `XSRF-TOKEN` (`spola.security.web`) får `Secure` när
+  cookie-funktionen sätter det, som förut, **eller** när förfrågans schema är `https`. Det gäller
+  när en session skapas, förnyas och tas bort, och för `XSRF-TOKEN` på första svaret (200, 401,
+  403 från en regel och från CSRF-kontrollen, 404, 405, mappade fel) och vid `login` och
+  `logout`. Inget annat i raden ändras; den är tecken för tecken raden som
+  `withCookie(c -> c.secure(true))` ger. `secure(true)` ger `Secure` också över `http`, som förut.
+- Schemat är `scheme()` för förfrågan som filtret fick: `sessions.filter()` för sessionscookien,
+  `security.filter()` för `XSRF-TOKEN` (och för sessionscookien när `WebSecurity` kör
+  sessionsfiltret). Det läses när filtret börjar; `login` och `logout` ändrar det inte. Över TLS är
+  det `https`; bakom en proxy bara när `ForwardedHeaders` är registrerat före filtren och litar på
+  proxyn. Över `http://localhost` får cookierna inget `Secure`, så utvecklingen fungerar som förut.
+- Kontrollerna vid uppstart är oförändrade: `SameSite=None`, `__Secure-` och `__Host-` kräver
+  fortfarande `secure(true)` i funktionen, för både `Sessions` och `Csrf`.
+- Inget nytt API: inga publika typer eller metoder, inga ändrade `requires` eller `exports`, inga
+  nya huvudkällfiler och inga ändringar i `Build.java`, `ForwardedHeaders`, `TrustedProxies`,
+  `spola.http` eller andra moduler. Internt läser `Sessions` och `Csrf.Protection` schemat per
+  förfrågan och lägger det i förfrågans tillstånd (`SessionState`, `Csrf.Exchange`); mallarna
+  byggs vid uppstart och ändras inte.
+- Javadoc för `Sessions` (nytt avsnitt "`Secure`"), `SessionOptions`, `Csrf` (nytt avsnitt
+  "`Secure`"), `WebSecurity` (nytt avsnitt "`Secure` from the scheme", och att bara
+  `ForwardedHeaders` kommer före säkerhetsfiltret) och båda `module-info.java`. `README.md` i
+  `modules/web/` (punkten "`Secure`" under Sessioner, en punkt under "Bakom en omvänd proxy" och
+  två omskrivna avvikelserader) och i `modules/security-web/` (inledningen, punkten om `Secure` i
+  "CSRF-skydd för en SPA", den nya delen "Bakom Caddy" med `ForwardedHeaders` först och båda
+  cookierna `Secure` utan `secure(true)`, två jämförelserader och två avvikelserader, bland dem att
+  regeln inte kan stängas av). Kommentarerna i `CartApp`, `LoginExample` och `CsrfExample` säger
+  regeln; exemplens kod är oförändrad. Varje mening om att `Secure` aldrig sätts efter schemat är
+  ersatt.
+- Nya tester: 10 i `spola.web` (`SessionSchemeTests`, registrerad i `SessionTests`) och 18 i
+  `spola.security.web` (`SchemeTests` med `SchemeFlowTests`, `SchemeCookieTests`,
+  `SchemeConcurrencyTests` och `SchemeReadmeTests`, registrerad i `CsrfTests` före läcktesterna;
+  ett av dem kör flödet över direkt TLS med en nyckel från `keytool`), ungefär 3 s. Av de befintliga testfilerna ändrades bara registreringen, raderna i
+  `SessionReadmeTests` och `ForwardedReadmeTests` för de omskrivna avvikelseraderna, och
+  kommentarerna i exemplen.
+
+### Uppdrag 14: REST-klient för JSON-API:er på `java.net.http` (`spola.client`) — behovet levererat
+- **Behovet `2026-10-13-rest-klient`** ("HTTP-klient för JSON-API:er", appen psykologen) är
+  **levererat**: behovets kod för Anthropics Messages API och OpenAIs Chat Completions fungerar
+  mot lokala servrar som spelar API:erna (med avvikelsen `catch (RestClientResponseException e)`,
+  se nedan), och `HttpServer` plus klienten räcker för integrationstester mot appens egen router.
+  Appen kan byta Anthropics SDK och sin handskrivna `java.net.http`-kod mot `RestClient`; klienterna
+  för de två API:erna stannar i appen.
+- **Säkerhetskritisk kod** (svaret är data utifrån, huvudena bär API-nycklar). Testad mot råa
+  servrar med kroppar utan slut, enorma `Content-Length` (också 19 siffror och fler), skräp,
+  avbrutna kroppar, servrar som skickar tillbaka förfrågan (som statusrad, en del av den, ett
+  422 med kroppen, ett 200 med huvudena, ett problem med queryn) och markörer i huvuden, query
+  och kropp (med svenska tecken), men **en människa bör granska den** innan ramverket används på
+  riktigt.
+- Ny modul `spola.client` (`modules/client/`): `RestClient` (final, oföränderlig, trådsäker,
+  `AutoCloseable`) med `RestClient.Builder` (`baseUri`, `defaultHeader`, `timeout` 30 s,
+  `connectTimeout` 10 s, `maxResponseSize` 4 MiB), `RestRequest` (oföränderlig: `header`,
+  `json(value, codec)`, `json(JsonValue)`, `retrieve(codec)`, `retrieveJson()`,
+  `retrieveBodiless()`) och den `sealed` undantagshierarkin `RestClientException` med
+  `RestClientResponseException` (`status()`, `headers()`, `bodyExcerpt()`) och
+  `RestClientTransportException` (`timedOut()`). HTTP/1.1, inga omdirigeringar, ingen proxy,
+  inga cookies, en deadline för hela anropet inklusive kroppen, en gräns för kroppen som också
+  stoppar chunked kroppar utan slut, bara de första 8 KiB av ett felsvar, och ett utdrag på högst
+  1 000 tecken utan styr- och bidi-tecken. Modulen skriver aldrig huvudvärden, queryn eller
+  förfrågningskroppen i meddelanden, `toString()` eller orsaker. Skickar servern tillbaka dem
+  döljer svarsfelets `getMessage()` varje hel förekomst (`<hidden>`) medan `bodyExcerpt()` är
+  serverns text som den är, och ett transportfel behåller JDK:ns text bara för undantag vars text
+  inte kan komma från servern (`SocketException`, `SSLException`, `HttpTimeoutException`).
+- **Avvikelse från behovet:** `status()` och `bodyExcerpt()` finns på
+  `RestClientResponseException`, inte på `RestClientException` (en tidsgräns har ingen status),
+  som i Spring.
+- `module-info.java`: `requires transitive java.net.http`, `requires transitive spola.json`,
+  `requires static spola.web` (bara för testerna) och `exports spola.client`. Vid körning behövs
+  bara `spola.json`.
+- `Build.java`: `spola.client` i `MODULES` med testingången `spola.client.ClientTests`, och
+  testlagret löser också de Spola-moduler som en modul `requires static`
+  (`staticProjectRequires`). Inga andra moduler är ändrade.
+- Javadoc på allt publikt API och i `module-info.java`. `README.md` i `modules/client/` visar
+  Spring-koden bredvid Spola-koden för behovets anrop (`AiClients.java`) och för ett
+  integrationstest mot en router bredvid `@SpringBootTest(webEnvironment = RANDOM_PORT)`
+  (`ItemApp.java`, `ItemApiTests.java`); exemplen är kompilerade testkällor som ett test jämför med
+  README. README har en jämförelsetabell, en tabell med gränserna och en avvikelsetabell.
+  Modulkatalogen i `MONSTER.md` och modultabellen i rotens `README.md` har en rad för
+  `spola.client`.
+- Nya tester: ungefär 330 i `spola.client` (`ClientTests`), ungefär 15 s.
+
+### Uppdrag 15a: säkerhetsgranskning del 1, sessioner och inloggning (`spola.web`, `spola.security.web`)
+- **Första delen av rättningarna efter säkerhetsgranskningen 2026-10-18**
+  (`gauntlet/granskningar/2026-10-18-sakerhet.md`). Fynden G1–G5 är rättade: G1 (MEDIUM, ett konto
+  kunde fylla `maxSessions` och ge alla andras inloggningar 503), G2 (en inloggning som en annan
+  användare ärvde den förras attribut), G3 (`public`/`s-maxage` från handlern på ett svar med
+  sessions- eller CSRF-cookien), G4 (inget `Cache-Control` på inloggade svar) och G5 (städningen
+  vid gränsen kunde köras parallellt). 15b (proxy och dokumentation), 15c (lösenord) och 15d
+  (`spola.client`) är klara sedan dess.
+- **Granskningen ersätter inte en mänsklig granskning.** Den gjordes av AI-granskare, och
+  rättningarna är testade av samma slags granskare. Koden är säkerhetskritisk, och **en människa
+  bör granska den** innan ramverket används på riktigt.
+- **Gräns per användare (G1).** `WebSecurity.Builder.maximumSessions(n)`, motsvarigheten till
+  `sessionManagement(s -> s.maximumSessions(n))`, med **standardvärdet 10** (motiverat i
+  ARCHITECTURE.md). Skulle en inloggning ge användaren fler sessioner avslutas användarens minst
+  nyligen använda (en användning är en förfrågan som hittar sessionen, att den skapas och att den
+  förnyas), aldrig den nya inloggningen; nästa förfrågan med en avslutad sessions cookie är
+  anonym. Användare jämförs på `Identity.name()`. Med `maxSessions` 50 och gränsen 5 hindrar 100
+  inloggningar av ett konto inte en andra användare, och 200 samtidiga inloggningar av fem
+  användare lämnar exakt gränsen per användare. `build()` rapporterar ett värde under 1 och
+  `maximumSessions` utan `sessions(...)`.
+- **Tillägget i `spola.web`** är en publik statisk metod, `Sessions.renewFor(request, user,
+  maxPerUser)` (`renew` vid en inloggning), som `WebSecurity.login` anropar. `Sessions` har ett
+  paketprivat index från namn till sessioner; en session lämnar det när den ogiltigförklaras, går
+  ut, städas bort, överges eller avslutas av gränsen, och en användare utan sessioner finns inte i
+  det (testat). Gränsen tillämpas innan en ny session skapas (så en användare vid sin gräns kan
+  logga in också vid `maxSessions`), och igen när svaret byggs.
+  Sessionen hör till användaren från inloggningen tills den slutar, vad andra förfrågningar med
+  samma cookie än gör (`Sessions.renew` till exempel), och inloggningen **håller** den tills
+  svaret byggs, så samtidiga inloggningar av samma användare aldrig avslutar varandras sessioner
+  innan identiteten sparats (50 samtidiga inloggningar med gränsen 1 ger 200 för alla). Rättat i
+  runda 2: i runda 1 togs sessionen ur indexet under inloggningen, och en samtidig
+  `Sessions.renew` på samma cookie kunde lämna en inloggad session utanför gränsen och utanför
+  bytet av användare för alltid; tester som låter förfrågningar tävla om en cookie 400 gånger
+  visar nu högst gränsen och inga ärvda attribut.
+- **Ny session vid byte av användare (G2).** Har förfrågans session en annan användares identitet
+  ger `login` en ny, tom session och den gamla ogiltigförklaras (före skapandet, så bytet fungerar
+  vid `maxSessions`). Samma användare eller en anonym session förnyas som förut och behåller
+  attributen.
+- **`Cache-Control` (G3, G4).** Ett svar som sätter eller tar bort sessionscookien, eller sätter
+  `XSRF-TOKEN`, behåller handlerns `Cache-Control` bara när det redan håller delade cachar borta
+  (`no-store`, eller `private` utan fältlista, och varken `public` eller `s-maxage`); annars, också
+  utan värde, blir det ett `Cache-Control: no-store`. Svaret till en tillåten förfrågan med en
+  identitet (session eller mekanism) får `Cache-Control: no-store` när det saknar ett, och ett
+  värde med `public` eller `s-maxage` ersätts; andra värden som handlern satt behålls
+  (`private, no-cache`, `max-age=60`). Anonyma svar utan cookie ändras inte. **Avvikelse från
+  uppdragets uppräkning:** `max-age=60`, `no-cache` och andra värden utan `private`/`no-store`
+  ersätts också på svar med en cookie, eftersom de låter en delad cache spara svaret (se
+  ARCHITECTURE.md).
+- **Skyddad städning (G5).** Städningen vid gränsen (och minutstädningen) skyddas av en
+  `compareAndSet`; en nekad förfrågan som hittar en städning igång svarar 503 utan att gå igenom
+  lagringen. 200 samtidiga nekade förfrågningar mot 100 000 sessioner går igenom lagringen högst
+  två gånger.
+- Javadoc för `Sessions` (nytt avsnitt "Sessions per user", "The cookie out", "The limit"),
+  `SessionState`, `SessionEntry`, `WebSecurity` (filtrets steg, "Login with a session", nytt
+  avsnitt "Caches", `login`, `Builder.maximumSessions`, `build`), `Csrf` och båda
+  `module-info.java`. `README.md` i `modules/web/` (avsnittet "Sessioner": punkterna
+  `Cache-Control`, Gränsen och Sessioner per användare, en jämförelserad och tre avvikelserader)
+  och i `modules/security-web/` (inledningen, "Inloggning med session" med nya punkter, ett
+  exempel med `maximumSessions` och den nya delen "Cachar" med en tabell, "CSRF-skydd för en SPA",
+  två jämförelserader och fem avvikelserader). `requires` och `exports` är oförändrade, ingen
+  reflektion och inga nya filtyper; en ny huvudkällfil i var och en av `spola.web` och
+  `spola.security.web` (`CacheControl.java`, paketprivat).
+- Nya tester: 4 testklasser i `spola.web` (`SessionUserTests`, `SessionLoginRaceTests`,
+  `SessionCacheTests`, `SessionSweepTests`, i `SessionTests`) och `UserSessionTests` i
+  `spola.security.web` (`UserLimitTests`, `UserLimitConcurrencyTests`, `UserLimitRaceTests`,
+  `UserSwitchTests`, `CacheHeaderTests`, `CacheControlTests`, `UserSessionReadmeTests`,
+  `UserSessionLeakTests`). `CacheControlTests` kontrollerar att kopian av tolkningen i
+  `spola.security.web` har samma kod som originalet i `spola.web` och kör originalets tabell.
+  Befintliga tester som ändrades med avsikt: `CsrfCookieTests` (`max-age=60` på ett svar med
+  `XSRF-TOKEN` blir nu `no-store`), de tre testerna med 200 samtidiga inloggningar
+  (`LoginConcurrencyTests`, `CsrfConcurrencyTests`, `SchemeConcurrencyTests`), som loggar in varje
+  användare 40 gånger samtidigt och nu får plats för alla sessioner, och `SourceRulesTests` i
+  `spola.security.web` (13 huvudkällfiler i stället för 12: `CacheControl.java`).
+
+### Uppdrag 15b: säkerhetsgranskning del 2, proxy, cookies och dokumentation (`spola.web`, `spola.security.web`)
+- **Andra delen av rättningarna efter säkerhetsgranskningen 2026-10-18**
+  (`gauntlet/granskningar/2026-10-18-sakerhet.md`). Fynden P1–P5 är rättade: P1 (en avsändare som
+  `ForwardedHeaders` inte litar på tog tyst bort `Secure` från sessions- och CSRF-cookien), P2
+  (Docker-exemplen lyssnade på loopback), P3 (ingen tydlig produktionsinställning mot cookie
+  tossing), P4 (påståendet om id:n i minnet) och P5 (privata klientadresser som behörighet). 15c
+  (lösenord) och 15d (`spola.client`) är klara sedan dess.
+- **Granskningen ersätter inte en mänsklig granskning.** Koden är säkerhetskritisk, och **en
+  människa bör granska den** innan ramverket används på riktigt.
+- **Varningen (P1).** `ForwardedHeaders` loggar en rad på `WARNING` (loggern `spola.web`) första
+  gången per filterinstans som en avsändare som filtret inte litar på skickar `X-Forwarded-Proto`
+  eller `X-Forwarded-For`: `X-Forwarded-Proto or X-Forwarded-For from <adress> ignored: ...`.
+  Raden namnger bara avsändarens adress (som `TrustedProxies.of` tar den), aldrig huvudenas värden,
+  och sägs en gång, inte per förfrågan (också med 200 samtidiga förfrågningar och med 50 som prövar
+  flaggan i samma ögonblick). Beteendet i övrigt
+  är oförändrat: huvudena ignoreras. Betrodda avsändare och förfrågningar utan huvudena ger ingen
+  rad. Inget nytt publikt API; en paketprivat fabrik tar loggern för testerna.
+- **Produktionsinställningen (P1, P3).** README (i `spola.web` "Sessioner" och "Bakom en omvänd
+  proxy", i `spola.security.web` "Inloggning med session", "CSRF-skydd för en SPA" och "Bakom
+  Caddy") rekommenderar för en app som bara nås över https `withCookieName("__Host-SESSION")` med
+  `withCookie(c -> c.secure(true))` och `Csrf.cookie().withCookie(c -> c.secure(true))`, så att
+  `Secure` inte beror på att proxyadressen stämmer och en underdomän inte kan plantera en
+  sessionscookie. "Bakom Caddy" visar det kompilerade exemplet `CaddyExample`, och ett test ger
+  `__Host-SESSION=<id>; Path=/; Secure; HttpOnly; SameSite=Lax` och `XSRF-TOKEN` med `Secure` över
+  vanlig `http`, direkt, från en obetrodd avsändare och bakom en betrodd proxy. Meningen om att
+  `secure(true)` bara behövs utan `ForwardedHeaders` är rättad. Standardvärdena är oförändrade.
+- **Exempel som går att nå (P2).** `WhoamiApp.options()` och `CaddyExample.options()` lyssnar på
+  `0.0.0.0` port 8080, och README säger varför (loopback nås inte från Caddys container). README
+  visar källorna oförändrade, och testerna jämför dem.
+- **Rättade påståenden (P4, P5).** `Sessions` Javadoc, README och ARCHITECTURE säger att
+  sessionslagret inte har något id och att lagringen bara håller hashar av id:n, inte att minnet
+  saknar giltiga id: id:t finns som text som inget nollställer, som `String` i `Cookie` och
+  `Set-Cookie` tills skräpsamlaren tar dem, och i anslutningens läs- och skrivbuffertar i
+  `spola.http` så länge anslutningen är öppen (en keep-alive-anslutning som proxyn återanvänder
+  kan vara öppen så länge appen kör). `WebRequest.clientAddress()`,
+  `TrustedProxies.privateNetworks()` och README ("Bakom en omvänd proxy") säger att en privat
+  klientadress inte är en behörighet.
+- Javadoc för `ForwardedHeaders`, `Sessions`, `SessionOptions`, `WebRequest`, `TrustedProxies`,
+  `Csrf`, `WebSecurity` och båda `module-info.java`. Inga ändrade `requires` eller `exports`, ingen
+  reflektion, inga nya filtyper och inga nya huvudkällfiler.
+- Nya tester: `ForwardedWarningTests` i `spola.web` (i `ProxyTests`) och ett markörtest för
+  varningen i `ForwardedLeakTests`, nya README-tester i `ForwardedReadmeTests` och
+  `SessionReadmeTests`; `CaddyExampleTests` i `spola.security.web` (i `SchemeTests`). Befintliga
+  testfiler som ändrades: `SchemeFlowTests` (sessionscookiens namn som parameter), `CsrfSupport`
+  och `CsrfLeakTests` (`__Host-SESSION` maskeras och räknas), `SchemeReadmeTests` (den nya texten
+  i "Bakom Caddy"), `ForwardedLeakTests` (egen logg för filtret) och kommentarerna i `WhoamiApp`,
+  `CartApp`, `LoginExample` och `CsrfExample`. `SessionReadmeTests` kontrollerar att punkten om
+  id:t säger vad koden håller (P4), och 13b:s test i `SchemeFlowTests` använder
+  `CaddyExample.security` i stället för en egen kopia av reglerna.
+- **Väntade varningar i bygget.** Fem tester går genom det publika `ForwardedHeaders.trusting`
+  med en avsändare som filtret inte litar på (`SessionSchemeTests`, `ForwardedChainTests`,
+  `ForwardedReadmeTests`, `SchemeFlowTests`, `CaddyExampleTests`) och skriver den riktiga
+  `WARNING`-raden till byggets utdata, en per filter. Det är väntat; testerna som kontrollerar
+  varningen fångar den med en egen logger.
+
+### Uppdrag 15c: säkerhetsgranskning del 3, lösenord och autentisering (`spola.security`)
+- **Tredje delen av rättningarna efter säkerhetsgranskningen 2026-10-18**
+  (`gauntlet/granskningar/2026-10-18-sakerhet.md`, fynden F1–F4 där, L1–L4 i uppdraget). Alla fyra
+  är rättade eller dokumenterade: L1 (en uppgradering kunde skriva tillbaka det gamla lösenordet
+  efter ett lösenordsbyte), L2 (en trasig lagrad hash gav 500 och avslöjade att kontot fanns), L3
+  (tidsskillnaden mellan algoritmer var odokumenterad) och L4 (PBKDF2 med över 32 byte hash kostade
+  servern dubbelt men inte angriparen). 15d (`spola.client`) är klar sedan dess.
+- **Granskningen ersätter inte en mänsklig granskning.** Koden är säkerhetskritisk, och **en
+  människa bör granska den** innan ramverket används på riktigt.
+- **Uppgraderingen är en compare-and-set (L1).** `PasswordUpgrade.upgrade(username,
+  verifiedHash, newHash)` (förut `upgrade(username, newHash)`) får den lagrade hash som
+  inloggningen läste och verifierade. `InMemoryUserStore.upgrader()` (förut `upgrader(hasher)`;
+  hasharen behövs inte längre) byter hashen bara om den lagrade fortfarande är exakt
+  `verifiedHash` (`String.equals`), i en `computeIfPresent`. Ett lösenordsbyte som hinner emellan
+  skrivs därför aldrig över, vilka inställningar det än hashades med; förut kunde ett byte som en
+  instans med äldre inställningar hashade (en rullande driftsättning som höjer kostnaden) skrivas
+  över med en hash av det gamla lösenordet. Javadoc för `PasswordUpgrade` och README visar
+  motsvarande SQL: `UPDATE users SET hash = ? WHERE username = ? AND hash = ?` (`newHash`,
+  `username`, `verifiedHash`); ingen uppdaterad rad betyder att hashen har ändrats och att inget ska
+  göras. `updatePassword` är fortfarande ovillkorad (den är till för lösenordsbyten).
+- **En trasig lagrad hash ger `BAD_CREDENTIALS` (L2).** Kastar `matches` en
+  `IllegalArgumentException` för en användare som lagringen hittade, kontrollerar `Authenticator`
+  dummyhashen en gång, som för en okänd användare, loggar `login refused, the stored password hash
+  is malformed: <klassnamn>` på `WARNING` (loggern `spola.security`; aldrig hashen, lösenordet,
+  användarnamnet eller undantagets meddelande) och svarar `Failed(BAD_CREDENTIALS)`, också för ett
+  avstängt konto. Genom `HttpBasic` blir det 401 som för en okänd användare, samma svar byte för
+  byte (utom `Date`), i stället för 500. Gäller bland annat rader med `{noop}`, `{sha256}`,
+  `{MD5}`, Springs hex-`{pbkdf2}`, `$2$` och avkortade bcrypt-hashar efter en flytt från Springs
+  `createDelegatingPasswordEncoder()`. Hasharnas egna `matches` och `needsRehash` kastar som förut,
+  och andra undantag från `matches` (till exempel `IllegalStateException` från en egen hasher) och
+  från `UserStore.find` släpps igenom som förut.
+- **Tidsskillnaden är dokumenterad (L3).** Lika tid för okända och kända användare gäller bara inom
+  en algoritm och kostnad: dummyhashen har hasharens aktuella inställningar (med den delegerande
+  hasharen standard-id:ts algoritm), en känd användare kontrolleras med den lagrade hashens.
+  Användare som ligger kvar i en gammal algoritm (`{pbkdf2}` när standard är `{bcrypt}`) eller med
+  en annan kostnad kan därför särskiljas på tiden tills de har loggat in en gång och fått en ny hash
+  (bara med uppgradering; utan den består skillnaden, och en högre bcrypt-kostnad byts aldrig). Ett
+  lösenord över 72 byte gör skillnaden brusfri, eftersom bcrypt avvisar det utan arbete medan PBKDF2
+  räknar. Det står i Javadoc för `Authenticator` och `PasswordHasher.delegating`, i README och här;
+  tiden jämnas inte ut i koden (utanför uppdraget).
+- **Högst 32 byte i nya PBKDF2-hashar (L4).** `Pbkdf2PasswordHasher.MAX_HASH_BYTES` är 32 (var 64),
+  så `of(..., ..., 33)` till `of(..., ..., 64)` ger `IllegalArgumentException` (`hashBytes must be
+  16 to 32`). Lagrade hashar på upp till 64 byte verifieras fortfarande (en ny paketprivat gräns
+  för tolkningen), och `needsRehash` är `true` för dem eftersom längden skiljer sig från hasharens,
+  så uppgraderingen flyttar dem till 32 byte. `defaults()` är oförändrad (32 byte).
+- **API-ändringar som bryter (0.x):** `PasswordUpgrade.upgrade` tar tre argument,
+  `InMemoryUserStore.upgrader()` tar inget, och värdet av konstanten `MAX_HASH_BYTES` är 32. Inga
+  ändrade `requires` eller `exports`, ingen reflektion, inga nya filtyper och inga nya
+  huvudkällfiler; `spola.security.web` och `spola.demo` anropar inte `PasswordUpgrade`, så deras
+  huvudkod är oförändrad.
+- Javadoc för `Authenticator` (reglerna: förbehållet om tid, den trasiga hashen, uppgraderingen),
+  `PasswordUpgrade`, `InMemoryUserStore`, `PasswordHasher.delegating` (nytt avsnitt "Time") och
+  `Pbkdf2PasswordHasher`. README i `modules/security/` (punktlistan, texten och SQL:en under
+  exemplet, två nya punkter i "BCrypt och hashar från Spring", jämförelsetabellen och tre rader i
+  avvikelsetabellen).
+- Nya tester: `UpgradeRaceTests` (probens förlopp med en spärrad uppgradering och ett
+  lösenordsbyte emellan, för bcrypt 4→5, PBKDF2 20 000→10 000 iterationer och `{pbkdf2}`→`{bcrypt}`,
+  bytet hashat av den gamla och av den uppgraderade instansen; 200 virtuella trådar som loggar in
+  och byter lösenord om vartannat i tre omgångar) och `MalformedLoginTests` (nio trasiga eller
+  okända hashar mot tre hashare, exakt en dummykontroll, exakt loggraden, inga markörer) i
+  `spola.security`, och `StoredHashTests` i `spola.security.web` (401 genom `HttpBasic`, samma svar
+  som för en okänd användare). Två nya test i `HasherTests` (L4) och ett nytt i `ReadmeTests`.
+  `spola.security` har nu 346 tester (41 nya, ungefär 18 s), `spola.security.web` 287 (1 nytt).
+  Under arbetet kördes testerna mot fem mutationer (ovillkorat byte i `upgrader()`, en ny läsning
+  av hashen just före uppgraderingen, undantaget släppt igenom igen, ingen dummykontroll efter
+  undantaget, `MAX_HASH_BYTES` tillbaka på 64); varje mutation fångades.
+- Befintliga tester som ändrades med avsikt: `AuthenticatorTests` (den nya signaturen, testet för
+  `upgrader()` som nu jämför med den verifierade hashen, och "a malformed stored hash" som nu
+  väntar sig `BAD_CREDENTIALS` i stället för ett undantag), `BCryptAuthenticatorTests`,
+  `LoginExample` (README visar det), `HasherTests` (gränserna för `of` med 32 byte), `SecretTests`
+  och `BCryptSecretTests` (inloggningar med en trasig hash kastar inte längre, så de räknas inte
+  bland de provocerade undantagen; loggraderna kontrolleras i stället, och `upgrader()` tolkar inte
+  den lagrade hashen) samt registreringarna i `SecurityTests` och `SecurityWebTests`.
+- **Väntade varningar i bygget.** `StoredHashTests` går genom det publika `Authenticator.of`, som
+  loggar på `System.getLogger("spola.security")`, och skriver därför fem rader `WARNING: login
+  refused, the stored password hash is malformed: java.lang.IllegalArgumentException` till
+  byggets utdata. Det är väntat; `MalformedLoginTests` kontrollerar raden med en egen logger.
+
+### Uppdrag 15d: säkerhetsgranskning del 4, hemligheter och sökvägar i `spola.client`
+- **Fjärde och sista delen av rättningarna efter säkerhetsgranskningen 2026-10-18**
+  (`gauntlet/granskningar/2026-10-18-sakerhet.md`, fynden SEC-1–SEC-4 och BRK-2 där, K1–K5 i
+  uppdraget). Alla fem är rättade: K1 (MEDIUM, nyckeln efter `Bearer` läckte när servern nämnde den
+  ensam), K2 (README:s loggexempel loggade det råa utdraget), K3 (JDK:ns egen loggning var
+  odokumenterad), K4 (`.` och `..` i en sökväg nådde andra resurser) och K5 (texten om orsaken från
+  `spola.json`). Därmed är 15a–15d klara.
+- **Granskningen ersätter inte en mänsklig granskning.** Koden är säkerhetskritisk, och **en
+  människa bör granska den** innan ramverket används på riktigt.
+- **Nyckeln i `Authorization` döljs också för sig (K1).** För `Authorization` och
+  `Proxy-Authorization` (namnet i vilket skiftläge som helst) räknas nu också texten efter det första
+  mellanslaget, trimmad, som ett värde från förfrågan, och för schemat `Basic` (i vilket skiftläge
+  som helst) det Base64-avkodade `user:lösenord` och lösenordet efter det första `:`, avkodade som
+  UTF-8 och, när det skiljer sig, som ISO-8859-1. Avkodning som misslyckas ger inget extra. Listan
+  (`RestRequest.secrets()`) läses som förut av meddelandet, `safeExcerpt()` och orsaken till ett
+  transportfel (`Causes.textIsSafe`); de är oförändrade. Ett svar som `Invalid token: <nyckel>`,
+  med `Bearer`, `bearer` eller ett avkodat `Basic`, visar `<hidden>`. Andra huvuden döljs bara hela,
+  som förut.
+- **`safeExcerpt()` (K2).** `RestClientResponseException.safeExcerpt()` är utdraget med samma
+  döljning som `getMessage()` (samma text som meddelandet visar början av, men inte ASCII-kodad
+  och inte kortad till meddelandets längd). `bodyExcerpt()` är rått som förut och dokumenteras så.
+  README:s exempel (`AiClients.java`), växeln i README och Javadoc för `RestClientException` och
+  `RestClientResponseException` loggar `safeExcerpt()`; "aldrig nyckeln" står inte längre i README.
+- **Varning för JDK:ns loggning (K3).** Javadoc för `RestClient` och README säger att
+  `jdk.httpclient.HttpClient.log` (`headers`, `requests`, `all`) och `jdk.internal.httpclient.debug`
+  aldrig ska slås på i produktion. En prob mot JDK 25 visade att `headers` och `all` skriver ut
+  huvudvärden och att alla fyra skriver ut URI:n med query. Modulen kontrollerar det inte
+  (utanför scope).
+- **Inga punktsegment (K4).** En sökväg eller en bas-URI med ett segment som är `.` eller `..`,
+  också procentkodat (`%2e`, `%2E`, blandat som `.%2E`), ger `IllegalArgumentException` med en fast
+  text som inte citerar sökvägen (vid anropet respektive i `build()`, där den blir en rad bland de
+  andra). Ett segment räknas fram till sitt första `;`, så `/..;/x` avvisas också (utöver uppdraget,
+  se ARCHITECTURE). `/a..b`, `/...`, `/a.b`, `/.well-known` och punkter i queryn godtas och skickas
+  som de står. Javadoc för sökvägsparametrarna, `baseUri` och `build()` säger det.
+- **Rättad text (K5).** Javadoc för `RestClient` och `RestClientResponseException` och README säger
+  att orsaken från `spola.json` kan citera upp till 40 tecken per värde i upp till 100 problem (och
+  200 tecken av ett undantagsmeddelande).
+- **API-ändringar:** ny metod `RestClientResponseException.safeExcerpt()` (ett nytt serialiserat
+  fält); sökvägar och bas-URI:er med punktsegment avvisas nu (förut skickades de). Inga ändrade
+  `requires` eller `exports`, `module-info.java` och `ModuleTests` är oförändrade, ingen reflektion,
+  inga nya filtyper och inga nya källfiler. Bara `modules/client/` och dokumentationen är ändrade.
+- Nya tester i `spola.client` (447, förut 330; ungefär 15 s): tre nya fall i `Failures.all()` (ett 401
+  som nämner nyckeln efter `Bearer` ensam, ett med `bearer` och ett som nämner det avkodade
+  `user:lösenord` från `Basic`), som körs i alla meddelande- och markörtester och i `SecretTests`
+  ekotester; en tabell över vad `secrets()` döljer för 16 huvuden; ett huvud som inte är
+  `Authorization` döljs bara helt; `safeExcerpt()` för ett ekat huvud och för varje svarsfel;
+  behovets loggrad mot en Anthropic som nämner nyckeln (`AnthropicTests`); tabelldrivna tester för
+  punktsegment i sökvägar och bas-URI:er och för punkter som inte är segment (`SetupTests`); tre nya
+  i `ReadmeTests` (K2, K3, K5). Ändrade med avsikt: `RequestTests` och `SetupTests` skickade
+  `/a/../b` och `/x/../y` (nu avvisade; ersatta med `/a..b/.../c` och `/x/.../y`), `SwitchTests`
+  läser `safeExcerpt()`. Under arbetet kördes testerna mot mutationer: ingen döljning av nyckeln
+  (22 fel), ingen Base64-avkodning (9 fel), ingen kontroll av punktsegment (36 fel) och segment
+  utan gränsen vid `;` (6 fel); varje mutation fångades.
+
 ### Versioner och releaser (gjort för hand, utanför loopen)
 - `VERSION` i `Build.java` (nu `0.1.0`) sätts som modulversion i varje jar
   (`jar --module-version`). `java Build.java version` skriver ut den.
@@ -595,10 +1181,14 @@
   `uppdrag/behov/` och står still (`IDLE`) när inget väntar. Se `MONSTER.md`.
 
 ## Återstår
-- Inget är beställt. Idéerna i `uppdrag/PLAN.md` (JWT och sessioner, PostgreSQL, pool och
+- Behovet "Inloggning med sessioner och CSRF-skydd för ett JSON-API"
+  (psykologen) är levererat i sin helhet (11a–11c), behovet "BCrypt-hashar och delegerande
+  lösenordshasher" (psykologen) i uppdrag 12 och behovet "Rätt schema och klientadress bakom en
+  omvänd proxy" (psykologen) i 13a–13b och behovet "HTTP-klient för JSON-API:er" (psykologen) i
+  uppdrag 14; appen byter sin Spring-konfiguration och sina klienter efter nästa release.
+  Rättningarna efter säkerhetsgranskningen 2026-10-18 (15a–15d) är klara. Idéerna i `uppdrag/PLAN.md` (JWT, PostgreSQL, pool och
   transaktioner, query-DSL, migreringar, schemaläggning, observability, starter) byggs när ett
-  behov kommer. Formulärinloggning och utloggning (flyttade från rad 10) hör till idén
-  security-tokens.
+  behov kommer.
 - **Kvar från friktionsrapporten i 05c** (`modules/demo/README.md`, avsnitt "Friktion"):
   - **DI:** den typade formen av `to(...)` går inte att blanda `Class` och `Key` i; ett enda
     kvalificerat beroende gör att alla måste skrivas `Key.of(...)` (punkt 3).
@@ -615,13 +1205,235 @@
     `LoggingSettings` efter bindningen, inte i `ConfigException` (punkt 7).
 
 ## Kända problem och begränsningar
+- **Säkerhetsgranskningen 2026-10-18 (15a):** granskningen gjordes av AI-granskare och **ersätter
+  inte en mänsklig granskning**; modulerna nedan bör fortfarande granskas av en människa. Kända
+  begränsningar efter rättningarna i 15a:
+  - **Gränsen per användare räknar bara inloggningar.** En session som appen skapar med
+    `Sessions.getOrCreate` har ingen användare, så anonyma sessioner (en varukorg på en öppen väg)
+    kan fortfarande fylla `maxSessions` (fyndet S1 nämner också den vägen); ett konto kan ha högst
+    `maximumSessions`, men många konton kan tillsammans fylla lagringen. Ingen
+    hastighetsbegränsning (utanför uppdraget).
+  - **Medan inloggningar hanteras** kan användaren ha fler levande sessioner än gränsen, högst
+    gränsen plus antalet av användarens inloggningar som hanteras just då (också en enda
+    inloggning från en anonym session, som räknas från inloggningen men tar bort den äldsta först
+    när svaret byggs); när de är klara är det högst gränsen. Den inloggning som bygger sitt svar sist behåller sin session; webbläsaren
+    behåller det `Set-Cookie` som kommer sist, så två samtidiga inloggningar med gränsen 1 kan
+    lämna webbläsaren med den avslutade sessionens cookie.
+  - En inloggning tar bort användarens äldsta sessioner innan den nya skapas; får skapandet ändå
+    503 (`maxSessions`) är de borta. På samma sätt är en annan användares session redan avslutad
+    när en inloggning med byte av användare får 503, och svaret tar bort dess cookie.
+  - Inget sätt att lista eller avsluta en användares sessioner (Springs `SessionRegistry`), ingen
+    `maxSessionsPreventsLogin(true)` och inget meddelande till den avslutade sessionen (Springs
+    `expiredUrl`): nästa förfrågan med dess cookie är bara anonym.
+  - **`Cache-Control` på inloggade svar utan cookie** behåller handlerns värde utom `public` och
+    `s-maxage`, som uppdraget säger; `max-age=60` på ett inloggat svar låter alltså en delad cache
+    spara det (förfrågningar med en sessionscookie har inget `Authorization`, RFC 9111 §3.5).
+    Anonyma svar utan cookie ändras inte. Inget `Pragma` och inget `Expires`.
+  - **Riktade cachefält ändras inte:** `CDN-Cache-Control` (RFC 9213), `Surrogate-Control` och
+    leverantörernas egna fält. Ett CDN som följer ett sådant fält i stället för `Cache-Control` kan
+    spara ett svar med en cookie; sätt inga sådana på svar som kan bära en cookie eller en inloggad
+    användares data.
+  - Ett `Cache-Control` som inte går att tolka ersätts med `no-store`, också på inloggade svar.
+  - Tolkningen av `Cache-Control` finns i två kopior (`spola.web` och `spola.security.web`) som
+    måste ändras tillsammans.
+- **Säkerhetsgranskningen 2026-10-18 (15c), lösenord:** gjord av AI-granskare; **bör granskas av en
+  människa**. Kända begränsningar efter rättningarna:
+  - Tidsskillnaden mellan algoritmer och kostnader finns kvar (se BCrypt nedan); den är bara
+    dokumenterad.
+  - En användare vars lagrade hash Spola inte läser (`{noop}`, `{sha256}`, `{MD5}`, Springs
+    hex-`{pbkdf2}` med flera) får `BAD_CREDENTIALS` också med rätt lösenord, och kan inte logga in
+    förrän raden har fått en hash som Spola läser (ett lösenordsbyte eller en migrering).
+  - Varje inloggningsförsök mot en sådan användare loggar en rad på `WARNING`; den som känner till
+    ett sådant användarnamn kan alltså ge en rad per förfrågan (varje försök kostar också en
+    kontroll mot dummyhashen). Ingen hastighetsbegränsning (utanför uppdraget).
+  - Bara `IllegalArgumentException` från `matches` räknas som en trasig hash; ett annat undantag
+    från en egen hasher släpps igenom (500 genom `HttpBasic`).
+  - Tolkningen godtar fortfarande hashar på upp till 64 byte med upp till 10 000 000 iterationer,
+    så en korrupt rad kan kosta två block med maximalt antal iterationer för en kontroll.
+- **REST-klienten (spola.client, 14):** säkerhetskritisk; **bör granskas av en människa** innan
+  ramverket används på riktigt. Kända begränsningar:
+  - **Sökvägen skickas som den står**, utan kodning och utan mallar, så värden utifrån måste
+    kodas av appen innan de blir en del av sökvägen. En sökväg med tecken som inte får finnas i en
+    URI ger `IllegalArgumentException`, och så gör ett punktsegment (`.`, `..`, `%2e`, också före
+    `;`). En tom query (`/x?`) skickas som `/x` (`java.net.http`). Kända glapp i kontrollen av
+    punktsegment (15d): ett kodat snedstreck (`..%2F`, det `URLEncoder.encode("../x")` ger),
+    dubbelkodning (`%252e`), ett kodat `;` (`..%3B`) och ett kodat bakstreck (`..%5C`) avvisas inte;
+    de är inga punktsegment enligt RFC 3986, men en server som avkodar dem innan den löser upp
+    punktsegment kan ändå nå en annan resurs.
+  - **Inga cookies, ingen egen `SSLContext` och ingen proxy.** TLS använder JDK:ns
+    standard-`SSLContext`; ingen proxy används, inte heller den som JVM:ens `https.proxyHost`
+    anger. Ingen mTLS, inget eget truststore per klient.
+  - **Bara HTTP/1.1.** Ingen HTTP/2 och ingen komprimering.
+  - **Omdirigeringar följs inte.** En 3xx ger `RestClientResponseException` med `Location` i
+    `headers()`.
+  - **`Content-Type` styr inte tolkningen.** Varje 2xx-kropp tolkas som JSON; `Content-Type` i
+    förfrågan kan inte sättas och bara JSON-kroppar kan skickas.
+  - **Svarshuvuden finns bara på `RestClientResponseException`**; ett lyckat anrop ger bara
+    värdet (eller statusen), inget `toEntity` eller `exchange`.
+  - **Ett felsvar läses bara till de första 8 KiB**, och utdraget är högst 1 000 tecken.
+  - **Samma tidsgräns gäller alla anrop från en klient**; ingen tidsgräns per förfrågan. En
+    deadline som går ut medan ett felsvar läses ger `RestClientTransportException` med
+    `timedOut()`, inte statusen.
+  - **`close()` väntar på pågående anrop** (vart och ett inom sin tidsgräns).
+  - Inga omförsök, ingen cirkelbrytare, inga interceptorer, ingen loggning och inga mätvärden.
+    `java.net.http` gör själv ett nytt försök för `GET` när en återanvänd anslutning visar sig
+    vara stängd, och provar ibland TLS-handslaget två gånger.
+  - **Värden som servern skickar tillbaka döljs bara hela.** Svarsfelets `getMessage()` och
+    `safeExcerpt()` döljer varje hel förekomst av ett huvudvärde, queryn och förfrågans kropp, och
+    för `Authorization` och `Proxy-Authorization` också nyckeln efter det första mellanslaget och
+    för `Basic` det avkodade `user:lösenord` och lösenordet (15d). En del av ett värde som servern
+    skickar för sig (en medlem i kroppen, en parameter i queryn, delen efter ett mellanslag i ett
+    annat huvud) eller ändrar först (JSON som kodas om, till exempel `/` som `\/`) syns, och ett
+    kort värde (`X-Page: 2`) döljer samma text också där servern skrev den själv. Ett schema som
+    skiljs från nyckeln med tab i stället för mellanslag (`Bearer<tab>nyckel`, inte tillåtet enligt
+    RFC 9110) döljs bara helt. `bodyExcerpt()` döljer ingenting: en server som skickar tillbaka
+    förfrågan får med den där, så loggen ska ha `safeExcerpt()` eller `getMessage()`. Orsaken från
+    `spola.json` döljer ingenting och kan citera upp till 40 tecken per värde i upp till 100 problem
+    (och 200 tecken av ett undantagsmeddelande).
+  - **JDK:ns egen loggning skriver ut nycklar.** Med `jdk.httpclient.HttpClient.log` (`headers`,
+    `requests`, `all`) eller `jdk.internal.httpclient.debug` skriver `java.net.http` ut huvudvärden
+    och URI:er med query. Modulen kan inte stänga av det och vägrar inte starta (utanför 15d);
+    Javadoc och README varnar.
+  - **Transportfel visar bara klassnamn för felaktiga svar.** Orsaken till ett
+    `RestClientTransportException` är JDK:ns undantag bara för `SocketException`,
+    `SSLException` och `HttpTimeoutException` (utan värden från förfrågan i texten); för allt
+    annat, som en felaktig statusrad eller en kropp som tar slut, är den en kedja av `IOException`
+    utan text med originalens klasser och stackspår. Det kostar diagnostik.
+  - `RestClientResponseException.headers()` är tom efter Java-serialisering (`HttpHeaders` är
+    inte serialiserbar).
+  - **Observerat, orsaken inte hittad:** med 200 samtidiga anrop mot en `spola.http`-server blir i
+    ungefär var tredje körning ett eller två anrop klara först när servern stänger en ledig
+    anslutning (`idleTimeout`). Det händer också med `java.net.http.HttpClient` direkt, utan
+    `spola.client`, så felet ligger i `java.net.http` eller i `spola.http`. Anropet får rätt svar;
+    `timeout` begränsar väntan.
+- **Proxyhuvuden (spola.web, 13a):** säkerhetskritiskt; **bör granskas av en människa** innan
+  ramverket används på riktigt. Kända begränsningar:
+  - Bara `X-Forwarded-For` och `X-Forwarded-Proto` läses. `Forwarded` (RFC 7239),
+    `X-Forwarded-Host`, `X-Forwarded-Port` och `X-Forwarded-Prefix` stöds inte, så `host()` är
+    det `Host` som proxyn skickar, och porten och absoluta URL:er följer inte proxyn. Ingen
+    `X-Real-IP`, `CF-Connecting-IP` eller PROXY-protokoll.
+  - `privateNetworks()` litar på hela nätet, inte bara på proxyn. Med Dockers userland-proxy, och i
+    Docker Desktop, kan en direkt anslutning till en publicerad port komma från bryggans gateway
+    (till exempel `172.17.0.1`); den adressen är betrodd och kan förfalska huvudena. En klient på
+    ett betrott nät som går genom proxyn hoppas också över som en proxy, så den väljer själv sin
+    klientadress (som med Tomcats `internal-proxies`). Bara proxyns port ska publiceras, och då
+    ska appen lita bara på proxyns adress (`TrustedProxies.of(...)`).
+  - En proxy som skickar vidare klientens egna `X-Forwarded-*` utan att ersätta dem eller lägga
+    till sin egen adress gör att klienten styr värdena (filtret kan inte se skillnad).
+  - Ogiltiga värden från en betrodd proxy ger 400, till exempel `unknown` (som vissa proxyer
+    skriver när de inte vet adressen) och dolda identifierare som `_hidden`; en klient på ett
+    betrott nät som skickar skräp får också 400. Tomcat avvisar aldrig förfrågan för dem.
+  - `Secure` på sessions- och CSRF-cookien följer schemat sedan 13b (se nästa punkt).
+  - Ordningen i kedjan kan modulen inte kontrollera: ett filter som registreras före
+    `ForwardedHeaders` ser anslutningens värden.
+  - **Varningen sägs en gång per filter (15b).** Den första avsändaren som filtret inte litar på
+    och som skickar `X-Forwarded-Proto` eller `X-Forwarded-For` tar raden. Når en klient appens
+    port direkt med egna huvuden före en felkonfiguration syns felkonfigurationen inte i loggen;
+    bara proxyns port ska publiceras. Raden säger inte vilket av huvudena som kom, och ett filter
+    som skapas om (en ny router) varnar igen.
+  - `request.clientAddress()` är ingen behörighet: med `privateNetworks()` kan varje container på
+    nätet skriva vilken klientadress som helst, och Dockers userland-proxy kan visa en klient
+    utifrån som en privat adress (15b, P5).
+  - Inget sätt för andra filter att ändra `scheme()` och `clientAddress()`, ingen `removeOnly`
+    (huvudena finns kvar i `headers()`) och inget `X-Forwarded-By`.
+- **`Secure` efter schemat (spola.web, spola.security.web, 13b):** säkerhetskritiskt; **bör
+  granskas av en människa** innan ramverket används på riktigt. Kända begränsningar:
+  - **Fel ordning med `ForwardedHeaders` ger inget `Secure`.** Registreras `ForwardedHeaders`
+    efter `sessions.filter()` eller `security.filter()` ser handlern `https`, men cookierna blir
+    inte `Secure` bakom proxyn. Ordningen kan modulerna inte kontrollera; den står i Javadoc och
+    README.
+  - **Utan `secure(true)` beror `Secure` på `TrustedProxies`.** Litar `ForwardedHeaders` inte på
+    proxyns adress är schemat `http` och cookierna sätts utan `Secure`; sedan 15b syns det som en
+    varning i loggen (en gång per filter). En app som bara nås över https sätter `secure(true)` på
+    båda cookierna och kallar sessionscookien `__Host-SESSION` (README, "Bakom Caddy").
+    Standardvärdena (`SESSION` utan `secure(true)`) är oförändrade.
+  - **Det finns inget sätt att stänga av regeln.** En cookie som sätts över `https` har alltid
+    `Secure` (Spring kan stänga av det för `XSRF-TOKEN` med en cookie customizer).
+  - **En borttagning över `http` av en cookie som sattes över `https` får inget `Secure`**, och
+    webbläsaren kan då ignorera den. Sessionen är ändå borta på servern.
+  - Bara sessionscookien och `XSRF-TOKEN` följer schemat. Cookies som appen sätter med
+    `Responses.withCookie` får inget automatiskt `Secure`; appen väljer själv efter
+    `request.scheme()`.
+- **CSRF-skydd (spola.security.web, 11c):** säkerhetskritiskt; **bör granskas av en människa**
+  innan ramverket används på riktigt. **Skyddet faller vid XSS:** skript på appens egna sidor kan
+  läsa `XSRF-TOKEN` och skicka huvudet. **Det faller också för origins som CORS öppnar för:** en
+  origin som får skicka `X-XSRF-TOKEN` med cookies kan, om den kan sätta cookien (en underdomän på
+  samma webbplats kan sätta den för huvuddomänen), skicka ett matchande par. Utan CORS för andra
+  origins hjälper en planterad cookie inte, eftersom huvudet inte går att skicka. **Fasta namn**
+  (`XSRF-TOKEN`, `X-XSRF-TOKEN`) och **ingen formulärparameter** (`_csrf`), så klassiska
+  HTML-formulär utan JavaScript kan inte skicka ändrande anrop med skyddet på. Ingen maskering av
+  token (BREACH-skydd, `XorCsrfTokenRequestAttributeHandler`), inga undantag per väg
+  (`ignoringRequestMatchers`) och ingen token i sessionen. Ett undantag som routern mappar utanför
+  säkerhetsfiltret (400 för flera `Authorization`-fält eller över 200 cookies, ett undantag från en
+  mekanism, en matcher eller en regel) och ett fel i förfrågans kropp får ingen cookie. Med
+  `Max-Age` i cookie-funktionen skickar JDK:ns `CookieManager` (inte en webbläsare) tillbaka värdet
+  inom citattecken, och det räknas inte som en token. Två samtidiga inloggningar eller utloggningar
+  i samma webbläsare ger två `Set-Cookie`, och det som kommer sist gäller; en flik som skickar med
+  den äldre token får 403 och måste läsa cookien igen (Angular gör det inför varje anrop). Anropas
+  `login` eller `logout` från en tråd som lever kvar efter förfrågan kastar de
+  `IllegalStateException`, och en `login` som hann förnya sessionen innan dess byter då inte token.
+  Token finns som `String` i förfrågans huvuden och svarets `Set-Cookie` och kan inte nollställas.
+  I testerna letar 10b:s `LeakTests` efter fyrteckensmarkörer (`zPwd`, `zUsr`) i hela svar;
+  11c:s tester sparar svaren med cookievärdena maskerade, men 11b:s ungefär 300 slumpade
+  sessions-id i `Set-Cookie` gör att ungefär en körning på 1 000 kan bli röd av en slump (11b:s
+  testfiler fick inte ändras i 11c).
+- **Inloggning med session (spola.security.web, 11b):** säkerhetskritisk; **bör granskas av en
+  människa** innan ramverket används på riktigt. **Identiteten i sessionen är en
+  ögonblicksbild:** ändrade roller, ett avstängt konto eller en borttagen användare i
+  `UserStore` påverkar inte en inloggad session förrän utloggning eller utgång (som Springs
+  standard); det finns inget sätt att logga ut alla sessioner för en användare (efter ett
+  lösenordsbyte, till exempel). En gräns för samtidiga sessioner per användare finns sedan 15a
+  (`maximumSessions`, standard 10; se ovan).
+  **`login` ändrar inte förfrågans egen identitet:** `identity(request)` svarar i
+  inloggningsförfrågan som när filtret körde, och nästa förfrågan ser identiteten; samma för
+  `logout`. **Inloggningen loggas inte** (varken lyckade eller misslyckade inloggningar;
+  auditloggning är ett eget behov). **CSRF-skydd finns sedan 11c men måste slås på** med
+  `csrf(Csrf.cookie())` (se ovan); utan det skyddar bara `SameSite=Lax` mot förfalskade `POST` från
+  andra webbplatser, inte från andra underdomäner på samma webbplats. Har förfrågans session en identitet provas inga mekanismer, så fel
+  Basic-uppgifter bredvid en giltig session ger inte 401. Registreras `sessions.filter()` efter
+  `security.filter()` ger bara de förfrågningar som reglerna släpper igenom 500; nekade får sitt
+  vanliga 401/403. Ett undantag i handlern efter `login` (till exempel 406 från
+  `Responses.json`) ger ett felsvar som ändå sätter den nya cookien: användaren är inloggad.
+  Begränsningarna för sessioner i 11a (nedan) gäller också, till exempel att två samtidiga
+  inloggningar i samma session ger två `Set-Cookie` där det som kommer sist gäller. Ingen "kom
+  ihåg mig", ingen formulärinloggning med omdirigeringar och användaren läses inte om ur
+  `UserStore` per förfrågan.
+- **Sessioner (spola.web, 11a):** säkerhetskritisk; **bör granskas av en människa** innan
+  ramverket används på riktigt. **Sessionerna finns bara i minnet: de försvinner vid omstart och
+  delas inte mellan servrar** (ingen Spring Session med JDBC eller Redis, ingen serialisering,
+  inget utbytbart lagringsgränssnitt). **Ingen loggrad när gränsen nås** (bara `size()`), och
+  inga mätvärden. **Två samtidiga `renew` på samma session ger två `Set-Cookie`, och det som
+  webbläsaren tar emot sist gäller**; är det det första id:t har sessionen förlorats för
+  webbläsaren. På samma sätt får en förfrågan som kom med det gamla id:t medan en annan
+  förfrågan förnyade sessionen ingen session längre, och anropar den `getOrCreate` får den en
+  ny session med ett eget `Set-Cookie` (det som kommer sist gäller). Städningen går igenom alla
+  sessioner på en förfrågans tråd högst en gång per minut (med 10 000 sessioner snabbt, med
+  miljontals märkbart för den förfrågan). Ingen absolut maxlivstid, inget "kom ihåg mig" och inga
+  händelser vid skapande och utgång (`HttpSessionListener`); en gräns per användare finns sedan
+  15a, men bara för inloggningar med `renewFor` (se ovan). `Secure`
+  efter schemat och `X-Forwarded-Proto` kom i 13b (se ovan). Attributvärden
+  sparas som referenser: ett föränderligt värde delas mellan samtidiga förfrågningar och måste
+  vara trådsäkert. Cookie-funktionen körs en gång vid `inMemory`, så en funktion som läser
+  föränderlig konfiguration ser bara värdet vid uppstart. En förfrågan med fler än 200 cookies
+  får 400 på alla vägar bakom filtret (cookietolkningens gräns). Sätter funktionen `maxAge` (en
+  beständig cookie) skickar JDK:ns `CookieManager` tillbaka id:t inom citattecken (RFC 2965, se
+  08c nedan), och ett sådant värde slås aldrig upp; webbläsare berörs inte. Id:t finns som `String` i
+  förfrågans `Cookie`-huvud och i svarets `Set-Cookie` och kan inte nollställas, och anslutningens
+  läs- och skrivbuffertar i `spola.http` nollställs inte heller: de kan hålla id:t så länge
+  anslutningen är öppen, på en keep-alive-anslutning som proxyn återanvänder så länge appen kör
+  (15b). En minnesavbild av en körande server kan alltså hålla giltiga id. Utgången följer
+  `InstantSource`; med systemklockan förlänger en klocka som går bakåt sessionerna och en som
+  hoppar framåt avslutar dem.
 - **Säkerhet i webben (spola.security.web, 10b):** säkerhetskritisk; bör granskas av en
   människa. **Varje förfrågan med Basic-uppgifter kostar en PBKDF2-beräkning** (inga cachade
   inloggningar), så många förfrågningar med uppgifter belastar CPU:n; **ingen
   hastighetsbegränsning** och ingen låsning av konton. **Inga säkerhetshuvuden**
-  (`X-Content-Type-Options`, `X-Frame-Options`, HSTS) sätts. **Ingen auditloggning** av
-  inloggningar (uppdrag 18); modulen loggar ingenting. Ingen formulärinloggning, utloggning,
-  sessioner, JWT, CSRF eller CORS (uppdrag 11). Att filtret är registrerat först på routern kan
+  (`X-Content-Type-Options`, `X-Frame-Options`, HSTS) sätts; bara `Cache-Control` på inloggade
+  svar och svar med en cookie (sedan 15a). **Ingen auditloggning** av
+  inloggningar (uppdrag 18); modulen loggar ingenting. Inloggning och utloggning med session
+  finns sedan 11b (se nedan), men ingen formulärinloggning med HTML-formulär och
+  omdirigeringar, inget JWT och ingen CORS; CSRF-skydd för en SPA finns sedan 11c
+  (`csrf(Csrf.cookie())`, se ovan), men inget för HTML-formulär. Att filtret är registrerat först på routern kan
   modulen inte kontrollera; ett filter före det ser också förfrågningar som sedan nekas.
   Identiteten finns bara på `WebRequest` (ingen `SecurityContextHolder` eller `ScopedValue`
   för kod utanför webblagret). Användarnamnet och `Authorization`-värdet finns som `String` och
@@ -630,9 +1442,41 @@
   som användarens `UserStore` kastar loggas av routern med sitt meddelande; lagringen får inte
   lägga lösenord eller andra hemligheter i det. `exactly` och `under` tar inga prefix med
   avslutande `/`.
-- **Säkerhet (spola.security, 10a):** säkerhetskritisk; bör granskas av en människa. Bara
-  PBKDF2-HMAC-SHA256 (ingen BCrypt, SCrypt, Argon2 eller delegerande hasher). Ingen låsning av
-  konton och ingen hastighetsbegränsning; varje försök kostar en PBKDF2-beräkning, så en
+- **BCrypt och delegerande hasher (spola.security, 12):** säkerhetskritisk; **bör granskas av en
+  människa** innan ramverket används på riktigt. Kända begränsningar:
+  - Lösenord över 72 byte och lösenord med U+0000 avvisas, så användare med sådana lösenord från
+    Spring (före Springs rättelse av CVE-2025-22228) måste byta lösenord.
+  - En lagrad kostnad på 31 kan låsa en tråd i dygn (kostnad 31 är ungefär 2 miljoner gånger
+    kostnad 10); tolkningen godtar 4–31 som Spring, så den som kan skriva i användarlagringen kan
+    göra det med en enda rad.
+  - **Lika tid för okända användare gäller bara inom en algoritm och kostnad.** Medan användare
+    flyttas mellan algoritmer skiljer sig tiden för kända användare med en annan algoritm
+    (`{pbkdf2}`) eller en annan kostnad från tiden för okända (dummyhashen är `{bcrypt}` med
+    hasharens kostnad), så en angripare kan se vilka användarnamn som finns, tills användarna har
+    loggat in en gång och fått en ny hash (bara med uppgradering). Ett lösenord över 72 byte gör
+    skillnaden brusfri: bcrypt avvisar det utan arbete, PBKDF2 räknar. Dokumenterat sedan 15c;
+    tiden jämnas inte ut mellan algoritmer.
+  - En lagrad bcrypt-hash med **högre kostnad** än hasharens byts aldrig ut (`needsRehash` är bara
+    `true` för en lägre kostnad, som Springs `upgradeEncoding`), men dummyhashen för okända
+    användare görs med hasharens kostnad. Kommer hasharna från `new BCryptPasswordEncoder(12)` och
+    appen använder `defaults()` (kostnad 10), tar en känd användare med fel lösenord ungefär fyra
+    gånger så lång tid som en okänd, och det går aldrig över: en angripare kan se vilka
+    användarnamn som finns. Hasharens kostnad ska därför vara minst den högsta lagrade
+    (`BCryptPasswordHasher.of(12)` för de hasharna); det står i Javadoc för `BCryptPasswordHasher`
+    och i README. Efter en höjning av kostnaden är användare med lägre kostnad i stället snabbare
+    än okända tills de har loggat in, som vid flytten mellan algoritmer.
+  - Ingen reservhasher för hashar utan prefix (Springs `setDefaultPasswordEncoderForMatches`); en
+    ren bcrypt-hash i en delegerande hasher är ett datafel.
+  - Springs `{pbkdf2}`-format (hex från `Pbkdf2PasswordEncoder`) stöds inte; `{pbkdf2}` läser
+    Spolas PHC-format. Inte heller SCrypt, Argon2, `{noop}`, `{sha256}` eller `{MD5}`.
+  - Nya hashar har alltid `$2a$`; `$2x$` och `$2$` stöds inte.
+  - Lösenordet som `String` (eller annan `CharSequence`) kan inte nollställas av modulen; bara de
+    kodade byten, nyckeln, Blowfish-tillståndet och den räknade hashen nollställs.
+  - Tabellerna från π räknas fram vid första användningen (ungefär 50–300 ms en gång per JVM).
+- **Säkerhet (spola.security, 10a):** säkerhetskritisk; bör granskas av en människa. PBKDF2-HMAC-SHA256
+  och, sedan uppdrag 12, BCrypt och en delegerande hasher med `{id}`-prefix (ingen SCrypt eller
+  Argon2). Ingen låsning av
+  konton och ingen hastighetsbegränsning; varje försök kostar en PBKDF2- eller bcrypt-beräkning, så en
   angripare kan belasta CPU:n (utanför 10a). Ingen normalisering av
   lösenord (Unicode eller blanksteg) eller användarnamn. Ingen lösenordspolicy. Lösenordet
   finns som `CharSequence` (oftast en `String`) hos anroparen och kan inte nollställas av
@@ -643,10 +1487,9 @@
   hasharens (inom tolkningsgränserna, t.ex. 1 iteration) verifieras med sina egna inställningar;
   den som kan skriva i användarlagringen kan alltså sänka kostnaden för sin egen rad.
   Konstanttid gäller jämförelsen av hashar, inte uppslagningen i `UserStore`. Uppgraderingen
-  via `InMemoryUserStore.upgrader` är villkorad på `needsRehash` (signaturen ger inte den lästa
-  hashen): ett lösenordsbyte som sparas med *gamla* inställningar medan en uppgradering pågår
-  kan fortfarande skrivas över; lösenordsbyten ska hashas med autentiserarens hasher. Egna
-  `PasswordUpgrade` måste själva vara villkorade och atomära.
+  är sedan 15c en compare-and-set på den verifierade hashen (`InMemoryUserStore.upgrader()`);
+  egna `PasswordUpgrade` måste själva göra samma atomära jämförelse (`UPDATE ... WHERE username =
+  ? AND hash = ?`), annars kan ett lösenordsbyte som hinner emellan skrivas över.
 - **Validering i webben (spola.web, 09b):** formulär är platta; nästlade namn
   (`address.city`, `items[0].qty`) binds inte till nästlade objekt (skicka JSON). Ingen
   generering av binders från records (allt skrivs i bindern). Ingen i18n av meddelanden eller
@@ -674,7 +1517,8 @@
   innehålla synlig ASCII: råa mellanslag, tab eller radbrytningar (t.ex. ett avslutande
   `\r\n` från ett handskrivet `curl`-anrop) ger 400. `readForm` kräver `Content-Type` också
   för en tom kropp. Överhoppade cookies loggas inte, så en felaktig cookie syns inte i
-  serverns logg. Ingen multipart, inga sessioner, signerade cookies eller CSRF (uppdrag 11).
+  serverns logg. Ingen multipart och inga signerade cookies. Sessioner kom i 11a och CSRF-skydd i
+  11c, i `spola.security.web` (se ovan).
 - **Web (spola.web, 08b):** efter en 413 från `readJson` läser `spola.http` resten av kroppen
   (upp till `maxBodySize`, utan att buffra) innan svaret skickas; en klient som skickar en
   stor kropp får alltså vänta tills den skickats. `readJson` kan inte veta om någon läst

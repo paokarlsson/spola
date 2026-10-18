@@ -202,15 +202,18 @@ public final class HttpServer implements AutoCloseable {
                 closeQuietly(socket);
                 return;
             }
-            var connection = new Connection(this, socket);
+            Connection connection = null;
             try {
+                connection = new Connection(this, socket);
                 connections.add(connection);
                 connection.start("spola-http-" + serverSocket.getLocalPort() + "-" + connectionIds.incrementAndGet());
             } catch (RuntimeException | Error e) {
-                connections.remove(connection);
+                if (connection != null) {
+                    connections.remove(connection);
+                }
                 permits.release();
                 closeQuietly(socket);
-                log.log(Level.ERROR, "starting a connection thread failed", LoggedThrowable.of(e));
+                log.log(Level.ERROR, "starting a connection failed", LoggedThrowable.of(e));
                 pause();
             }
         }

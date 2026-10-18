@@ -2,6 +2,7 @@ package spola.http;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.net.InetSocketAddress;
 import java.util.Optional;
 
 /**
@@ -14,17 +15,26 @@ import java.util.Optional;
  * {@link RequestBodyException}. If the client sent {@code Expect: 100-continue}, the server
  * sends {@code 100 Continue} when the body is first read, and not at all if it never is. What
  * the handler leaves unread is skipped by the server before the next request on the connection.
+ *
+ * <p>{@link #scheme()}, {@link #tls()} and {@link #remoteAddress()} describe the connection the
+ * request came on. Behind a reverse proxy that is the proxy's connection: the scheme is
+ * {@code "http"} when the proxy ends TLS, and the address is the proxy's. The client's scheme
+ * and address come from the proxy's {@code X-Forwarded-Proto} and {@code X-Forwarded-For},
+ * which {@code ForwardedHeaders} in {@code spola.web} reads when the proxy is trusted; the values
+ * here never change.
  */
 public final class Request {
 
     private final RequestParser.Head head;
     private final BodyStream body;
     private final Optional<TlsInfo> tls;
+    private final InetSocketAddress remoteAddress;
 
-    Request(RequestParser.Head head, BodyStream body, Optional<TlsInfo> tls) {
+    Request(RequestParser.Head head, BodyStream body, Optional<TlsInfo> tls, InetSocketAddress remoteAddress) {
         this.head = head;
         this.body = body;
         this.tls = tls;
+        this.remoteAddress = remoteAddress;
     }
 
     /**
@@ -81,12 +91,34 @@ public final class Request {
      * {@code "http"}. This is how the request arrived at this server; an absolute-form target with
      * the other scheme ({@code GET http://a/ HTTP/1.1} over TLS) is not refused (RFC 9112 §3.2.2
      * does not say to) and does not change it. Behind a proxy that ends TLS, this is
-     * {@code "http"}.
+     * {@code "http"}; the client's scheme is {@code WebRequest.scheme()} after
+     * {@code ForwardedHeaders} in {@code spola.web}.
      *
      * @return {@code "https"} or {@code "http"}
      */
     public String scheme() {
         return tls.isPresent() ? "https" : "http";
+    }
+
+    /**
+     * The address and port of the other end of the TCP connection, the counterpart of the
+     * servlet API's {@code getRemoteAddr()} and {@code getRemotePort()}. Over TLS it is the TCP
+     * connection under TLS. The value is taken when the connection is accepted, so every request
+     * on the connection has the same one, and it is never {@code null}.
+     *
+     * <p>No name is looked up: the server never calls {@code getHostName()} or
+     * {@code getCanonicalHostName()} (they ask DNS). Use {@code getAddress().getHostAddress()} or
+     * {@link InetSocketAddress#getHostString()} for the address as text.
+     *
+     * <p>Behind a reverse proxy this is the proxy's address, not the client's. In
+     * {@code spola.web}, {@code ForwardedHeaders} reads {@code X-Forwarded-For} when this address
+     * belongs to a trusted proxy and gives the client's address as
+     * {@code WebRequest.clientAddress()}; this value stays the proxy's.
+     *
+     * @return the remote address and port
+     */
+    public InetSocketAddress remoteAddress() {
+        return remoteAddress;
     }
 
     /**

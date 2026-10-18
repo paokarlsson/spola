@@ -1,0 +1,15 @@
+feat(web): read client scheme and address from trusted X-Forwarded-*
+
+spola.http gets Request.remoteAddress(); spola.web gets
+WebRequest.scheme()/clientAddress(), TrustedProxies and the filter
+ForwardedHeaders.trusting(...), like Spring Boot's
+server.forward-headers-strategy. Headers count only from a trusted
+sender, X-Forwarded-For is read from the right, IP literals are strict,
+and a malformed value from a trusted proxy gives 400.
+
+Gauntlet-Run: 20261014-0119-web-proxyhuvuden
+Gauntlet-Round: 1/5
+Gauntlet-Verdict: PASS (0 blocker, 0 major, 13 minor upheld)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_016R1SyuZe48AGwQWbo2Xdkz

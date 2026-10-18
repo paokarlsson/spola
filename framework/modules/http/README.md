@@ -357,7 +357,7 @@ ARCHITECTURE.md.
 | `TlsInfo` | record: protokoll, chiffersvit, klientens certifikatkedja |
 | `TlsMaterialException` | felaktigt nyckelmaterial: fil, vad som är fel; aldrig lösenord eller nyckelbytes |
 | `Handler` | `Response handle(Request request) throws Exception` |
-| `Request` | `method()`, `target()`, `path()`, `query()`, `host()`, `scheme()`, `tls()`, `version()`, `headers()`, `body()`, `bytes()` |
+| `Request` | `method()`, `target()`, `path()`, `query()`, `host()`, `scheme()`, `tls()`, `remoteAddress()`, `version()`, `headers()`, `body()`, `bytes()`. `remoteAddress()` är TCP-anslutningens andra ände (`InetSocketAddress`, som `getRemoteAddr()` och `getRemotePort()`), tagen när anslutningen accepteras och utan namnuppslag; bakom en omvänd proxy är det proxyns adress (klientens ger `ForwardedHeaders` i `spola.web`) |
 | `Headers` | oföränderliga, ordnade, skiftlägesokänsliga namn, flera värden: `first`, `all`, `contains`, `of`, `with` |
 | `Response` | record: status, `Headers`, `ResponseBody`; `text`, `bytes`, `stream`, `status`, `withHeader` |
 | `ResponseBody` | sealed: `Empty`, `Bytes`, `Streaming` |

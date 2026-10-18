@@ -11,7 +11,7 @@ import java.util.concurrent.ConcurrentMap;
  * normalisation).
  *
  * <p>{@link #updatePassword} is for password changes. Upgrades of old hashes go through
- * {@link #upgrader}: {@code Authenticator.of(store, hasher, store.upgrader(hasher))}.
+ * {@link #upgrader()}: {@code Authenticator.of(store, hasher, store.upgrader())}.
  */
 public final class InMemoryUserStore implements UserStore {
 
@@ -66,28 +66,24 @@ public final class InMemoryUserStore implements UserStore {
     }
 
     /**
-     * The {@link PasswordUpgrade} for an {@link Authenticator} using this store: it replaces a
-     * user's hash only if the stored hash still {@linkplain PasswordHasher#needsRehash needs a
-     * rehash} with {@code hasher}, checked and replaced atomically. A hash that a password
-     * change has stored in the meantime (made with the current settings) is therefore never
-     * overwritten by the upgrade of a login that verified the old password. A user that no
-     * longer exists is left alone. An {@link IllegalArgumentException} for a malformed stored
-     * hash propagates, and the stored hash is kept.
+     * The {@link PasswordUpgrade} for an {@link Authenticator} using this store: a
+     * compare-and-set that replaces a user's hash with {@code newHash} only if the stored hash
+     * is still exactly {@code verifiedHash} ({@link String#equals}), checked and replaced in one
+     * atomic step. A hash that a password change or another login's upgrade has stored in the
+     * meantime is therefore never overwritten, whatever settings it was made with. The username,
+     * roles and enabled flag are kept, and a user that no longer exists is left alone. The stored
+     * hash is not parsed.
      *
-     * <p>Use {@link #updatePassword}, not this, for password changes, and make the hashes for
-     * them with the same {@code hasher}: a password change stored with old settings still needs
-     * a rehash and can be overwritten by an upgrade that is already running.
+     * <p>Use {@link #updatePassword}, not this, for password changes.
      *
-     * @param hasher the authenticator's hasher
      * @return the upgrade
-     * @throws NullPointerException if {@code hasher} is {@code null}
      */
-    public PasswordUpgrade upgrader(PasswordHasher hasher) {
-        Objects.requireNonNull(hasher, "hasher");
-        return (username, newHash) -> {
+    public PasswordUpgrade upgrader() {
+        return (username, verifiedHash, newHash) -> {
             Objects.requireNonNull(username, "username");
+            Objects.requireNonNull(verifiedHash, "verifiedHash");
             Objects.requireNonNull(newHash, "newHash");
-            users.computeIfPresent(username, (name, user) -> hasher.needsRehash(user.passwordHash())
+            users.computeIfPresent(username, (name, user) -> user.passwordHash().equals(verifiedHash)
                     ? new User(user.username(), newHash, user.roles(), user.enabled())
                     : user);
         };

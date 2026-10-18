@@ -4,6 +4,7 @@ import java.io.BufferedOutputStream;
 import java.io.EOFException;
 import java.io.IOException;
 import java.lang.System.Logger.Level;
+import java.net.InetSocketAddress;
 import java.net.Socket;
 import java.net.SocketTimeoutException;
 import java.util.Optional;
@@ -66,6 +67,7 @@ final class Connection implements Runnable {
     private final HttpServer server;
     private final Socket socket; // the accepted TCP socket; with TLS, the one underneath
     private final long acceptedAt;
+    private final InetSocketAddress remote; // the TCP peer, taken at accept; Request.remoteAddress()
     private final String peer;
     private final AtomicReference<State> state = new AtomicReference<>(State.IDLE);
     private volatile Thread thread;
@@ -85,7 +87,24 @@ final class Connection implements Runnable {
         this.server = server;
         this.socket = socket;
         this.acceptedAt = System.nanoTime();
-        this.peer = String.valueOf(socket.getRemoteSocketAddress());
+        this.remote = remoteAddress(socket);
+        this.peer = String.valueOf(remote);
+    }
+
+    /**
+     * The address and port of the TCP peer of an accepted socket (with TLS, the TCP socket under
+     * it). {@code new InetSocketAddress(InetAddress, int)} looks up no name, and nothing here asks
+     * for one.
+     *
+     * @throws IllegalStateException if the socket is not connected (never after accept; the
+     *                               server then closes it instead of serving it)
+     */
+    private static InetSocketAddress remoteAddress(Socket socket) {
+        var address = socket.getInetAddress();
+        if (address == null) {
+            throw new IllegalStateException("the accepted socket has no remote address");
+        }
+        return new InetSocketAddress(address, socket.getPort());
     }
 
     void start(String name) {
@@ -250,7 +269,7 @@ final class Connection implements Runnable {
                         writer.sendContinue();
                     }
                 });
-        var request = new Request(head, body, tlsInfo());
+        var request = new Request(head, body, tlsInfo(), remote);
         boolean headRequest = head.method().equals("HEAD");
         var outcome = skipUnreadBodyOrFail(handle(request, body), request, head, body);
         boolean close = shouldClose(head, body, outcome.failed());

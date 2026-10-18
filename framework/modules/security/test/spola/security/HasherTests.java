@@ -12,11 +12,12 @@ import static spola.test.Tests.test;
 
 import java.util.Base64;
 import java.util.List;
+import java.util.Set;
 import java.util.regex.Pattern;
 import spola.test.Body;
 import spola.test.Suite;
 
-/** Criterion 4: Pbkdf2PasswordHasher. */
+/** Criterion 4 of 10a: Pbkdf2PasswordHasher; and 15c criterion 5: at most 32 bytes for new hashes. */
 final class HasherTests {
 
     private HasherTests() {
@@ -138,18 +139,54 @@ final class HasherTests {
                             () -> Pbkdf2PasswordHasher.of(10_000, 15, 32),
                             () -> Pbkdf2PasswordHasher.of(10_000, 65, 32),
                             () -> Pbkdf2PasswordHasher.of(10_000, 16, 15),
+                            () -> Pbkdf2PasswordHasher.of(10_000, 16, 33),
                             () -> Pbkdf2PasswordHasher.of(10_000, 16, 65));
                     for (var call : bad) {
                         assertThrows(IllegalArgumentException.class, call);
                     }
-                    Pbkdf2PasswordHasher.of(10_000_000, 64, 64);
+                    Pbkdf2PasswordHasher.of(10_000_000, 64, 32);
                     var small = Pbkdf2PasswordHasher.of(10_000, 16, 16);
                     var smallHash = small.hash("pw");
                     assertTrue(Pattern.matches("\\$pbkdf2-sha256\\$i=10000\\$[A-Za-z0-9+/]{22}\\$[A-Za-z0-9+/]{22}", smallHash));
-                    var large = Pbkdf2PasswordHasher.of(10_000, 64, 64);
+                    var large = Pbkdf2PasswordHasher.of(10_000, 64, 32);
                     var largeHash = large.hash("pw");
-                    assertTrue(Pattern.matches("\\$pbkdf2-sha256\\$i=10000\\$[A-Za-z0-9+/]{86}\\$[A-Za-z0-9+/]{86}", largeHash));
+                    assertTrue(Pattern.matches("\\$pbkdf2-sha256\\$i=10000\\$[A-Za-z0-9+/]{86}\\$[A-Za-z0-9+/]{43}", largeHash));
                     assertTrue(large.matches("pw", largeHash));
+                }),
+                test("hash length: of(..., ..., 33) and of(..., ..., 64) are refused; a stored 64-byte hash verifies and needs a rehash", () -> {
+                    assertEquals(32, Pbkdf2PasswordHasher.MAX_HASH_BYTES);
+                    for (int hashBytes : new int[] {33, 48, 64}) {
+                        var e = assertThrows(IllegalArgumentException.class, () -> Pbkdf2PasswordHasher.of(10_000, 16, hashBytes));
+                        assertEquals("hashBytes must be 16 to 32", e.getMessage());
+                    }
+                    for (int hashBytes : new int[] {16, 32}) {
+                        var allowed = Pbkdf2PasswordHasher.of(10_000, 16, hashBytes);
+                        assertFalse(allowed.needsRehash(allowed.hash("pw")));
+                    }
+                    var defaults = Pbkdf2PasswordHasher.defaults();
+                    for (int length : new int[] {33, 48, 64}) {
+                        var hash = byHand("correct horse battery staple", salt(16), 10_000, length);
+                        assertEquals(length, Base64.getDecoder().decode(hash.split("\\$")[4]).length);
+                        assertTrue(hasher.matches("correct horse battery staple", hash), length + " bytes");
+                        assertFalse(hasher.matches("correct horse battery stapl", hash), length + " bytes");
+                        assertTrue(hasher.needsRehash(hash), length + " bytes");
+                        assertTrue(defaults.needsRehash(hash), length + " bytes");
+                    }
+                    // A stored 32-byte hash with the same settings is the one that needs no rehash.
+                    assertFalse(hasher.needsRehash(byHand("correct horse battery staple", salt(16), 10_000, 32)));
+                }),
+                test("hash length: a login with upgrade moves a stored 64-byte hash to 32 bytes", () -> {
+                    var store = new InMemoryUserStore();
+                    var old = byHand("correct horse battery staple", salt(16), 10_000, 64);
+                    store.add(new User("ada", old, Set.of(), true));
+                    var authenticator = Authenticator.of(store, hasher, store.upgrader());
+                    assertTrue(authenticator.authenticate("ada", "correct horse battery staple") instanceof AuthResult.Authenticated);
+                    var upgraded = store.find("ada").orElseThrow().passwordHash();
+                    assertNotEquals(old, upgraded);
+                    assertTrue(FAST_FORMAT.matcher(upgraded).matches(), "32 bytes, the hasher's settings");
+                    assertFalse(hasher.needsRehash(upgraded));
+                    assertTrue(authenticator.authenticate("ada", "correct horse battery staple") instanceof AuthResult.Authenticated);
+                    assertEquals(upgraded, store.find("ada").orElseThrow().passwordHash());
                 }),
                 test("needsRehash: false for its own hashes, true when iterations, salt or hash length differ", () -> {
                     assertFalse(hasher.needsRehash(stored));
@@ -159,7 +196,8 @@ final class HasherTests {
                     assertTrue(hasher.needsRehash(byHand("pw", salt(16), 10_001, 32)));
                     assertTrue(hasher.needsRehash(Pbkdf2PasswordHasher.of(10_000, 24, 32).hash("pw")));
                     assertTrue(hasher.needsRehash(byHand("pw", salt(15), 10_000, 32)));
-                    assertTrue(hasher.needsRehash(Pbkdf2PasswordHasher.of(10_000, 16, 48).hash("pw")));
+                    assertTrue(hasher.needsRehash(byHand("pw", salt(16), 10_000, 48)));
+                    assertTrue(hasher.needsRehash(Pbkdf2PasswordHasher.of(10_000, 16, 16).hash("pw")));
                     assertTrue(hasher.needsRehash(byHand("pw", salt(16), 10_000, 31)));
                 }),
                 test("toString shows the settings", () -> assertEquals(

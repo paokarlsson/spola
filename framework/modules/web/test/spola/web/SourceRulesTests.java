@@ -56,6 +56,21 @@ final class SourceRulesTests {
                             assertFalse(text.contains("java.net.http"), file + " uses java.net.http");
                         }
                     }
+                }),
+                test("no name lookup in the main code, and only ForwardedHeaders changes the client's values", () -> {
+                    for (var file : mainSources()) {
+                        var text = Files.readString(file).replaceAll("(?s)/\\*.*?\\*/", "").replaceAll("//[^\n]*", "");
+                        for (var forbidden : List.of("getByName", "getAllByName", "getHostName", "getCanonicalHostName",
+                                "getByAddress", "getLocalHost", "getLoopbackAddress")) {
+                            assertFalse(text.contains(forbidden), file + " mentions " + forbidden);
+                        }
+                        var name = file.getFileName().toString();
+                        if (!name.equals("ForwardedHeaders.java") && !name.equals("WebRequest.java")) {
+                            assertFalse(text.contains("withClient("), file + " calls withClient");
+                        }
+                    }
+                    var literals = Files.readString(SOURCES.resolve("spola/web/IpLiteral.java"));
+                    assertTrue(literals.contains("InetAddress.ofLiteral(text)"), "addresses come from ofLiteral");
                 }));
     }
 }

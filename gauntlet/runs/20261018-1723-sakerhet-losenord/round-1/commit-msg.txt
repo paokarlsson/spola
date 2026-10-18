@@ -1,0 +1,15 @@
+fix(security): upgrade hashes only if the verified hash is still stored
+
+PasswordUpgrade.upgrade now gets the verified hash and InMemoryUserStore
+replaces only that exact hash, so an upgrade can no longer write back an
+old password after a change. A known user with an unreadable stored hash
+gets BAD_CREDENTIALS after one dummy check and a class-name-only WARNING,
+not a 500. New PBKDF2 hashes are at most 32 bytes; the timing caveat
+across algorithms is documented.
+
+Gauntlet-Run: 20261018-1723-sakerhet-losenord
+Gauntlet-Round: 1/4
+Gauntlet-Verdict: PASS (0 blocker, 0 major, 11 minor upheld)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_016R1SyuZe48AGwQWbo2Xdkz

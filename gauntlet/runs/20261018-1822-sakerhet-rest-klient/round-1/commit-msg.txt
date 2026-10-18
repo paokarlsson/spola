@@ -1,0 +1,15 @@
+fix(client): hide Authorization credentials and refuse dot segments
+
+For Authorization and Proxy-Authorization the text after the scheme,
+and for Basic the decoded user:password and password, now count as
+secrets, so a server that echoes just the key no longer leaks it. A
+new safeExcerpt() gives the hidden excerpt for log lines, the docs warn
+about the JDK's HTTP client logging, and "." or ".." path segments are
+refused.
+
+Gauntlet-Run: 20261018-1822-sakerhet-rest-klient
+Gauntlet-Round: 1/4
+Gauntlet-Verdict: PASS (0 blocker, 0 major, 11 minor upheld)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_016R1SyuZe48AGwQWbo2Xdkz

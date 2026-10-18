@@ -1,0 +1,14 @@
+feat(security-web): log in and out with a session
+
+WebSecurity.Builder.sessions(...) makes the security filter run the
+session filter itself and read the identity from the session before
+any mechanism. WebSecurity.login renews the session id (session
+fixation) and stores the identity; logout removes the session. Without
+Basic, 401 has no WWW-Authenticate. All critics passed; only MINOR left.
+
+Gauntlet-Run: 20261013-2137-security-inloggning-med-session
+Gauntlet-Round: 1/4
+Gauntlet-Verdict: PASS (0 blocker, 0 major, 11 minor upheld)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_016R1SyuZe48AGwQWbo2Xdkz

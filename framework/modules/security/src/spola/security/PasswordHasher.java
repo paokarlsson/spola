@@ -1,8 +1,14 @@
 package spola.security;
 
+import java.util.Map;
+
 /**
  * Hashes passwords for storage and checks a password against a stored hash. The counterpart of
- * Spring Security's {@code PasswordEncoder}. {@link Pbkdf2PasswordHasher} is the implementation.
+ * Spring Security's {@code PasswordEncoder}. The implementations are
+ * {@link Pbkdf2PasswordHasher} (PBKDF2-HMAC-SHA256 in the PHC string format),
+ * {@link BCryptPasswordHasher} (bcrypt in the format of Spring's {@code BCryptPasswordEncoder})
+ * and {@link #delegating} (a {@code {id}} prefix that chooses the hasher, like Spring's
+ * {@code DelegatingPasswordEncoder}).
  *
  * <p>Implementations must be safe to use from any number of threads.
  */
@@ -16,7 +22,8 @@ public interface PasswordHasher {
      * @throws NullPointerException     if {@code password} is {@code null}
      * @throws IllegalArgumentException if the implementation does not accept the password (for
      *                                  {@link Pbkdf2PasswordHasher}: empty, too long or not
-     *                                  valid UTF-16)
+     *                                  valid UTF-16; for {@link BCryptPasswordHasher} also more
+     *                                  than 72 bytes or containing U+0000)
      */
     String hash(CharSequence password);
 
@@ -35,8 +42,10 @@ public interface PasswordHasher {
     boolean matches(CharSequence password, String encoded);
 
     /**
-     * Whether a stored hash was made with other settings than this hasher's, so that it should
-     * be replaced by {@link #hash} of the password the next time the password is known.
+     * Whether this hasher wants a stored hash replaced by {@link #hash} of the password the next
+     * time the password is known. Each implementation says when: {@link Pbkdf2PasswordHasher}
+     * for any difference from its settings, {@link BCryptPasswordHasher} only for a lower cost,
+     * and {@link #delegating} for another id than the default or when that id's hasher says so.
      *
      * @param encoded a hash produced by {@link #hash}
      * @return {@code true} if the hash should be replaced
@@ -45,4 +54,87 @@ public interface PasswordHasher {
      *                                  message does not contain {@code encoded}
      */
     boolean needsRehash(String encoded);
+
+    /**
+     * A hasher that stores {@code {id}<hash>} and lets the id choose the hasher, like Spring
+     * Security's {@code DelegatingPasswordEncoder}. New hashes are made with the default id's
+     * hasher; stored hashes with any of the ids are verified, and {@link #needsRehash} moves
+     * them to the default, so that {@link Authenticator}'s upgrade migrates users from one
+     * algorithm to another as they log in:
+     *
+     * <pre>{@code
+     * PasswordHasher hasher = PasswordHasher.delegating("bcrypt", Map.of(
+     *         "bcrypt", BCryptPasswordHasher.defaults(),
+     *         "pbkdf2", Pbkdf2PasswordHasher.defaults()));
+     * hasher.hash("hemligt");                                   // "{bcrypt}$2a$10$..."
+     * hasher.matches("hemligt", "{bcrypt}$2a$10$C/CQCvOTDfaWEPmZF/ycFuvu6miZtNk3jj/4zDoWuN3Icm9TmKt9e"); // true
+     * }</pre>
+     *
+     * <h4>Ids</h4>
+     * The ids are the application's names for its hashers. Each is 1 to 100 characters of
+     * printable ASCII (0x21 to 0x7E) without <code>&#123;</code> and <code>&#125;</code>, and
+     * they are compared exactly (case-sensitive). The id only chooses the hasher: {@code "pbkdf2"} above reads
+     * Spola's PHC format ({@link Pbkdf2PasswordHasher}), not the hex format of Spring's
+     * {@code Pbkdf2PasswordEncoder}, which is not supported.
+     *
+     * <h4>Behaviour</h4>
+     * <ul>
+     *   <li>{@code hash(p)} is {@code "{" + defaultId + "}" + hashers.get(defaultId).hash(p)}.
+     *       The delegate's exceptions propagate (for example the
+     *       {@link IllegalArgumentException} of {@link BCryptPasswordHasher} for a password of
+     *       more than 72 bytes); a delegate that returns {@code null} gives
+     *       {@link NullPointerException}.</li>
+     *   <li>{@code matches(p, encoded)}: the string must start with <code>&#123;</code>; the
+     *       id is the text up to the first <code>&#125;</code>, which is looked for at most 101
+     *       characters in (an id has at most 100), and it must be exactly one of the ids. The
+     *       rest goes to that id's
+     *       hasher, and its {@link IllegalArgumentException} for a malformed rest propagates
+     *       unchanged.</li>
+     *   <li>Anything else is a data error, an {@link IllegalArgumentException} whose message
+     *       contains neither the string nor the text between the braces (it may be a hash). In
+     *       particular, a hash <b>without</b> a prefix is an error, as with Spring's default;
+     *       there is no fallback hasher for unprefixed hashes (Spring's
+     *       {@code setDefaultPasswordEncoderForMatches}). A bare hash from Spring's
+     *       {@code BCryptPasswordEncoder} is verified with {@link BCryptPasswordHasher}
+     *       directly. {@link Authenticator} answers a user with such a hash
+     *       {@link Failure#BAD_CREDENTIALS} and logs the data error.</li>
+     *   <li>{@code needsRehash(encoded)} parses the prefix the same way and always asks the
+     *       id's hasher about the rest, so a malformed rest throws for every id. It is
+     *       {@code true} if the id is not the default id or that hasher says so. Within the
+     *       default id the hasher decides: {@link BCryptPasswordHasher} keeps a higher stored
+     *       cost, so give it at least the highest stored cost, or known users take longer than
+     *       unknown ones for good (see its "Rehashing").</li>
+     *   <li>{@code null} arguments give {@link NullPointerException}.</li>
+     *   <li>{@code toString()} shows the default id and the sorted ids, never a hash:
+     *       {@code DelegatingPasswordHasher[default=bcrypt, ids=[bcrypt, pbkdf2]]}.</li>
+     * </ul>
+     * The map is copied, so later changes to it are not seen. The result is immutable, and
+     * safe to use from any number of threads if the delegates are.
+     *
+     * <h4>Time</h4>
+     * A check costs what the stored id's hasher costs with the stored settings. The dummy hash
+     * that {@link Authenticator} checks for unknown users is made with the default id's hasher,
+     * so equal time for unknown and known users holds only within one algorithm and cost.
+     * Users whose hashes are still stored with another id, or with other settings within the
+     * default id, can be told apart from unknown users by the time until they have logged in
+     * once and {@link Authenticator}'s upgrade has moved them to the default (without a
+     * {@link PasswordUpgrade}, or for a higher bcrypt cost, which is never moved, the
+     * difference stays). A password that one delegate refuses without any work and another
+     * computes makes the difference free of noise: {@link BCryptPasswordHasher} refuses more
+     * than 72 bytes, while {@link Pbkdf2PasswordHasher} computes up to 1 024 characters. The
+     * time is not evened out between algorithms.
+     *
+     * @param defaultId the id of the hasher for new hashes; one of the keys of {@code hashers}
+     * @param hashers   the hashers by id; not empty
+     * @return the delegating hasher
+     * @throws NullPointerException     if {@code defaultId}, {@code hashers} or one of its ids
+     *                                  or hashers is {@code null}
+     * @throws IllegalArgumentException if {@code hashers} is empty, an id is not 1 to 100
+     *                                  characters of printable ASCII without braces, or
+     *                                  {@code defaultId} is not one of the ids; the message
+     *                                  names the problem
+     */
+    static PasswordHasher delegating(String defaultId, Map<String, ? extends PasswordHasher> hashers) {
+        return DelegatingPasswordHasher.of(defaultId, hashers);
+    }
 }

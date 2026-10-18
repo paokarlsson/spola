@@ -1,0 +1,15 @@
+fix(web): keep a login's session owned and counted while it is renewed
+
+A login no longer takes its session out of the user's index; the owner
+is set in the same locked step as the renewal and the login holds the
+session until its response, so a concurrent Sessions.renew can no
+longer push a logged-in session past maximumSessions or let the next
+user inherit it. The security-web Cache-Control copy is tested against
+the same table, and lock order and names are tidied.
+
+Gauntlet-Run: 20261018-1305-sakerhet-sessioner-och-inloggning
+Gauntlet-Round: 2/5
+Gauntlet-Verdict: PASS (0 blocker, 0 major, 11 minor upheld)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_016R1SyuZe48AGwQWbo2Xdkz

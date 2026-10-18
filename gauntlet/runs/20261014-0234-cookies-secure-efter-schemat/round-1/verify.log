@@ -1,0 +1,40 @@
+    ok      given as an argument, and copied into another key with a placeholder (6 ms)
+    ok      an invalid secret: the error names the key, not the value (3 ms)
+    ok      the secret copied into a value that fails to convert is masked in the error (2 ms)
+    ok      a failing run with every log level on (5 ms)
+  closing
+    ok      after a successful run the audit trail is closed (4 ms)
+    ok      when a broken line stops the processing the audit trail is still closed, before the error (5 ms)
+    ok      when the order file cannot be read the audit trail is closed too (4 ms)
+  log levels
+    ok      by default (root INFO) there are info lines and no debug lines (4 ms)
+    ok      logging.level.spola.demo=DEBUG as an argument gives the debug lines (4 ms)
+    ok      a level for one class leaves the others at the root level (11 ms)
+    ok      the level can come from the environment and from a profile file (9 ms)
+    ok      logging.level.root=WARN turns the info lines off (3 ms)
+    ok      logging is reset when the run ends: later runs do not inherit levels or the stream (6 ms)
+  errors
+    ok      missing configuration: the missing key is named (3 ms)
+    ok      missing configuration file: the file is named (1 ms)
+    ok      invalid values: every invalid key is named, in one report (2 ms)
+    ok      a wiring error: the component and its missing dependency are named (3 ms)
+    ok      an audit trail that cannot be opened: audit.file and the path are named, exit 74 (3 ms)
+    ok      audit.file naming the order file: a configuration error, and the order file is left alone (2 ms)
+    ok      a broken order line: the file and the line number are named (18 ms)
+    ok      an sku with an invisible character: a broken line, and the character reaches no output (24 ms)
+    ok      an order file that is not UTF-8 (Windows-1252): a broken file with a line, exit 65 (3 ms)
+    ok      a missing order file: the file is named (3 ms)
+  module boundaries
+    ok      only the entry and its wiring name the container, the binder or the configuration (6 ms)
+    ok      spola.demo requires di, config and util, and no other module requires spola.demo (1 ms)
+  parts
+    ok      the audit HMAC matches RFC 4231 test cases 1 and 2 (HMAC-SHA-256) (0 ms)
+    ok      an order line is sku;quantity, whitespace around the parts allowed (1 ms)
+    ok      OrderLine and Summary.Rejection have generated builders and with-methods (spola.codegen) (1 ms)
+    ok      a broken line names the file and the line, and shows the line escaped and shortened (1 ms)
+spola.demo: OK - 43 tests, 43 ok, 0 failed, 0 skipped, 0 suite fixtures failed, in 294 ms
+
+exit guard:
+  ok - after the decision: exit 0, other hooks and deleteOnExit ran
+  ok - before the decision: System.exit(0) ends red (exit 1)
+BUILD OK in 298099 ms

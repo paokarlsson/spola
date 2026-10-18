@@ -1,0 +1,14 @@
+docs(security): require the bcrypt cost to cover the stored cost
+
+needsRehash never lowers a bcrypt cost, so a hasher below the stored
+cost (defaults() against Spring's BCryptPasswordEncoder(12)) lets
+known and unknown usernames be told apart by timing. The Javadoc,
+README, PROGRESS and ARCHITECTURE now say to use at least the highest
+stored cost. Also tidies cost limits, Blowfish key schedule and names.
+
+Gauntlet-Run: 20261013-2333-security-bcrypt
+Gauntlet-Round: 2/5
+Gauntlet-Verdict: PASS (0 blocker, 0 major, 5 minor upheld)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_016R1SyuZe48AGwQWbo2Xdkz

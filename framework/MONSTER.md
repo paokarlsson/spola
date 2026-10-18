@@ -54,10 +54,11 @@ projekten som en vanlig Spring-app drar in. Tre villkor till:
 | `spola.codegen` | Lombok `@Builder`, `@With` för records | `java Build.java codegen`, `<Record>With` | – |
 | `spola.json` | Jackson | `Json`, `JsonValue`, `JsonCodec` | – |
 | `spola.http` | Inbäddad Tomcat: HTTP/1.1, TLS | `HttpServer`, `Handler`, `Request`, `Response` | – |
-| `spola.web` | Spring MVC, `ProblemDetail` | `Router`, `Filter`, `Responses`, `Param`, `WebException` | `http`, `json`, `validation` |
+| `spola.web` | Spring MVC, `ProblemDetail`, `HttpSession`, `server.forward-headers-strategy` (`RemoteIpValve`: schema och klientadress bakom en omvänd proxy) | `Router`, `Filter`, `Responses`, `Param`, `WebException`, `Sessions`, `Session`, `ForwardedHeaders`, `TrustedProxies` | `http`, `json`, `validation` |
 | `spola.validation` | Bean Validation | `Validator<T>`, `Constraint` | – |
-| `spola.security` | Spring Security utan HTTP: `PasswordEncoder`, `UserDetailsService` | `Pbkdf2PasswordHasher`, `Authenticator`, `UserStore` | – |
-| `spola.security.web` | Spring Security: filterkedja, HTTP Basic, åtkomstregler | `WebSecurity`, `HttpBasic`, `Rules`, `SecurityContext` | `web`, `security` |
+| `spola.security` | Spring Security utan HTTP: `PasswordEncoder`, `BCryptPasswordEncoder`, `DelegatingPasswordEncoder` (`{id}`-prefix), `UserDetailsService` | `Pbkdf2PasswordHasher`, `BCryptPasswordHasher`, `PasswordHasher.delegating`, `Authenticator`, `UserStore` | – |
+| `spola.security.web` | Spring Security: filterkedja, HTTP Basic, åtkomstregler, sessionsinloggning (`HttpSessionSecurityContextRepository`, `changeSessionId`, `invalidate`), CSRF för en SPA (`CookieCsrfTokenRepository.withHttpOnlyFalse()`, `XSRF-TOKEN`) | `WebSecurity` (`sessions(...)`, `csrf(...)`, `login`/`logout`), `Csrf`, `HttpBasic`, `Rules`, `SecurityContext` | `web`, `security` |
+| `spola.client` | Springs `RestClient` (`RestClientResponseException`, `ResourceAccessException`), `@SpringBootTest(webEnvironment = RANDOM_PORT)` med en `RestClient` | `RestClient`, `RestRequest`, `RestClientException` | `json` (och `java.net.http`) |
 | `spola.test` | JUnit | `Suite`, `Assertions` | – |
 | `spola.guardrails` | – | kontrollerar reglerna i bygget | – |
 

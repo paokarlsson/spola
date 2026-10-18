@@ -18,3 +18,14 @@
 - 2026-10-03 12:36 · 20261003-1205-validation-webb · PASS · 1 rounds · Validation part 2: validation and form binding in spola.web · commits: c190458
 - 2026-10-03 13:16 · 20261003-1237-security-losenord-och-autentisering · PASS · 2 rounds · Security part 1: PBKDF2 password hashing and authentication · commits: 3e18d5f, ae72594
 - 2026-10-03 14:03 · 20261003-1316-security-filter-basic-och-atkomstregler · PASS · 1 rounds · Säkerhet del 2: säkerhetsfilter, HTTP Basic och åtkomstregler (spola.security.web) · commits: 39729fd · note: closed by hand after Ctrl+C in step 3d; BRK-1 (case-sensitive method matcher, fail-open) left as MINOR, review
+- 2026-10-13 21:37 · 20261013-2026-web-sessioner · PASS · 1 rounds · Sessions part 1: in-memory HTTP sessions with a session cookie · commits: e7acba8
+- 2026-10-13 22:23 · 20261013-2137-security-inloggning-med-session · PASS · 1 rounds · Sessions part 2: login and logout with session (spola.security.web) · commits: 9fc4caa
+- 2026-10-13 23:32 · 20261013-2223-security-csrf · PASS · 1 rounds · Sessions part 3: CSRF protection with XSRF-TOKEN (spola.security.web) · commits: b00240b
+- 2026-10-14 01:19 · 20261013-2333-security-bcrypt · PASS · 2 rounds · BCrypt hashes and a delegating {id} password hasher (spola.security) · commits: a83d0bc, fff56cd
+- 2026-10-14 02:34 · 20261014-0119-web-proxyhuvuden · PASS · 1 rounds · Proxy part 1: client scheme and address from X-Forwarded-* (spola.web) · commits: 25fc491
+- 2026-10-14 03:32 · 20261014-0234-cookies-secure-efter-schemat · PASS · 1 rounds · Proxy part 2: Secure on session and CSRF cookies from the scheme · commits: cbc1140
+- 2026-10-18 12:40 · 20261014-0332-rest-klient · PASS · 2 rounds · REST client for JSON APIs on java.net.http (spola.client) · commits: b1b3c7a, a02d012
+- 2026-10-18 15:53 · 20261018-1305-sakerhet-sessioner-och-inloggning · PASS · 2 rounds · Security review part 1: per-user session limit and cache headers · commits: e392fec, b4d95f7
+- 2026-10-18 17:23 · 20261018-1553-sakerhet-proxy-och-cookies · PASS · 2 rounds · Security review part 2: proxy warning, cookie hardening and doc fixes · commits: 236b800, 1f82568
+- 2026-10-18 18:22 · 20261018-1723-sakerhet-losenord · PASS · 1 rounds · Security review part 3: conditional hash upgrade and password hardening · commits: 0bc8e7b
+- 2026-10-18 19:16 · 20261018-1822-sakerhet-rest-klient · PASS · 1 rounds · Security review part 4: hide secrets and reject dot paths in client · commits: 53f304c

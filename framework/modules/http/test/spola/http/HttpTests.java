@@ -29,6 +29,8 @@ public final class HttpTests {
                 ShutdownTests.tests(),
                 ConcurrencyTests.tests(),
                 SourceRulesTests.tests(),
+                RemoteAddressTests.tests(Transport.PLAIN),
+                RemoteAddressTests.sourceRules(),
                 TlsTests.tests())
                 .timeout(Duration.ofSeconds(30));
     }

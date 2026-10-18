@@ -1,0 +1,14 @@
+fix(security-web): limit sessions per user and keep them out of caches
+
+WebSecurity.Builder.maximumSessions(n) (default 10) ends a user's least
+recently used session at login, so one account can no longer fill
+maxSessions. A login over another user's session starts a fresh one.
+Session- and XSRF-cookie responses and logged-in responses can no longer
+be stored by a shared cache, and the cleanup at the limit runs once.
+
+Gauntlet-Run: 20261018-1305-sakerhet-sessioner-och-inloggning
+Gauntlet-Round: 1/5
+Gauntlet-Verdict: FAIL (0 blocker, 1 major, 9 minor upheld)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_016R1SyuZe48AGwQWbo2Xdkz
