@@ -53,9 +53,10 @@ public final class LoginExample {
      * {@code HttpOnly} and {@code SameSite=Lax}.
      *
      * @param secure {@code config.booleanValue("cookie.secure")}: {@code true} sets {@code Secure}
-     *               on every response, also over {@code http}; with {@code false} the cookie is
-     *               {@code Secure} when the request's scheme is {@code https} (over TLS, or behind
-     *               a TLS proxy with {@code ForwardedHeaders} registered first)
+     *               on every response, also over {@code http}, as an application reached only
+     *               over https should; with {@code false} the cookie is {@code Secure} when the
+     *               request's scheme is {@code https} (over TLS, or behind a TLS proxy that
+     *               {@code ForwardedHeaders}, registered first, trusts)
      * @param clock  {@code InstantSource.system()} in production; the tests move their own
      * @return the sessions
      */

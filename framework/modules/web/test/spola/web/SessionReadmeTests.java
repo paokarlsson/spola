@@ -39,6 +39,16 @@ final class SessionReadmeTests {
         return text.substring(start, end);
     }
 
+    /** The production setting of the section "Sessioner", as a code block. */
+    static final String PRODUCTION = """
+            ```java
+            Sessions sessions = Sessions.inMemory(SessionOptions.DEFAULT
+                    .withCookieName("__Host-SESSION")
+                    .withCookie(cookie -> cookie.secure(true)));
+            // Set-Cookie: __Host-SESSION=<id>; Path=/; Secure; HttpOnly; SameSite=Lax   (also over http)
+            ```
+            """;
+
     static HttpResponse<String> send(HttpClient client, String base, String method, String path, String form)
             throws Exception {
         var builder = HttpRequest.newBuilder(URI.create(base + path)).timeout(Duration.ofSeconds(10));
@@ -125,6 +135,31 @@ final class SessionReadmeTests {
                                 signedOut.headers().allValues("Set-Cookie"));
                         assertEquals(List.of(), manager.getCookieStore().getCookies());
                         assertEquals("guest: []", send(client, base, "GET", "/cart", null).body());
+                    }
+                }),
+                test("15b: the production setting as the README shows it builds and gives __Host-SESSION with"
+                        + " Secure over plain http", () -> {
+                    var section = section();
+                    assertTrue(section.contains(PRODUCTION), "the README shows the production setting");
+                    // the code of PRODUCTION
+                    Sessions sessions = Sessions.inMemory(SessionOptions.DEFAULT
+                            .withCookieName("__Host-SESSION")
+                            .withCookie(cookie -> cookie.secure(true)));
+                    try (var server = Support.serve(SessionSupport.app(sessions))) {
+                        var created = SessionSupport.send(server, "POST", "/count");
+                        var id = issued(created);
+                        assertEquals(List.of("__Host-SESSION=" + id + "; Path=/; Secure; HttpOnly; SameSite=Lax"),
+                                setCookies(created));
+                        assertEquals("found:1", SessionSupport.send(server, "GET", "/find", "Cookie: __Host-SESSION=" + id)
+                                .body());
+                        var removed = SessionSupport.send(server, "POST", "/invalidate", "Cookie: __Host-SESSION=" + id);
+                        assertEquals(List.of("__Host-SESSION=; Path=/; Max-Age=0; Secure; HttpOnly; SameSite=Lax"),
+                                setCookies(removed));
+                    }
+                    for (var text : List.of("för en app som bara nås över https", "**`secure(true)`** ger `Secure` på varje svar",
+                            "**`__Host-`** gör att webbläsaren", "cookie tossing", "`Domain=<förälder>`",
+                            "`Csrf.cookie().withCookie(c -> c.secure(true))`", "[Bakom en omvänd proxy](#bakom-en-omvänd-proxy)")) {
+                        assertTrue(section.contains(text), "the section lacks " + text);
                     }
                 }),
                 test("the example with secure = true sets Secure", () -> {

@@ -35,10 +35,10 @@ import spola.http.HttpServer;
  *
  * <p>Every reply also goes to {@link Support#REPLIES}, so {@link LeakTests} and
  * {@link CsrfLeakTests} check it, as a copy in which the values of the response's own
- * {@code XSRF-TOKEN} and {@code SESSION} cookies are replaced by {@link #OWN_VALUE}. Those values
- * are random Base64url: about one in 200 runs, one of the many hundred tokens would contain a
- * four-character marker that {@code LeakTests} looks for ({@code zPwd}, {@code zUsr}) and fail it
- * by chance. The test that gets a reply sees it unchanged and checks the values' form.
+ * {@code XSRF-TOKEN} and {@code SESSION} (or {@code __Host-SESSION}) cookies are replaced by
+ * {@link #OWN_VALUE}. Those values are random Base64url: about one in 200 runs, one of the many
+ * hundred tokens would contain a four-character marker that {@code LeakTests} looks for
+ * ({@code zPwd}, {@code zUsr}) and fail it by chance. The test that gets a reply sees it unchanged and checks the values' form.
  */
 final class CsrfSupport {
 
@@ -52,8 +52,9 @@ final class CsrfSupport {
     static final String OWN_VALUE = "<own value>";
 
     /** A {@code Set-Cookie} line (or value) for the own cookies with a value: the prefix, then the value. */
-    private static final Pattern OWN_LINE = Pattern.compile("(?im)^(Set-Cookie:\\s*(?:XSRF-TOKEN|SESSION)=)([^;\\r\\n]+)");
-    private static final Pattern OWN_FIELD = Pattern.compile("^((?:XSRF-TOKEN|SESSION)=)([^;]+)");
+    private static final Pattern OWN_LINE =
+            Pattern.compile("(?im)^(Set-Cookie:\\s*(?:XSRF-TOKEN|(?:__Host-)?SESSION)=)([^;\\r\\n]+)");
+    private static final Pattern OWN_FIELD = Pattern.compile("^((?:XSRF-TOKEN|(?:__Host-)?SESSION)=)([^;]+)");
 
     /** The exact {@code Set-Cookie} of {@code Csrf.cookie()}, with the token for {@code %s}. */
     static final String XSRF_COOKIE = "XSRF-TOKEN=%s; Path=/; SameSite=Lax";
@@ -153,7 +154,7 @@ final class CsrfSupport {
             }
             if (setCookie.startsWith("XSRF-TOKEN=")) {
                 TOKENS.add(value);
-            } else if (setCookie.startsWith("SESSION=")) {
+            } else if (setCookie.startsWith("SESSION=") || setCookie.startsWith("__Host-SESSION=")) {
                 IDS.add(value);
             }
         }

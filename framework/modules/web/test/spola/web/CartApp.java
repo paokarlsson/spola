@@ -34,8 +34,8 @@ final class CartApp {
     private final Sessions sessions;
 
     // secure: true sets Secure on every response, also over http; with false the cookie is
-    // Secure when the request's scheme is https (over TLS, or behind a TLS proxy with
-    // ForwardedHeaders registered before sessions.filter())
+    // Secure when the request's scheme is https (over TLS, or behind a TLS proxy that
+    // ForwardedHeaders, registered before sessions.filter(), trusts)
     CartApp(boolean secure) {
         sessions = Sessions.inMemory(SessionOptions.DEFAULT
                 .withIdleTimeout(Duration.ofMinutes(30))

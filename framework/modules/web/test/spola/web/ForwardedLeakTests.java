@@ -17,6 +17,7 @@ import spola.web.ForwardedSupport.Case;
 /**
  * Criterion 11: no value of {@code X-Forwarded-For} or {@code X-Forwarded-Proto} reaches a 400
  * response, a log line the router writes or an exception message. Every value holds a marker.
+ * Since 15b also: no value reaches the warning about a sender that is not trusted.
  */
 final class ForwardedLeakTests {
 
@@ -67,8 +68,9 @@ final class ForwardedLeakTests {
                             })
                             .log(log)
                             .build();
+                    var warnings = new Support.CapturedLog();
                     var untrusting = Router.builder()
-                            .filter(ForwardedHeaders.trusting(ForwardedSupport.NOT_TRUSTING))
+                            .filter(ForwardedHeaders.trusting(ForwardedSupport.NOT_TRUSTING, warnings))
                             .get("/fail", request -> {
                                 throw new IllegalStateException("the handler failed");
                             })
@@ -104,6 +106,42 @@ final class ForwardedLeakTests {
                         assertTrue(record.startsWith("ERROR GET /fail failed; answering 500"), record);
                     }
                     LogTests.assertClean(records);
+                    // the filter that does not trust the sender warned once, without a value
+                    assertEquals(List.of(ForwardedWarningTests.LINE), warnings.records());
+                }),
+                test("marked values from a sender that is not trusted: the warning holds none, for every value as the"
+                        + " first one a filter sees", () -> {
+                    var cases = new ArrayList<>(MARKED);
+                    cases.add(new Case("valid-looking marked values", "X-Forwarded-Proto: https",
+                            "X-Forwarded-For: 198.51.100.77, zXf"));
+                    cases.add(new Case("only valid values", "X-Forwarded-Proto: https", "X-Forwarded-For: 198.51.100.77"));
+                    for (var header : cases) {
+                        var warnings = new Support.CapturedLog();
+                        var routerLog = new Support.CapturedLog();
+                        var router = Router.builder()
+                                .filter(ForwardedHeaders.trusting(ForwardedSupport.NOT_TRUSTING, warnings))
+                                .get("/who", request -> spola.http.Response.text(200, ForwardedSupport.describe(request)))
+                                .log(routerLog)
+                                .build();
+                        try (var server = Support.serve(router)) {
+                            var reply = Support.send(server.port(), "GET", "/who", header.lines().toArray(String[]::new));
+                            assertEquals(200, reply.status(), header.toString());
+                            assertEquals("http 127.0.0.1 Inet4Address", reply.body(), header.toString());
+                            assertClean(reply, header);
+                        }
+                        var records = warnings.records();
+                        assertEquals(List.of(ForwardedWarningTests.LINE), records, header.toString());
+                        for (var record : records) {
+                            assertFalse(record.contains(MARKER), header + ": " + record);
+                            assertFalse(record.contains("198.51.100.77"), header + ": " + record);
+                            assertFalse(record.contains("https"), header + ": " + record);
+                            for (var value : header.values()) {
+                                assertFalse(!value.isEmpty() && record.contains(value), header + ": " + record);
+                            }
+                        }
+                        LogTests.assertClean(records);
+                        assertEquals(List.of(), routerLog.records(), header.toString());
+                    }
                 }));
     }
 

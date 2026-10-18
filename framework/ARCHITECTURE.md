@@ -2636,8 +2636,11 @@ session med sitt id, bara mellan skapandet och förfrågans tillstånd). Inga ny
   lever efter att svaret byggts: förfrågans tillstånd håller ett nytt id bara tills filtret har
   lagt `Set-Cookie` på svaret och nollar fältet då. Tiden för en uppslagning beror därför bara
   på hashvärdet av klientens text, inte på hur stor del av ett giltigt id den har gissat rätt
-  (ingen jämförelse tecken för tecken med ett hemligt värde), och en minnesdump innehåller inga
-  giltiga id. Ett värde som inte har exakt formatet (längd 43, alfabetet, alltså inga
+  (ingen jämförelse tecken för tecken med ett hemligt värde), och lagringen håller bara hashar
+  av id:n. Medan en förfrågan hanteras finns id:t ändå i minnet som `String`: i förfrågans
+  `Cookie`-huvud och, när svaret sätter cookien, i dess `Set-Cookie`, och sådana strängar kan
+  inte nollställas (rättat i 15b; meningen lovade tidigare mer än koden håller). Ett värde som
+  inte har exakt formatet (längd 43, alfabetet, alltså inga
   citattecken, ingen utfyllnad, inga `+` eller `/`) hashas aldrig. Id:t syns aldrig i
   `toString()` (`Session` visar antalet attribut, `Sessions` antal, gräns, tid och cookienamn,
   `Key` och de interna klasserna bara sitt namn), i undantag, loggrader eller problem-svar
@@ -3216,7 +3219,7 @@ säkerhetskritisk och bör granskas av en människa.
 | `spola.http.Request` | ny metod `remoteAddress()` → `InetSocketAddress`: TCP-anslutningens andra ände (över TLS TCP-socketen under TLS), tagen vid accept, aldrig `null`, utan namnuppslag |
 | `spola.web.WebRequest` | nya metoder `scheme()` (`"http"` eller `"https"`) och `clientAddress()` (`InetAddress`); utan `ForwardedHeaders` är de `http().scheme()` och `http().remoteAddress().getAddress()` |
 | `spola.web.TrustedProxies` | funktionellt gränssnitt `boolean trusts(InetAddress)` med de statiska fabrikerna `privateNetworks()` och `of(String... networks)` |
-| `spola.web.ForwardedHeaders` | final klass som implementerar `Filter`; `trusting(TrustedProxies)`; oföränderlig och trådsäker |
+| `spola.web.ForwardedHeaders` | final klass som implementerar `Filter`; `trusting(TrustedProxies)`; oföränderlig och trådsäker (sedan 15b trådsäker med en flagga för varningen som enda tillstånd) |
 
 Interna klasser i `spola.web`: `IpLiteral` (den strikta kontrollen av IP-literaler, skapandet
 med `InetAddress.ofLiteral` och RFC 5952-texten i förslagen) och `ProxyNetworks` (näten i
@@ -3401,8 +3404,11 @@ Internt:
   utan att konfigurera något, en cookie som sätts över HTTPS skickas aldrig över ren HTTP (den
   som kan få webbläsaren att göra en `http://`-förfrågan till samma värd kan inte läsa
   sessions-id:t eller token i klartext), och utveckling över `http://localhost` fungerar som
-  förut, eftersom schemat där är `http`. `secure(true)` behövs bara när cookien ska vara
-  `Secure` också över `http`, till exempel bakom en proxy utan `ForwardedHeaders`.
+  förut, eftersom schemat där är `http`. `secure(true)` gör cookien `Secure` också över `http`.
+  Rättat i 15b: här stod att `secure(true)` bara behövs bakom en proxy utan `ForwardedHeaders`.
+  Det stämmer bara när `TrustedProxies` stämmer med proxyns adress; annars blir schemat `http` och
+  cookierna förlorar `Secure` utan att något syns i svaret. En app som bara nås över https sätter
+  därför `secure(true)` på båda cookierna (se "Säkerhetsgranskning del 2").
 - **Varför regeln inte kan stängas av.** Spring kan låta bli `Secure` över HTTPS för
   `XSRF-TOKEN` med en cookie customizer (`c -> c.secure(false)`, tidigare `setSecure(false)`).
   Tomcat har inget sådant val för `JSESSIONID` (`ApplicationSessionCookieConfig` sätter alltid
@@ -3850,3 +3856,124 @@ räknare `uses` för ordningen mellan användningar och flaggan `sweeping`; i `S
   stället för användning, inget byte av användare, den gamla regeln för `Cache-Control`, ingen
   regel för inloggade svar, ingen `compareAndSet`, ingen borttagning ur indexet, ingen hållning,
   ingen gräns före skapandet, ingen gräns när hållningen släpps) fångas av testerna.
+
+## Säkerhetsgranskning del 2: proxy, cookies och dokumentation (`spola.web`, `spola.security.web`)
+
+Uppdrag 15b, andra delen av rättningarna efter säkerhetsgranskningen 2026-10-18
+(`gauntlet/granskningar/2026-10-18-sakerhet.md`, fynden P1–P5). Granskningen gjordes av
+AI-granskare och ersätter inte en mänsklig granskning. Fynden P1–P5 är rättade: en avsändare som
+`ForwardedHeaders` inte litar på och som skickar proxyhuvudena syns nu i loggen (P1), README ger en
+produktionsinställning där `Secure` inte beror på att proxyns adress stämmer och där en underdomän
+inte kan plantera en sessionscookie (P1, P3), Docker-exemplen lyssnar på en adress som Caddy i en
+annan container når (P2), och Javadoc, README, ARCHITECTURE och PROGRESS säger vad koden håller om
+sessions-id i minnet (P4) och om privata klientadresser (P5).
+
+### API
+
+Inget nytt publikt API: inga nya typer eller metoder, `requires` och `exports` är oförändrade i
+båda modulerna, ingen reflektion och inga nya filtyper. Internt:
+
+| Klass | Ändring |
+|---|---|
+| `ForwardedHeaders` | fälten `log` (`System.Logger`) och `warned` (`AtomicBoolean`); paketprivata `trusting(proxies, log)`, `log()` och `warning(InetAddress)` för testerna; `filter` anropar `warnOnce` när avsändaren inte är betrodd |
+
+Ändrad dokumentation: Javadoc för `ForwardedHeaders` (nytt avsnitt om varningen, "Immutable"
+borttaget), `Sessions` (id:t i minnet, `secure(true)` i produktion), `SessionOptions`,
+`WebRequest.clientAddress()`, `TrustedProxies.privateNetworks()`, `Csrf`, `WebSecurity` och båda
+`module-info.java`; README i båda modulerna. Exempel: `WhoamiApp` har en `options()` med
+`0.0.0.0`, och det nya `CaddyExample` (testkälla i `spola.security.web`) är delen "Bakom Caddy".
+
+### Beslut
+
+- **En varning, en gång per filter (P1).** Första gången en avsändare som `proxies` inte litar på
+  skickar `X-Forwarded-Proto` eller `X-Forwarded-For` (namnet i valfritt skiftläge, vilket värde
+  som helst, också tomt) loggar filtret en rad på `WARNING` till `System.getLogger("spola.web")`,
+  samma logger som routern använder. Flaggan är en `AtomicBoolean` med `compareAndSet`, så
+  samtidiga förfrågningar ger exakt en rad (testat med 200 virtuella trådar och med 50 förfrågningar
+  som väntar på varandra i `TrustedProxies.trusts` och prövar flaggan samtidigt); efter den läses inte
+  ens huvudenas namn (`warned.get()` först). Förfrågan behandlas i övrigt som förut: huvudena
+  ignoreras, och värdena läses aldrig från en obetrodd avsändare, bara om fälten finns.
+  - **Varför en gång och inte per förfrågan.** Den som når porten styr om huvudena skickas. En rad
+    per förfrågan vore ett sätt att fylla loggen utifrån, och en felkonfiguration syns lika bra
+    av en rad. En rad per avsändare hade krävt en mängd som växer med varje adress (en angripare
+    med ett IPv6-nät har många), alltså obegränsat minne eller en gräns som ändå tappar rader.
+  - **Varför per filterinstans.** Ingen global flagga: två routrar, eller en app och dess tester,
+    påverkar inte varandra, och flaggan lever lika länge som konfigurationen den varnar för.
+  - **Bara avsändarens adress.** Raden skrivs med `IpLiteral.format` (IPv4 med punkter, IPv6 enligt
+    RFC 5952 utan zon), alltså i den form som `TrustedProxies.of` tar, så att den går att klistra
+    in. Adressen kommer från socketen, inte från förfrågan, så den kan inte bära kontrolltecken
+    eller hemligheter. Huvudenas värden är data utifrån och kunde bära vad som helst
+    (loggförfalskning, hemligheter som en felkonfigurerad proxy skickar vidare), så de står aldrig
+    i raden. Resten av raden är fast text som säger vad som hände och vad man gör: lita på proxyns
+    adress i `TrustedProxies`.
+  - **Följden: den första avsändaren tar raden.** Når en klient appens port direkt med egna
+    huvuden före en felkonfiguration (eller efter, med adressen från en annan avsändare) syns den
+    senare inte. Det är priset för en rad per filter; README och Javadoc säger det, och att bara
+    proxyns port ska publiceras.
+  - **`WARNING`, inte `ERROR` eller `INFO`.** Det är ingen felaktig förfrågan (huvudena ignoreras
+    som de ska) men nästan alltid en felkonfiguration som tar bort `Secure` i tysthet.
+  - **Loggern i testerna.** Som `HttpServer.start(options, handler, log)` och
+    `Authenticator.of(..., log)` tar en paketprivat fabrik loggern, så att testerna kan fånga
+    raden utan `java.logging` (som modulen inte läser). Det publika `trusting(proxies)` är
+    oförändrat. Filtret loggar till sin egen logger och inte till routerns (`RouterBuilder.log`),
+    eftersom ett filter inte känner routern det registreras på.
+  - Javadoc sa att filtret är oföränderligt. Nu är det trådsäkert med flaggan som enda tillstånd,
+    och det står så.
+- **Produktionsinställningen (P1, P3).** För en app som bara nås över https rekommenderar README
+  (avsnitten "Sessioner", "Bakom en omvänd proxy", "Inloggning med session", "CSRF-skydd för en
+  SPA" och "Bakom Caddy") `withCookieName("__Host-SESSION")` med `withCookie(c -> c.secure(true))`
+  för sessionen och `Csrf.cookie().withCookie(c -> c.secure(true))` för CSRF. `secure(true)` gör
+  att `Secure` inte beror på att `TrustedProxies` stämmer med proxyns adress, och `__Host-` gör att
+  en syskondomän inte kan plantera en egen inloggad session (cookie tossing, `Domain=<förälder>;
+  Path=/api`), som annars vinner eftersom det första levande värdet används. Standardvärdena
+  ändras inte (utanför uppdraget): `SESSION` utan `secure(true)` är det som fungerar över
+  `http://localhost`, som Spring Session och Tomcat. Meningen om att `secure(true)` bara behövs
+  bakom en proxy utan `ForwardedHeaders` är rättad i README och i 13b:s beslut ovan.
+- **`CaddyExample` i stället för ett utdrag.** "Bakom Caddy" visade ett utdrag som inte
+  kompilerades. Nu är delen en testkälla, `CaddyExample`, som README visar oförändrad (ett test
+  jämför) och som testerna kör genom en riktig server: varje `Set-Cookie` har `Secure` och
+  sessionscookien heter `__Host-SESSION` över vanlig `http`, direkt, från en avsändare som filtret
+  inte litar på och bakom en betrodd proxy med `X-Forwarded-Proto: http` och `https`. Exemplet
+  återanvänder `CsrfExample.router` men har egna regler i `security`, eftersom
+  `CsrfExample.security` bygger `Csrf.cookie()` och dess signatur används av ett femtiotal tester
+  och visas i README. Raderna med `CsrfExample` utan `secure(true)` bakom en betrodd proxy är kvar
+  i README som det de är: `Secure` efter schemat, som i Spring.
+- **`0.0.0.0` i Docker-exemplen (P2).** `HttpServerOptions.DEFAULT` lyssnar på loopback, och det är
+  rätt standard (en server blir inte nåbar utifrån av misstag), men i en container når Caddy i en
+  annan container bara containerns adress på Dockers nät. `WhoamiApp.options()` och
+  `CaddyExample.options()` lyssnar därför på `0.0.0.0` (`InetAddress.ofLiteral`, utan namnuppslag),
+  och README säger varför och att bara proxyns port ska publiceras. Testerna kontrollerar att
+  adressen är en jokeradress på port 8080 och att `DEFAULT` är loopback; de startar ingen server på
+  `0.0.0.0`.
+- **Id:t i minnet (P4).** Javadoc för `Sessions` och beslutet om uppslagningen på SHA-256 lovade att
+  inga giltiga id fanns i minnet. Det som håller är att lagringen bara har hashar av id:n; medan
+  en förfrågan hanteras finns id:t som `String` i `Cookie`-huvudet och i `Set-Cookie`. Texterna
+  säger nu det.
+- **En privat klientadress är ingen behörighet (P5).** `WebRequest.clientAddress()`,
+  `TrustedProxies.privateNetworks()` och README ("Bakom en omvänd proxy") säger att adressen
+  säger var förfrågan kom ifrån, inte vem som skickade den: med `privateNetworks()` kan varje
+  container på nätet skriva vilken klientadress som helst, och Dockers userland-proxy kan visa en
+  klient utifrån som bryggans gateway. En förfrågan ska aldrig släppas in bara för att adressen är
+  privat.
+- **Tester.** I `spola.web`: `ForwardedWarningTests` (i `ProxyTests`): en rad med avsändarens
+  adress och utan värdet, tio förfrågningar ger en rad, åtta sorters förfrågningar med huvudena
+  (namn i gemener, tomma och ogiltiga värden, två fält) ger en rad, betrodda avsändare och
+  förfrågningar utan huvudena (också med `X-Forwarded-Host`, `Forwarded` och `X-Real-IP`) ger
+  ingen, en rad per filterinstans, 200 samtidiga förfrågningar, 50 förfrågningar som når flaggan
+  samtidigt, IPv6-adresser i raden och standardloggern `spola.web`. Mutationer (ingen varning, en
+  rad per förfrågan, värdet i raden, varning också för betrodda avsändare, bara
+  `X-Forwarded-Proto` räknas, varje förfrågan räknas, `get` och `set` i stället för
+  `compareAndSet`) fångas av testerna. `ForwardedLeakTests` har ett markörtest för varningen (varje
+  markerat värde som det första ett filter ser) och kontrollerar varningen i det befintliga
+  testet. `ForwardedReadmeTests` och `SessionReadmeTests` kontrollerar `WhoamiApp.options()`,
+  varningens text i README mot koden, de nya punkterna och produktionsinställningen, som byggs och
+  ger `__Host-SESSION=<id>; Path=/; Secure; HttpOnly; SameSite=Lax` över `http`. I
+  `spola.security.web`: `CaddyExampleTests` (i `SchemeTests`, före läcktesterna) med flödet ovan,
+  att `SESSION` inte läses, att `__Host-` kräver `secure(true)`, `options()` och README.
+- **Ändringar i befintliga testfiler.** `SchemeFlowTests.flow` tar sessionscookiens namn (den
+  gamla signaturen ger `SESSION`); `CsrfSupport` och `CsrfLeakTests` maskerar och registrerar
+  också `__Host-SESSION`, så att läcktestet täcker de nya svaren; `SchemeReadmeTests` letar efter
+  den nya texten i "Bakom Caddy" i stället för utdraget; `ForwardedLeakTests` ger filtret som inte
+  litar på avsändaren en egen logg; kommentarerna i `WhoamiApp`, `CartApp`, `LoginExample` och
+  `CsrfExample` (README visar dem). Varje befintlig förväntan på svar och `Set-Cookie` gäller
+  oförändrad.

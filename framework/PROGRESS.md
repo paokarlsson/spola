@@ -816,7 +816,9 @@
   adress, och flödet från 11c (`CsrfExample`, sessioner utan `secure(true)`) ger `XSRF-TOKEN`,
   `SESSION` och borttagningen med `Secure`. Appen kan byta
   `server.forward-headers-strategy=native` mot `ForwardedHeaders` och behöver inget
-  `secure(true)` bakom proxyn.
+  `secure(true)` bakom en proxy som filtret litar på. (Sedan 15b rekommenderas ändå `secure(true)`
+  för en app som bara nås över https, eftersom `Secure` annars beror på att `TrustedProxies`
+  stämmer med proxyns adress.)
 - **Säkerhetskritisk kod.** Cookierna bär inloggningen och CSRF-skyddet, och schemat kommer från
   data utifrån (`X-Forwarded-Proto`). Koden är testad genom en riktig server med behovets flöde
   (bakom en proxy och över direkt TLS), varje sorts svar, båda fel ordningar, obetrodda
@@ -909,8 +911,8 @@
   kunde fylla `maxSessions` och ge alla andras inloggningar 503), G2 (en inloggning som en annan
   användare ärvde den förras attribut), G3 (`public`/`s-maxage` från handlern på ett svar med
   sessions- eller CSRF-cookien), G4 (inget `Cache-Control` på inloggade svar) och G5 (städningen
-  vid gränsen kunde köras parallellt). 15b (proxy och dokumentation), 15c (lösenord) och 15d
-  (`spola.client`) återstår.
+  vid gränsen kunde köras parallellt). 15b (proxy och dokumentation) är klar sedan dess; 15c
+  (lösenord) och 15d (`spola.client`) återstår.
 - **Granskningen ersätter inte en mänsklig granskning.** Den gjordes av AI-granskare, och
   rättningarna är testade av samma slags granskare. Koden är säkerhetskritisk, och **en människa
   bör granska den** innan ramverket används på riktigt.
@@ -977,6 +979,50 @@
   användare 40 gånger samtidigt och nu får plats för alla sessioner, och `SourceRulesTests` i
   `spola.security.web` (13 huvudkällfiler i stället för 12: `CacheControl.java`).
 
+### Uppdrag 15b: säkerhetsgranskning del 2, proxy, cookies och dokumentation (`spola.web`, `spola.security.web`)
+- **Andra delen av rättningarna efter säkerhetsgranskningen 2026-10-18**
+  (`gauntlet/granskningar/2026-10-18-sakerhet.md`). Fynden P1–P5 är rättade: P1 (en avsändare som
+  `ForwardedHeaders` inte litar på tog tyst bort `Secure` från sessions- och CSRF-cookien), P2
+  (Docker-exemplen lyssnade på loopback), P3 (ingen tydlig produktionsinställning mot cookie
+  tossing), P4 (påståendet om id:n i minnet) och P5 (privata klientadresser som behörighet). 15c
+  (lösenord) och 15d (`spola.client`) återstår.
+- **Granskningen ersätter inte en mänsklig granskning.** Koden är säkerhetskritisk, och **en
+  människa bör granska den** innan ramverket används på riktigt.
+- **Varningen (P1).** `ForwardedHeaders` loggar en rad på `WARNING` (loggern `spola.web`) första
+  gången per filterinstans som en avsändare som filtret inte litar på skickar `X-Forwarded-Proto`
+  eller `X-Forwarded-For`: `X-Forwarded-Proto or X-Forwarded-For from <adress> ignored: ...`.
+  Raden namnger bara avsändarens adress (som `TrustedProxies.of` tar den), aldrig huvudenas värden,
+  och sägs en gång, inte per förfrågan (också med 200 samtidiga förfrågningar och med 50 som prövar
+  flaggan i samma ögonblick). Beteendet i övrigt
+  är oförändrat: huvudena ignoreras. Betrodda avsändare och förfrågningar utan huvudena ger ingen
+  rad. Inget nytt publikt API; en paketprivat fabrik tar loggern för testerna.
+- **Produktionsinställningen (P1, P3).** README (i `spola.web` "Sessioner" och "Bakom en omvänd
+  proxy", i `spola.security.web` "Inloggning med session", "CSRF-skydd för en SPA" och "Bakom
+  Caddy") rekommenderar för en app som bara nås över https `withCookieName("__Host-SESSION")` med
+  `withCookie(c -> c.secure(true))` och `Csrf.cookie().withCookie(c -> c.secure(true))`, så att
+  `Secure` inte beror på att proxyadressen stämmer och en underdomän inte kan plantera en
+  sessionscookie. "Bakom Caddy" visar det kompilerade exemplet `CaddyExample`, och ett test ger
+  `__Host-SESSION=<id>; Path=/; Secure; HttpOnly; SameSite=Lax` och `XSRF-TOKEN` med `Secure` över
+  vanlig `http`, direkt, från en obetrodd avsändare och bakom en betrodd proxy. Meningen om att
+  `secure(true)` bara behövs utan `ForwardedHeaders` är rättad. Standardvärdena är oförändrade.
+- **Exempel som går att nå (P2).** `WhoamiApp.options()` och `CaddyExample.options()` lyssnar på
+  `0.0.0.0` port 8080, och README säger varför (loopback nås inte från Caddys container). README
+  visar källorna oförändrade, och testerna jämför dem.
+- **Rättade påståenden (P4, P5).** `Sessions` Javadoc, README och ARCHITECTURE säger att lagringen
+  bara håller hashar av id:n och att id:t finns som text i `Cookie` och `Set-Cookie` medan
+  förfrågan hanteras. `WebRequest.clientAddress()`, `TrustedProxies.privateNetworks()` och README
+  ("Bakom en omvänd proxy") säger att en privat klientadress inte är en behörighet.
+- Javadoc för `ForwardedHeaders`, `Sessions`, `SessionOptions`, `WebRequest`, `TrustedProxies`,
+  `Csrf`, `WebSecurity` och båda `module-info.java`. Inga ändrade `requires` eller `exports`, ingen
+  reflektion, inga nya filtyper och inga nya huvudkällfiler.
+- Nya tester: `ForwardedWarningTests` i `spola.web` (i `ProxyTests`) och ett markörtest för
+  varningen i `ForwardedLeakTests`, nya README-tester i `ForwardedReadmeTests` och
+  `SessionReadmeTests`; `CaddyExampleTests` i `spola.security.web` (i `SchemeTests`). Befintliga
+  testfiler som ändrades: `SchemeFlowTests` (sessionscookiens namn som parameter), `CsrfSupport`
+  och `CsrfLeakTests` (`__Host-SESSION` maskeras och räknas), `SchemeReadmeTests` (den nya texten
+  i "Bakom Caddy"), `ForwardedLeakTests` (egen logg för filtret) och kommentarerna i `WhoamiApp`,
+  `CartApp`, `LoginExample` och `CsrfExample`.
+
 ### Versioner och releaser (gjort för hand, utanför loopen)
 - `VERSION` i `Build.java` (nu `0.1.0`) sätts som modulversion i varje jar
   (`jar --module-version`). `java Build.java version` skriver ut den.
@@ -994,8 +1040,8 @@
   lösenordshasher" (psykologen) i uppdrag 12 och behovet "Rätt schema och klientadress bakom en
   omvänd proxy" (psykologen) i 13a–13b och behovet "HTTP-klient för JSON-API:er" (psykologen) i
   uppdrag 14; appen byter sin Spring-konfiguration och sina klienter efter nästa release.
-  Rättningarna efter säkerhetsgranskningen 2026-10-18: 15a är klar, **15b** (proxy och
-  dokumentation), **15c** (lösenord) och **15d** (`spola.client`) återstår. Idéerna i `uppdrag/PLAN.md` (JWT, PostgreSQL, pool och
+  Rättningarna efter säkerhetsgranskningen 2026-10-18: 15a och 15b är klara, **15c** (lösenord)
+  och **15d** (`spola.client`) återstår. Idéerna i `uppdrag/PLAN.md` (JWT, PostgreSQL, pool och
   transaktioner, query-DSL, migreringar, schemaläggning, observability, starter) byggs när ett
   behov kommer.
 - **Kvar från friktionsrapporten i 05c** (`modules/demo/README.md`, avsnitt "Friktion"):
@@ -1106,6 +1152,14 @@
   - `Secure` på sessions- och CSRF-cookien följer schemat sedan 13b (se nästa punkt).
   - Ordningen i kedjan kan modulen inte kontrollera: ett filter som registreras före
     `ForwardedHeaders` ser anslutningens värden.
+  - **Varningen sägs en gång per filter (15b).** Den första avsändaren som filtret inte litar på
+    och som skickar `X-Forwarded-Proto` eller `X-Forwarded-For` tar raden. Når en klient appens
+    port direkt med egna huvuden före en felkonfiguration syns felkonfigurationen inte i loggen;
+    bara proxyns port ska publiceras. Raden säger inte vilket av huvudena som kom, och ett filter
+    som skapas om (en ny router) varnar igen.
+  - `request.clientAddress()` är ingen behörighet: med `privateNetworks()` kan varje container på
+    nätet skriva vilken klientadress som helst, och Dockers userland-proxy kan visa en klient
+    utifrån som en privat adress (15b, P5).
   - Inget sätt för andra filter att ändra `scheme()` och `clientAddress()`, ingen `removeOnly`
     (huvudena finns kvar i `headers()`) och inget `X-Forwarded-By`.
 - **`Secure` efter schemat (spola.web, spola.security.web, 13b):** säkerhetskritiskt; **bör
@@ -1114,6 +1168,11 @@
     efter `sessions.filter()` eller `security.filter()` ser handlern `https`, men cookierna blir
     inte `Secure` bakom proxyn. Ordningen kan modulerna inte kontrollera; den står i Javadoc och
     README.
+  - **Utan `secure(true)` beror `Secure` på `TrustedProxies`.** Litar `ForwardedHeaders` inte på
+    proxyns adress är schemat `http` och cookierna sätts utan `Secure`; sedan 15b syns det som en
+    varning i loggen (en gång per filter). En app som bara nås över https sätter `secure(true)` på
+    båda cookierna och kallar sessionscookien `__Host-SESSION` (README, "Bakom Caddy").
+    Standardvärdena (`SESSION` utan `secure(true)`) är oförändrade.
   - **Det finns inget sätt att stänga av regeln.** En cookie som sätts över `https` har alltid
     `Secure` (Spring kan stänga av det för `XSRF-TOKEN` med en cookie customizer).
   - **En borttagning över `http` av en cookie som sattes över `https` får inget `Secure`**, och

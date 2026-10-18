@@ -1,0 +1,14 @@
+feat(web): warn once when an untrusted sender sends X-Forwarded-*
+
+ForwardedHeaders logs one WARNING per filter (sender address only) the
+first time a sender it does not trust sends X-Forwarded-Proto/For, so a
+stale proxy address no longer silently drops Secure. The READMEs show a
+production setting with __Host-SESSION and secure(true) on both cookies,
+Docker examples bind 0.0.0.0, and overstated claims are corrected.
+
+Gauntlet-Run: 20261018-1553-sakerhet-proxy-och-cookies
+Gauntlet-Round: 1/4
+Gauntlet-Verdict: FAIL (0 blocker, 1 major, 10 minor upheld)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_016R1SyuZe48AGwQWbo2Xdkz

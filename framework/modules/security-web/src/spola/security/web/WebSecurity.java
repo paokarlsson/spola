@@ -256,6 +256,21 @@ import spola.web.WebRequest;
  * Registered after this filter, {@code ForwardedHeaders} comes too late and the cookies get no
  * {@code Secure} from the proxy. There is no way to turn the rule off. See
  * {@link spola.web.Sessions} and {@link Csrf}.
+ *
+ * <p>An application reached only over https sets {@code secure(true)} on both cookies, and names
+ * the session cookie {@code __Host-SESSION}, so that {@code Secure} does not depend on
+ * {@code ForwardedHeaders} trusting the proxy's address (when it does not, the scheme is
+ * {@code http}; {@code ForwardedHeaders} logs a warning the first time):
+ *
+ * <pre>{@code
+ * Sessions sessions = Sessions.inMemory(SessionOptions.DEFAULT
+ *         .withCookieName("__Host-SESSION")
+ *         .withCookie(c -> c.secure(true)));
+ * WebSecurity security = WebSecurity.builder()
+ *         .sessions(sessions)
+ *         .csrf(Csrf.cookie().withCookie(c -> c.secure(true)))
+ *         ...
+ * }</pre>
  */
 public final class WebSecurity {
 

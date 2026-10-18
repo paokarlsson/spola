@@ -160,6 +160,12 @@ final class SchemeFlowTests {
      * a new token, and {@code /api/auth/me} then 401, also with the old id.
      */
     static Flow flow(HttpClient client, String base, Sessions sessions, List<String> proxy) throws Exception {
+        return flow(client, base, sessions, proxy, "SESSION");
+    }
+
+    /** {@link #flow(HttpClient, String, Sessions, List)} with the session cookie {@code cookie} (15b: {@code __Host-SESSION}). */
+    static Flow flow(HttpClient client, String base, Sessions sessions, List<String> proxy, String cookie)
+            throws Exception {
         var health = send(client, base, "GET", "/actuator/health", null, proxy);
         assertEquals(200, health.statusCode());
         assertEquals("{\"status\":\"UP\"}", health.body());
@@ -170,19 +176,19 @@ final class SchemeFlowTests {
                 with(proxy, "Cookie: XSRF-TOKEN=" + first, "X-XSRF-TOKEN: " + first));
         assertEquals(200, login.statusCode(), login.body());
         assertEquals("{\"success\":true,\"username\":\"anna\"}", login.body());
-        var id = value(login, "SESSION");
+        var id = value(login, cookie);
         var second = value(login, Csrf.COOKIE_NAME);
         assertNotEquals(first, second);
         assertEquals(List.of("no-store"), login.headers().allValues("Cache-Control"));
         assertEquals(1, sessions.size());
 
         var me = send(client, base, "GET", "/api/auth/me", null,
-                with(proxy, "Cookie: SESSION=" + id + "; XSRF-TOKEN=" + second));
+                with(proxy, "Cookie: " + cookie + "=" + id + "; XSRF-TOKEN=" + second));
         assertEquals(200, me.statusCode());
         assertEquals("{\"username\":\"anna\"}", me.body());
 
         var logout = send(client, base, "POST", "/api/auth/logout", null,
-                with(proxy, "Cookie: SESSION=" + id + "; XSRF-TOKEN=" + second, "X-XSRF-TOKEN: " + second));
+                with(proxy, "Cookie: " + cookie + "=" + id + "; XSRF-TOKEN=" + second, "X-XSRF-TOKEN: " + second));
         assertEquals(200, logout.statusCode(), logout.body());
         assertEquals("{\"success\":true}", logout.body());
         var third = value(logout, Csrf.COOKIE_NAME);
@@ -192,7 +198,7 @@ final class SchemeFlowTests {
         var after = send(client, base, "GET", "/api/auth/me", null, with(proxy, "Cookie: XSRF-TOKEN=" + third));
         LoginFlowTests.assertPlain401(after);
         var oldId = send(client, base, "GET", "/api/auth/me", null,
-                with(proxy, "Cookie: SESSION=" + id + "; XSRF-TOKEN=" + third));
+                with(proxy, "Cookie: " + cookie + "=" + id + "; XSRF-TOKEN=" + third));
         LoginFlowTests.assertPlain401(oldId);
         return new Flow(templates(health), templates(login), templates(me), templates(logout), templates(after));
     }

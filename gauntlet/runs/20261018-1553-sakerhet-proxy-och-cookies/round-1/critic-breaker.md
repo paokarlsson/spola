@@ -1,0 +1,27 @@
+```
+VERDICT: FAIL
+FINDINGS:
+- id: BRK-1
+  severity: MAJOR
+  where: framework/modules/web/src/spola/web/Sessions.java:73-80 ("the id itself is not kept in the store, in a Session or in any field that outlives the response" + "While a request is handled, its id is still in memory as text"); framework/modules/web/README.md:762-764; framework/ARCHITECTURE.md:2640-2643; framework/PROGRESS.md:1011-1013 (P4)
+  problem: The corrected P4 text still promises more than the code does. After the response is sent, the raw session id stays in live heap objects for the whole life of a keep-alive connection: the request's Cookie bytes in ConnectionInput.buffer (8 KiB) and ConnectionInput.line, and the response's Set-Cookie bytes in Connection.wire (BufferedOutputStream, 8 KiB). These are fields that outlive the response. The idle timeout is 60 s by default, and a connection behind Caddy that keeps being reused stays open indefinitely.
+  evidence: scratch-breaker/probe/heap.sh and heap2.sh, which use the scratch build of the current sources. The server runs in its own JVM, and curl or bash /dev/tcp act as the client. Each run takes a live-objects-only heap dump with HotSpotDiagnosticMXBean.dumpHeap(file, true), which does a full GC first.
+    (a) Log in on a closed connection. Then send `GET /me` with `Cookie: SESSION=<id>` on a keep-alive connection, read the whole `HTTP/1.1 200 OK` response and leave the connection idle. Output: "keep-alive open, live heap: 2 matching lines". After the connection is closed: "after close, live heap: 0 matching lines". The two hits are inside a live `byte[8192]` (context `GET /me HTTP/1.1\r\nHost: x\r\nCookie: SESSION=`) and a live `byte[256]` (context `Cookie: SESSION=`).
+    (b) Send `POST /login` on a keep-alive connection that stays open, so the id exists only in the response. Output: "keep-alive open after the login response, live heap: 1 matching lines". The hit is a live `byte[8192]` with context `Content-Type: text/plain; charset=utf-8\r\nSet-Cookie: SESSION=`.
+    So a heap dump of a running app behind a proxy that keeps connections open holds a valid id for every open connection, even though no request is being handled. This is the exact claim P4 was meant to correct, and spec item "Rättade påståenden (P4, P5) ... säger det koden håller" is not met.
+  fix_hint: Narrow the docs (Sessions Javadoc, README "Id:t", ARCHITECTURE, PROGRESS). They should say that the connection's input and output buffers keep the last request's Cookie and the last response's Set-Cookie until the next request on that connection overwrites them or the connection closes, which is at most idleTimeout once traffic stops. Drop "any field that outlives the response". The alternative is to clear the buffers after each exchange.
+- id: BRK-2
+  severity: MINOR
+  where: framework/modules/web/README.md:991-992 ("`InetAddress.ofLiteral("::")` tar också IPv6, där systemet har det")
+  problem: The README presents `::` as a drop-in for 0.0.0.0 that also adds IPv6 where the system has it. On a host without IPv6 (kernel ipv6.disable=1, as on this machine), binding `::` throws, so the server does not start at all.
+  evidence: scratch-breaker/probe/Probe.java runs `HttpServer.start(HttpServerOptions.DEFAULT.withAddress(InetAddress.ofLiteral("::")).withPort(0), router)` and fails with `java.net.SocketException: Protocol family unavailable at sun.nio.ch.Net.bind0 ... at spola.http.HttpServer.<init>(HttpServer.java:87)`. The same probe with 0.0.0.0 starts and answers on 127.0.0.1 and on 192.0.2.2.
+  fix_hint: Say that `::` needs IPv6 support in the kernel, otherwise the bind fails, or drop the parenthesis.
+- id: BRK-3
+  severity: MINOR
+  where: framework/ARCHITECTURE.md:3251-3253 (13a decision "Regeln om betrodd avsändare"); framework/modules/security-web/README.md:949
+  problem: Since 15b the filter checks whether X-Forwarded-Proto and X-Forwarded-For are present for an untrusted sender (Headers.contains in warnOnce). ARCHITECTURE 13a still says "huvudena läses inte alls", and the security-web README says the headers "läses bara när den direkta avsändaren är betrodd". The builder already changed the same sentence in the ForwardedHeaders Javadoc and the web README to "values are not read".
+  evidence: ForwardedHeaders.java:205 `http.headers().contains(PROTO) || http.headers().contains(FOR)` runs for every untrusted request until the first warning. `grep -n "huvudena läses inte" framework/ARCHITECTURE.md` gives 3252. The 13a table cell at line 3222 was amended, but this decision text was not.
+  fix_hint: Change to "huvudenas värden läses inte (bara om de finns, för varningen i 15b)" in both places.
+```
+
+What I also tried, with no defect found: a full `java Build.java` in a scratch copy (BUILD OK, exit 0). Default JUL output through the public `trusting(...)`: one WARNING for the first untrusted sender with headers, and none for a second untrusted sender, a request without headers or later requests. The 0.0.0.0 bind can be reached from a non-loopback address. `__Host-SESSION` without `secure(true)`, and with `path("/api")`, fails in `Sessions.inMemory` as the README says. I checked the RFC 5952 formatting in `IpLiteral.format`, the CAS and flag ordering, the README warning text against `warning()`, criterion 6 grep (0 hits), the module-info diffs (Javadoc only) and the cookie-name parsing (no decoding, so no `__Host-` prefix bypass).

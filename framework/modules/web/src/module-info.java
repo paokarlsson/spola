@@ -31,7 +31,8 @@
  *       a cookie, created only when something is stored, with an idle timeout, a limit (503)
  *       and a new id on demand ({@code changeSessionId}); its filter is registered on the
  *       router. The cookie is {@code Secure} when the options say so or when the request's
- *       scheme is {@code https}, as with Tomcat. A login renews the session with
+ *       scheme is {@code https}, as with Tomcat; an application reached only over https uses
+ *       {@code __Host-SESSION} with {@code secure(true)}. A login renews the session with
  *       {@code Sessions.renewFor(request, user, n)}, which ends another user's session and
  *       keeps at most {@code n} sessions per user ({@code maximumSessions(n)}). A response that
  *       sets or removes the cookie is never storable by a shared cache.</li>
@@ -49,8 +50,10 @@
  *       only (no name lookup) and answers 400 for an invalid value from a trusted proxy.
  *       Registered first, it gives every filter and handler after it the client's
  *       {@code WebRequest.scheme()} and {@code clientAddress()} (so the session cookie gets
- *       {@code Secure} behind a TLS proxy), while {@code WebRequest.http()} still describes the
- *       connection.</li>
+ *       {@code Secure} behind a TLS proxy that it trusts), while {@code WebRequest.http()} still
+ *       describes the connection. The first time a sender that it does not trust sends the
+ *       headers, the filter logs one {@code WARNING} with the sender's address (never a
+ *       value), once per filter.</li>
  * </ul>
  *
  * <p>{@code spola.http} is required transitively because the API uses its {@code Request},

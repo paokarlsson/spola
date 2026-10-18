@@ -52,7 +52,9 @@ public interface TrustedProxies {
      * {@code 172.17.0.1}): such a sender can set the headers to anything. A client on such a
      * network that goes through the proxy is skipped as a proxy too, so what it writes to the
      * left of its own address decides. Publish only the proxy's port, and trust only the
-     * proxy's address with {@link #of} when clients can be on those networks.
+     * proxy's address with {@link #of} when clients can be on those networks. A private
+     * {@link WebRequest#clientAddress()} is therefore no authorization: Docker's userland proxy
+     * can also hide the client behind the gateway's private address.
      *
      * <p>Tomcat's default {@code internal-proxies} also trusts link-local addresses
      * ({@code 169.254.0.0/16}, {@code fe80::/10}) and {@code 100.64.0.0/10}; this set does not.

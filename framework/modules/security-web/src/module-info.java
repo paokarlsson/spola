@@ -53,9 +53,11 @@
  *       keeps no tokens.</li>
  *   <li>{@code Secure}: the session cookie and {@code XSRF-TOKEN} get {@code Secure} when their
  *       cookie function sets it or when the scheme of the request the security filter got is
- *       {@code https} (over TLS, or behind a TLS proxy with {@code ForwardedHeaders} registered
- *       before the security filter), as Tomcat and Spring Security do with
- *       {@code request.isSecure()}.</li>
+ *       {@code https} (over TLS, or behind a TLS proxy that {@code ForwardedHeaders}, registered
+ *       before the security filter, trusts), as Tomcat and Spring Security do with
+ *       {@code request.isSecure()}. An application reached only over https sets
+ *       {@code secure(true)} on both, with the session cookie named
+ *       {@code __Host-SESSION}.</li>
  * </ul>
  *
  * <p>{@code spola.web} and {@code spola.security} are required transitively because both are

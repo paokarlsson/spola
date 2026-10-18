@@ -1,6 +1,7 @@
 package spola.web;
 
 import static spola.test.Assertions.assertEquals;
+import static spola.test.Assertions.assertFalse;
 import static spola.test.Assertions.assertTrue;
 import static spola.test.Tests.suite;
 import static spola.test.Tests.test;
@@ -75,6 +76,41 @@ final class ForwardedReadmeTests {
                     assertTrue(source.startsWith(header));
                     var block = "### Spola\n\n```java\n" + source.substring(header.length()) + "```\n";
                     assertTrue(section().contains(block), "the README's Spola example differs from WhoamiApp.java");
+                }),
+                test("15b: the Docker example listens on 0.0.0.0 port 8080, where Caddy in another container reaches it;"
+                        + " the default listens on loopback", () -> {
+                    var options = WhoamiApp.options();
+                    assertTrue(options.address().isAnyLocalAddress(), "listens on " + options.address());
+                    assertEquals("0.0.0.0", options.address().getHostAddress());
+                    assertEquals(8080, options.port());
+                    assertEquals(java.util.Optional.empty(), options.tls());
+                    assertTrue(spola.http.HttpServerOptions.DEFAULT.address().isLoopbackAddress());
+                    var source = Files.readString(Path.of("modules/web/test/spola/web/WhoamiApp.java"));
+                    assertTrue(source.contains("HttpServer.start(options(), router)"), "main starts with options()");
+                    var section = section();
+                    for (var text : List.of("**Appen lyssnar på `0.0.0.0` i Docker.**", "`HttpServerOptions.DEFAULT` lyssnar bara på loopback",
+                            "Caddy i en annan container")) {
+                        assertTrue(section.contains(text), "the section lacks " + text);
+                    }
+                }),
+                test("15b: the section has the warning as the filter writes it, Secure that does not depend on the"
+                        + " proxy's address, and that a private client address is no authorization", () -> {
+                    var section = section();
+                    int at = section.indexOf("`X-Forwarded-Proto or X-Forwarded-For from 172.18.0.6 ignored:");
+                    assertTrue(at > 0, "the section shows the warning");
+                    var shown = section.substring(at + 1, section.indexOf(", ...`", at)).replaceAll("\\s+", " ");
+                    var actual = ForwardedHeaders.warning(java.net.InetAddress.ofLiteral("172.18.0.6"));
+                    assertTrue(actual.startsWith(shown), "the README's warning differs from " + actual);
+                    for (var text : List.of("**En varning, en gång, när avsändaren inte är betrodd.**", "(loggern `spola.web`)",
+                            "aldrig huvudenas värden", "en gång per filter, inte per förfrågan",
+                            "**En app\n  som bara nås över https** sätter därför `secure(true)` på båda cookierna",
+                            "`__Host-SESSION`", "**En privat klientadress är ingen behörighet.**",
+                            "Släpp därför aldrig in en förfrågan bara för\n  att klientadressen är privat")) {
+                        assertTrue(section.contains(text), "the section lacks " + text);
+                    }
+                    for (var old : List.of("och cookierna får `Secure` utan `secure(true)`", "huvudena läses inte alls")) {
+                        assertFalse(section.contains(old), "the section still says " + old);
+                    }
                 }),
                 test("the Spring Boot code comes first: forward-headers-strategy, getScheme() and getRemoteAddr()", () -> {
                     var section = section();

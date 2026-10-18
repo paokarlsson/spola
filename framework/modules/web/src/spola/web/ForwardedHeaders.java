@@ -1,8 +1,10 @@
 package spola.web;
 
+import java.lang.System.Logger.Level;
 import java.net.InetAddress;
 import java.util.List;
 import java.util.Objects;
+import java.util.concurrent.atomic.AtomicBoolean;
 import spola.http.Request;
 import spola.http.Response;
 
@@ -11,7 +13,8 @@ import spola.http.Response;
  * counterpart of Spring Boot's {@code server.forward-headers-strategy=native} (Tomcat's
  * {@code RemoteIpValve}): after it, {@link WebRequest#scheme()} and
  * {@link WebRequest#clientAddress()} are what {@code request.getScheme()}, {@code isSecure()} and
- * {@code getRemoteAddr()} give in Spring. Immutable and thread-safe.
+ * {@code getRemoteAddr()} give in Spring. Thread-safe; its only state is whether it has logged
+ * the warning about a sender it does not trust (below).
  *
  * <pre>{@code
  * var router = Router.builder()
@@ -25,11 +28,34 @@ import spola.http.Response;
  * <h2>Only from a trusted sender</h2>
  * The filter asks {@code proxies.trusts(request.http().remoteAddress().getAddress())}, about the
  * direct sender of the TCP connection. If the answer is {@code false}, the request goes on
- * unchanged and the headers are not read at all: a sender that is not trusted can neither change
- * the values nor cause a 400 with the headers. The filter always works from
+ * unchanged and the values of the headers are not read at all (only whether they are there, for
+ * the warning below): a sender that is not trusted can neither change the values nor cause a 400
+ * with the headers. The filter always works from
  * {@code request.http()} (the sender and the headers), never from the request's current
  * {@code scheme()} or {@code clientAddress()}, so two of these filters in one chain give the
  * same result as one.
+ *
+ * <h2>A warning, once, for a sender that is not trusted</h2>
+ * The first time a sender that {@code proxies} does not trust sends {@code X-Forwarded-Proto} or
+ * {@code X-Forwarded-For}, the filter logs one line on {@link System.Logger.Level#WARNING} to the
+ * {@link System.Logger} named {@code spola.web}:
+ *
+ * <pre>{@code
+ * X-Forwarded-Proto or X-Forwarded-For from 172.18.0.6 ignored: ForwardedHeaders does not trust
+ * this sender, ...
+ * }</pre>
+ *
+ * The line names the sender's address, as {@link TrustedProxies#of} takes it (IPv6 after RFC
+ * 5952, without a zone), and never a header's value. Each filter logs it once, not per request:
+ * after the first line such requests pass on without one, and nothing else changes. It usually
+ * means that {@code proxies} does not match the proxy, such as
+ * {@code TrustedProxies.of("172.18.0.5")} after the proxy's container got a new address, or a
+ * proxy that reaches the application over IPv6. The request then keeps the connection's scheme,
+ * {@code http} behind a TLS proxy, and the session and CSRF cookies get {@code Secure} only when
+ * their cookie function sets it: an application reached only over https sets {@code secure(true)}
+ * on both, so that {@code Secure} does not depend on the proxy's address. The first sender that is not
+ * trusted takes the line, also a client that reaches the application's port directly with
+ * headers of its own; publish only the proxy's port.
  *
  * <h2>{@code X-Forwarded-Proto}</h2>
  * Without the field the connection's scheme stays. Otherwise there must be exactly one field,
@@ -115,8 +141,14 @@ public final class ForwardedHeaders implements Filter {
 
     private final TrustedProxies proxies;
 
-    private ForwardedHeaders(TrustedProxies proxies) {
+    private final System.Logger log;
+
+    /** Whether this filter has logged the warning about a sender that it does not trust. */
+    private final AtomicBoolean warned = new AtomicBoolean();
+
+    private ForwardedHeaders(TrustedProxies proxies, System.Logger log) {
         this.proxies = proxies;
+        this.log = log;
     }
 
     /**
@@ -128,12 +160,23 @@ public final class ForwardedHeaders implements Filter {
      * @throws NullPointerException if {@code proxies} is {@code null}
      */
     public static ForwardedHeaders trusting(TrustedProxies proxies) {
-        return new ForwardedHeaders(Objects.requireNonNull(proxies, "proxies"));
+        return trusting(proxies, System.getLogger("spola.web"));
+    }
+
+    /** {@link #trusting(TrustedProxies)} that logs the warning to {@code log}; for the tests. */
+    static ForwardedHeaders trusting(TrustedProxies proxies, System.Logger log) {
+        return new ForwardedHeaders(Objects.requireNonNull(proxies, "proxies"), Objects.requireNonNull(log, "log"));
+    }
+
+    /** The logger of the warning: {@code spola.web} unless the tests gave another. */
+    System.Logger log() {
+        return log;
     }
 
     /**
      * Passes the request on with the client's scheme and address when its sender is trusted,
-     * otherwise unchanged; see the class documentation.
+     * otherwise unchanged (and logs the warning the first time such a sender sends the headers);
+     * see the class documentation.
      *
      * @param request the request
      * @param next    the rest of the chain
@@ -146,11 +189,34 @@ public final class ForwardedHeaders implements Filter {
         var http = request.http();
         var sender = http.remoteAddress().getAddress();
         if (!proxies.trusts(sender)) {
+            warnOnce(http, sender);
             return next.proceed(request);
         }
         var scheme = scheme(http);
         var client = client(http.headers().all(FOR), sender);
         return next.proceed(request.withClient(scheme, client));
+    }
+
+    /**
+     * Logs the warning the first time a sender that is not trusted sends one of the headers. The
+     * line names the sender's address and never a value; the values are not even read.
+     */
+    private void warnOnce(Request http, InetAddress sender) {
+        if (warned.get() || !(http.headers().contains(PROTO) || http.headers().contains(FOR))) {
+            return;
+        }
+        if (warned.compareAndSet(false, true)) {
+            log.log(Level.WARNING, warning(sender));
+        }
+    }
+
+    /** The warning's text: only the sender's address, never a value from the request. */
+    static String warning(InetAddress sender) {
+        return PROTO + " or " + FOR + " from " + IpLiteral.format(sender.getAddress())
+                + " ignored: ForwardedHeaders does not trust this sender, so the request keeps the connection's"
+                + " scheme and address (behind a TLS proxy the scheme is then http, and a cookie that follows the"
+                + " scheme gets no Secure). If the sender is the proxy, trust its address in TrustedProxies."
+                + " Logged once per filter.";
     }
 
     /** The scheme from {@code X-Forwarded-Proto}, or the connection's without it. */

@@ -73,8 +73,11 @@ import spola.http.Response;
  * a {@link ConcurrentHashMap} whose key is the SHA-256 of the id's ASCII bytes; the id itself
  * is not kept in the store, in a {@link Session} or in any field that outlives the response. A
  * lookup therefore takes a time that depends on the hash of the client's text, not on how much
- * of a valid id it guessed, and a memory dump holds no valid ids. The id never appears in a
- * {@code toString()}, an exception message, a log line or a problem response.
+ * of a valid id it guessed, and the store holds only hashes of ids. While a request is handled,
+ * its id is still in memory as text: in the request's {@code Cookie} header and, when the
+ * response sets the cookie, in its {@code Set-Cookie} line, as {@code String}s that cannot be
+ * cleared. The id never appears in a {@code toString()}, an exception message, a log line or a
+ * problem response.
  *
  * <h2>The cookie in</h2>
  * Every value of the cookie {@link SessionOptions#cookieName} ({@link WebRequest#cookieAll}) is
@@ -124,7 +127,12 @@ import spola.http.Response;
  *       filter (or after the security filter that runs it), it comes too late: the cookie gets
  *       no {@code Secure} from the proxy.</li>
  *   <li><b>{@code withCookie(c -> c.secure(true))}</b> gives {@code Secure} on every response,
- *       also over {@code http}, as before.</li>
+ *       also over {@code http}, as before. An application reached only over https sets it,
+ *       with the name {@code __Host-SESSION} (see {@link SessionOptions#cookieName}): behind a
+ *       proxy the scheme is {@code https} only when {@code ForwardedHeaders} trusts the proxy's
+ *       address, and when it does not (the proxy got a new address, or connects over IPv6) the
+ *       cookie would otherwise lose {@code Secure} with nothing in the response to show it
+ *       ({@code ForwardedHeaders} logs a warning the first time).</li>
  *   <li><b>There is no way to turn the rule off</b> (Tomcat does not have one either): a cookie
  *       set over {@code https} always has {@code Secure}. The checks at startup do not depend
  *       on it: {@code SameSite=None}, {@code __Secure-} and {@code __Host-} still need

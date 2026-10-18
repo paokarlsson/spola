@@ -11,9 +11,10 @@ import spola.test.Suite;
 
 /**
  * 13b in the README: the section "CSRF-skydd för en SPA" shows how the application runs behind
- * Caddy ({@code ForwardedHeaders} first, both cookies {@code Secure} without
- * {@code secure(true)}), says when the cookie gets {@code Secure}, and has the new comparison
- * and deviation rows. The router it shows is the one {@link SchemeFlowTests} runs.
+ * Caddy ({@code ForwardedHeaders} first; without {@code secure(true)} both cookies are
+ * {@code Secure} from the scheme, as {@link SchemeFlowTests} runs it), says when the cookie gets
+ * {@code Secure}, and has the new comparison and deviation rows. Since 15b the part shows
+ * {@link CaddyExample} with {@code secure(true)}, checked by {@link CaddyExampleTests}.
  */
 final class SchemeReadmeTests {
 
@@ -22,26 +23,21 @@ final class SchemeReadmeTests {
 
     static Suite tests() {
         return suite("README Secure from the scheme (13b)",
-                test("the CSRF section shows the application behind Caddy: ForwardedHeaders first, no secure(true),"
-                        + " both cookies Secure", () -> {
-                    var section = CsrfReadmeTests.section();
-                    int caddy = section.indexOf("\n### Bakom Caddy\n");
-                    assertTrue(caddy > section.indexOf("### Spola\n"), "a part Bakom Caddy after the example");
-                    var part = section.substring(caddy, section.indexOf("\n### ", caddy + 1));
+                test("the CSRF section shows the application behind Caddy: ForwardedHeaders first; without"
+                        + " secure(true) both cookies are Secure from the scheme (since 15b CaddyExample, see"
+                        + " CaddyExampleTests, is the recommended setting)", () -> {
+                    var part = CaddyExampleTests.part();
                     for (var text : List.of(
-                            "var sessions = CsrfExample.sessions(false, InstantSource.system()); // no secure(true)",
-                            "Router.builder().filter(ForwardedHeaders.trusting(TrustedProxies.privateNetworks())), // first",
-                            "CsrfExample.security(sessions)",
+                            "Router.builder().filter(ForwardedHeaders.trusting(proxies)), // first",
                             "Set-Cookie: XSRF-TOKEN=<token>; Path=/; Secure; SameSite=Lax",
-                            "Set-Cookie: SESSION=<id>; Path=/; Secure; HttpOnly; SameSite=Lax",
-                            "Set-Cookie: SESSION=; Path=/; Max-Age=0; Secure; HttpOnly; SameSite=Lax",
-                            "båda cookierna blir `Secure` utan `secure(true)`", "**Ordningen.**",
-                            "**Bara från en betrodd proxy.**", "`Responses.withCookie`")) {
+                            "`CsrfExample.sessions(false, InstantSource.system())` och `CsrfExample.security(sessions)`",
+                            "`SESSION=<id>; Path=/; Secure; HttpOnly; SameSite=Lax`",
+                            "**Ordningen.**", "**Bara från en betrodd proxy.**", "`Responses.withCookie`")) {
                         assertTrue(part.contains(text), "the part Bakom Caddy lacks " + text);
                     }
                 }),
-                test("the CSRF section says when XSRF-TOKEN gets Secure, and no longer tells to write secure(true)"
-                        + " behind a TLS proxy", () -> {
+                test("the CSRF section says when XSRF-TOKEN gets Secure, and the lines of 11c about the cookie behind"
+                        + " a TLS proxy are gone", () -> {
                     var section = CsrfReadmeTests.section();
                     assertTrue(section.contains("- Cookien får `Secure`, som i Spring, när förfrågans schema är `https`:"));
                     assertTrue(section.contains("Regeln går inte att stänga av."));

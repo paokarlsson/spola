@@ -24,8 +24,12 @@ final class CsrfLeakTests {
     private CsrfLeakTests() {
     }
 
-    /** {@code Set-Cookie: XSRF-TOKEN=<value>} or {@code Set-Cookie: SESSION=<value>} in a response head, with its value. */
-    static final Pattern OWN_COOKIE = Pattern.compile("(?im)^(Set-Cookie:\\s*(?:XSRF-TOKEN|SESSION)=)([^;\\r\\n]*)");
+    /**
+     * {@code Set-Cookie: XSRF-TOKEN=<value>} or {@code Set-Cookie: SESSION=<value>} (or
+     * {@code __Host-SESSION}, 15b) in a response head, with its value.
+     */
+    static final Pattern OWN_COOKIE =
+            Pattern.compile("(?im)^(Set-Cookie:\\s*(?:XSRF-TOKEN|(?:__Host-)?SESSION)=)([^;\\r\\n]*)");
 
     static Suite tests() {
         return suite("secrets of the CSRF protection",

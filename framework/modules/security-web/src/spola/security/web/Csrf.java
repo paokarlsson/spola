@@ -136,7 +136,12 @@ import spola.web.WebRequest;
  *       Registered after the security filter, it comes too late: the cookie gets no
  *       {@code Secure} from the proxy.</li>
  *   <li><b>{@code Csrf.cookie().withCookie(c -> c.secure(true))}</b> gives {@code Secure} on
- *       every response, also over {@code http}, as before.</li>
+ *       every response, also over {@code http}, as before. An application reached only over
+ *       https sets it (and {@code __Host-SESSION} with {@code secure(true)} for the session):
+ *       behind a proxy the scheme is {@code https} only when {@code ForwardedHeaders} trusts the
+ *       proxy's address, and when it does not (the proxy got a new address, or connects over
+ *       IPv6) the cookie would otherwise lose {@code Secure} with nothing in the response to
+ *       show it ({@code ForwardedHeaders} logs a warning the first time).</li>
  *   <li><b>There is no way to turn the rule off.</b> Spring can leave {@code secure} out over
  *       HTTPS with a cookie customizer ({@code c -> c.secure(false)}); here a cookie set over
  *       {@code https} always has {@code Secure}, since an application on the same origin never

@@ -133,6 +133,13 @@ public final class WebRequest {
      * <p>No name is looked up to make it. {@code getHostAddress()} gives it as text;
      * {@code getHostName()} would ask DNS for a name.
      *
+     * <p>It is where the request came from, not who sent it, and never an authorization on its
+     * own: with {@link TrustedProxies#privateNetworks()} every container on those networks is
+     * trusted and can write any client address into {@code X-Forwarded-For}, and Docker's
+     * userland proxy can make a client from outside look like the bridge's gateway (such as
+     * {@code 172.17.0.1}), a private address. Never let a request in only because its client
+     * address is private or internal.
+     *
      * @return the address, never {@code null}
      */
     public InetAddress clientAddress() {

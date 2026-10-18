@@ -18,7 +18,17 @@ import java.util.function.UnaryOperator;
  *
  * <p>Without {@code secure(true)} the cookie is still {@code Secure} when the request's scheme
  * is {@code https}, as with Tomcat; {@code secure(true)} makes it {@code Secure} over
- * {@code http} too.
+ * {@code http} too. For an application reached only over https the production setting is
+ *
+ * <pre>{@code
+ * SessionOptions.DEFAULT
+ *         .withCookieName("__Host-SESSION")             // only this host, only over https, Path=/
+ *         .withCookie(cookie -> cookie.secure(true));   // Secure whatever the scheme
+ * }</pre>
+ *
+ * so that {@code Secure} does not depend on {@link ForwardedHeaders} trusting the proxy's
+ * address, and a sibling subdomain cannot plant a session cookie of its own (cookie tossing:
+ * {@code Domain=<parent>; Path=/api} would be sent first, and the first live value is used).
  *
  * <p>The canonical constructor, and so every {@code withX} method, checks the values and
  * reports every problem at once: one {@link IllegalArgumentException} with one line per
@@ -32,10 +42,11 @@ import java.util.function.UnaryOperator;
  *                    reached (after removing expired sessions), creating a session gives 503;
  *                    existing sessions are never removed to make room. Default 10 000.
  * @param cookieName  the name of the session cookie, a {@code token} (RFC 9110 §5.6.2).
- *                    Default {@code SESSION}, as in Spring Session. In production
- *                    {@code __Host-SESSION} with {@code secure(true)} is recommended: the
- *                    browser then keeps the cookie only for this host, over HTTPS, with
- *                    {@code Path=/}.
+ *                    Default {@code SESSION}, as in Spring Session. In production, for an
+ *                    application reached only over https, {@code __Host-SESSION} with
+ *                    {@code secure(true)} is recommended: the browser then keeps the cookie
+ *                    only for this host, over HTTPS, with {@code Path=/}, so another subdomain
+ *                    can neither set nor shadow it.
  * @param cookie      changes the attributes of the session cookie: it gets the builder of
  *                    {@code ResponseCookie.of(cookieName, id)} (defaults {@code Path=/},
  *                    {@code HttpOnly}, {@code SameSite=Lax}, not {@code Secure}, no

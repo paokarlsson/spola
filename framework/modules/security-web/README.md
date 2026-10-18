@@ -42,7 +42,9 @@ fungerar utan säkerhet.
   `X-XSRF-TOKEN` (Angulars standard). Ändrande anrop utan matchande huvud får 403, och
   `login`/`logout` ger en ny token.
 - Sessions- och CSRF-cookien får `Secure` när förfrågans schema är `https`, som i Spring: över
-  TLS, och bakom en TLS-proxy när `ForwardedHeaders` registreras före `security.filter()`.
+  TLS, och bakom en TLS-proxy när `ForwardedHeaders` registreras före `security.filter()` och litar
+  på proxyn. En app som bara nås över https sätter `secure(true)` på båda och kallar
+  sessionscookien `__Host-SESSION` (se [Bakom Caddy](#bakom-caddy)).
 - Svar till en inloggad användare får `Cache-Control: no-store` om handlern inte satt något
   (eller satt `public` eller `s-maxage`), och ett svar som sätter sessions- eller CSRF-cookien kan
   aldrig sparas av en delad cache (se [Cachar](#cachar)).
@@ -409,9 +411,10 @@ public final class LoginExample {
      * {@code HttpOnly} and {@code SameSite=Lax}.
      *
      * @param secure {@code config.booleanValue("cookie.secure")}: {@code true} sets {@code Secure}
-     *               on every response, also over {@code http}; with {@code false} the cookie is
-     *               {@code Secure} when the request's scheme is {@code https} (over TLS, or behind
-     *               a TLS proxy with {@code ForwardedHeaders} registered first)
+     *               on every response, also over {@code http}, as an application reached only
+     *               over https should; with {@code false} the cookie is {@code Secure} when the
+     *               request's scheme is {@code https} (over TLS, or behind a TLS proxy that
+     *               {@code ForwardedHeaders}, registered first, trusts)
      * @param clock  {@code InstantSource.system()} in production; the tests move their own
      * @return the sessions
      */
@@ -473,7 +476,11 @@ public final class LoginExample {
 }
 ```
 
-I produktion startas det så här (`users` är appens `UserStore`):
+I produktion startas det så här (`users` är appens `UserStore`). En app som bara nås över https
+sätter `cookie.secure` till `true` och kallar helst sessionscookien `__Host-SESSION`
+(`withCookieName("__Host-SESSION")`), så att `Secure` inte beror på att en proxys adress stämmer
+och en annan underdomän inte kan sätta eller skugga cookien; produktionsinställningen för båda
+cookierna står i [Bakom Caddy](#bakom-caddy).
 
 ```java
 var sessions = LoginExample.sessions(config.booleanValue("cookie.secure"), InstantSource.system());
@@ -589,6 +596,10 @@ anrop som kan ändra något. Ett sådant anrop utan matchande huvud får 403.
   förfrågan har när den når säkerhetsfiltret; `login` och `logout` i handlern ändrar det inte.
   `Csrf.cookie().withCookie(c -> c.secure(true))` ger `Secure` på varje svar, också över `http`.
   Regeln går inte att stänga av.
+- **I produktion**, för en app som bara nås över https, rekommenderas
+  `Csrf.cookie().withCookie(c -> c.secure(true))` för CSRF-cookien, och för sessionen
+  `withCookieName("__Host-SESSION")` med `withCookie(c -> c.secure(true))`, så att `Secure` inte
+  beror på att proxyns adress stämmer (se [Bakom Caddy](#bakom-caddy) nedan).
 - `GET`, `HEAD`, `OPTIONS` och `TRACE` kontrolleras inte. Alla andra metoder, också `PURGE` och
   `post` med gemener, kräver exakt ett `X-XSRF-TOKEN`-fält med en välformad token (43 tecken
   Base64url) som är lika med en av förfrågans `XSRF-TOKEN`-cookies, jämförd i konstant tid.
@@ -725,9 +736,10 @@ public final class CsrfExample {
      * {@code HttpOnly} and {@code SameSite=Lax}.
      *
      * @param secure {@code config.booleanValue("cookie.secure")}: {@code true} sets {@code Secure}
-     *               on every response, also over {@code http}; with {@code false} the cookie is
-     *               {@code Secure} when the request's scheme is {@code https} (over TLS, or behind
-     *               a TLS proxy with {@code ForwardedHeaders} registered first)
+     *               on every response, also over {@code http}, as an application reached only
+     *               over https should; with {@code false} the cookie is {@code Secure} when the
+     *               request's scheme is {@code https} (over TLS, or behind a TLS proxy that
+     *               {@code ForwardedHeaders}, registered first, trusts)
      * @param clock  {@code InstantSource.system()} in production; the tests move their own
      * @return the sessions
      */
@@ -804,40 +816,162 @@ inloggningen ger 403 och med den aktuella 200, och därefter ger `/api/auth/me` 
 
 Bakom en omvänd proxy som avslutar TLS (Caddy, nginx) kommer förfrågningarna över `http` från
 proxyn. Registrera då `ForwardedHeaders` från `spola.web` först, före `security.filter()` som
-`CsrfExample.router` lägger till. Då ser säkerhetsfiltret, och sessionsfiltret som det kör, schemat
-`https` ur proxyns `X-Forwarded-Proto`, och båda cookierna blir `Secure` utan `secure(true)`
-(`users` är appens `UserStore`):
+`CsrfExample.router` lägger till, så att säkerhetsfiltret, och sessionsfiltret som det kör, ser
+klientens schema och adress.
+
+Exemplet är produktionsinställningen för en app som bara nås över https: sessionscookien heter
+`__Host-SESSION`, och båda cookierna har `secure(true)`, så att `Secure` inte beror på att
+proxyns adress stämmer (`users` i `start` är appens `UserStore`):
 
 ```java
-var sessions = CsrfExample.sessions(false, InstantSource.system()); // no secure(true)
-var router = CsrfExample.router(
-        Router.builder().filter(ForwardedHeaders.trusting(TrustedProxies.privateNetworks())), // first
-        CsrfExample.security(sessions), Authenticator.of(users, Pbkdf2PasswordHasher.defaults()));
-var server = HttpServer.start(HttpServerOptions.DEFAULT.withPort(8080), router);
-// behind Caddy, which sends X-Forwarded-Proto: https:
-//   Set-Cookie: XSRF-TOKEN=<token>; Path=/; Secure; SameSite=Lax
-//   Set-Cookie: SESSION=<id>; Path=/; Secure; HttpOnly; SameSite=Lax
-//   Set-Cookie: SESSION=; Path=/; Max-Age=0; Secure; HttpOnly; SameSite=Lax   (logout)
-// directly over http://localhost:8080: the same lines without Secure
+import java.io.IOException;
+import java.net.InetAddress;
+import java.time.Duration;
+import java.time.InstantSource;
+import spola.http.HttpServer;
+import spola.http.HttpServerOptions;
+import spola.security.Authenticator;
+import spola.security.Pbkdf2PasswordHasher;
+import spola.security.UserStore;
+import spola.web.ForwardedHeaders;
+import spola.web.Router;
+import spola.web.SessionOptions;
+import spola.web.Sessions;
+import spola.web.TrustedProxies;
+
+/** The README part "Bakom Caddy": {@link CsrfExample} in production, reached only over https through Caddy. */
+public final class CaddyExample {
+
+    private CaddyExample() {
+    }
+
+    /**
+     * The sessions for an application reached only over https: {@code __Host-SESSION} with
+     * {@code Secure} on every response, also when the scheme is {@code http}.
+     *
+     * @param clock {@code InstantSource.system()} in production; the tests move their own
+     * @return the sessions
+     */
+    public static Sessions sessions(InstantSource clock) {
+        return Sessions.inMemory(SessionOptions.DEFAULT
+                .withIdleTimeout(Duration.ofMinutes(30))
+                .withCookieName("__Host-SESSION")                   // only this host, only over https
+                .withCookie(cookie -> cookie.secure(true)), clock); // Secure whatever the proxy's address
+    }
+
+    /**
+     * The rules of {@link CsrfExample#security}, with {@code XSRF-TOKEN} {@code Secure} on every
+     * response.
+     *
+     * @param sessions the sessions that keep the login
+     * @return the security
+     */
+    public static WebSecurity security(Sessions sessions) {
+        return WebSecurity.builder()
+                .sessions(sessions)
+                .csrf(Csrf.cookie().withCookie(cookie -> cookie.secure(true))) // Secure whatever the proxy's address
+                .rule(RequestMatcher.exactly("/api/auth/login"), AccessRule.permitAll())
+                .rule(RequestMatcher.exactly("/api/auth/logout"), AccessRule.permitAll())
+                .rule(RequestMatcher.exactly("/actuator/health"), AccessRule.permitAll())
+                .rule(RequestMatcher.anyRequest(), AccessRule.authenticated())
+                .build();
+    }
+
+    /**
+     * The routes of {@link CsrfExample#router}, behind {@code ForwardedHeaders}.
+     *
+     * @param proxies       {@code TrustedProxies.of("172.18.0.5")}: only Caddy, at its fixed address
+     * @param sessions      the sessions that keep the login
+     * @param authenticator checks usernames and passwords
+     * @return the router
+     */
+    public static Router router(TrustedProxies proxies, Sessions sessions, Authenticator authenticator) {
+        return CsrfExample.router(
+                Router.builder().filter(ForwardedHeaders.trusting(proxies)), // first
+                security(sessions), authenticator);
+    }
+
+    /**
+     * Port 8080 on {@code 0.0.0.0}, every IPv4 address of the container, so that Caddy in another
+     * container can connect; {@code HttpServerOptions.DEFAULT} listens on loopback only, which
+     * nothing outside the application's own container reaches.
+     *
+     * @return the options
+     */
+    public static HttpServerOptions options() {
+        return HttpServerOptions.DEFAULT.withAddress(InetAddress.ofLiteral("0.0.0.0")).withPort(8080);
+    }
+
+    /**
+     * Starts the application in its container, behind Caddy at {@code 172.18.0.5}.
+     *
+     * @param users the application's users
+     * @return the server
+     * @throws IOException if the port cannot be bound
+     */
+    public static HttpServer start(UserStore users) throws IOException {
+        var router = router(TrustedProxies.of("172.18.0.5"), sessions(InstantSource.system()),
+                Authenticator.of(users, Pbkdf2PasswordHasher.defaults()));
+        // on every response, also over http and from a sender that ForwardedHeaders does not trust:
+        //   Set-Cookie: XSRF-TOKEN=<token>; Path=/; Secure; SameSite=Lax
+        //   Set-Cookie: __Host-SESSION=<id>; Path=/; Secure; HttpOnly; SameSite=Lax
+        //   Set-Cookie: __Host-SESSION=; Path=/; Max-Age=0; Secure; HttpOnly; SameSite=Lax   (logout)
+        return HttpServer.start(options(), router);
+    }
+}
 ```
 
+Raderna är desamma över vanlig `http`: direkt, från en avsändare som `ForwardedHeaders` inte
+litar på och bakom en betrodd proxy, med `X-Forwarded-Proto: https` eller utan:
+
+```
+Set-Cookie: XSRF-TOKEN=<token>; Path=/; Secure; SameSite=Lax
+Set-Cookie: __Host-SESSION=<id>; Path=/; Secure; HttpOnly; SameSite=Lax
+Set-Cookie: __Host-SESSION=; Path=/; Max-Age=0; Secure; HttpOnly; SameSite=Lax   (logout)
+```
+
+- **Produktionsinställningen.** `secure(true)` ger `Secure` på varje svar. Utan den får cookierna
+  `Secure` bara när schemat är `https`, och bakom Caddy är det `https` bara när `ForwardedHeaders`
+  litar på Caddys adress. Stämmer `TrustedProxies` inte (Caddys container har skapats om och fått
+  en ny adress, eller Caddy ansluter över IPv6) är schemat `http`, och cookierna sätts utan
+  `Secure` utan att något syns i svaret. `ForwardedHeaders` loggar då en rad på `WARNING`
+  (loggern `spola.web`) med avsändarens adress, en gång per filter.
+- **`__Host-SESSION`.** Webbläsaren tar emot en `__Host-`-cookie bara över https, med `Secure` och
+  `Path=/` och utan `Domain`, så en annan underdomän på samma webbplats kan varken sätta eller
+  skugga den. Med namnet `SESSION` kan en syskondomän sätta en cookie med `Domain=<förälder>` och
+  `Path=/api` som bär en session där angriparen är inloggad (cookie tossing): till `/api` skickar
+  webbläsaren den före offrets egen, det första levande värdet används, och offret använder appen
+  som angriparen. `__Host-` kräver `secure(true)`; utan det ger `Sessions.inMemory`
+  `IllegalArgumentException` vid uppstart. `XSRF-TOKEN` har ett fast namn.
 - **Ordningen.** Schemat som gäller är det som förfrågan har när den når `security.filter()`.
   Registreras `ForwardedHeaders` efter säkerhetsfiltret ser handlern `https`, men cookierna får
-  inget `Secure`.
-- **Bara från en betrodd proxy.** `X-Forwarded-Proto` läses bara när den direkta avsändaren är
-  betrodd. Från en annan avsändare är schemat anslutningens, `http`, och cookierna får inget
-  `Secure`. Lita helst bara på proxyns adress (`TrustedProxies.of("172.18.0.5")`, se "Bakom en
-  omvänd proxy" i `spola.web`).
-- **Utveckling** över `http://localhost` fungerar som förut: utan proxy och utan TLS är schemat
-  `http`, cookierna saknar `Secure` och webbläsaren sparar dem.
-- **`secure(true)`** behövs bara när cookierna ska vara `Secure` också över `http`, till exempel
-  bakom en proxy utan `ForwardedHeaders`.
+  inget `Secure` från schemat.
+- **Bara från en betrodd proxy.** `X-Forwarded-Proto` och `X-Forwarded-For` läses bara när den
+  direkta avsändaren är betrodd. Lita helst bara på proxyns adress, som exemplet gör
+  (`TrustedProxies.of("172.18.0.5")`, med en fast adress för Caddy, i Docker Compose
+  `ipv4_address`; se "Bakom en omvänd proxy" i `spola.web`).
+- **Lyssna på `0.0.0.0`.** `HttpServerOptions.DEFAULT` lyssnar bara på loopback, som Caddy i en
+  annan container inte når. `options()` lyssnar på alla IPv4-adresser i containern; publicera bara
+  Caddys port, inte appens.
+- **Utan `secure(true)`** får cookierna `Secure` efter schemat, som i Spring.
+  `CsrfExample.sessions(false, InstantSource.system())` och `CsrfExample.security(sessions)` bakom
+  samma `ForwardedHeaders` ger `XSRF-TOKEN=<token>; Path=/; Secure; SameSite=Lax` och
+  `SESSION=<id>; Path=/; Secure; HttpOnly; SameSite=Lax` när en proxy som filtret litar på skickar
+  `X-Forwarded-Proto: https`, och samma rader utan `Secure` annars. `secure(true)` behövs alltså
+  inte för att cookierna ska bli `Secure` bakom en proxy som filtret litar på, men utan det
+  beror `Secure` på att proxyns adress stämmer.
+- **Utveckling** över `http://localhost` görs med `CsrfExample` och `secure` satt till `false`:
+  utan proxy och utan TLS är schemat `http`, cookierna saknar `Secure`, sessionscookien heter
+  `SESSION` och webbläsaren sparar dem.
 - **Andra cookies** som appen sätter med `Responses.withCookie` får inget automatiskt `Secure`.
   Appen väljer själv efter `request.scheme()`.
 
-Ett test kör flödet ovan med `Router.builder().filter(ForwardedHeaders.trusting(...))`, sessioner
-utan `secure(true)` och `X-Forwarded-Proto: https` på varje förfrågan, och jämför varje
-`Set-Cookie` tecken för tecken med raden som `withCookie(c -> c.secure(true))` ger.
+Ett test kör flödet ovan med `CaddyExample` över vanlig `http` (direkt, med `X-Forwarded-Proto:
+https` från en avsändare som filtret inte litar på, och från en betrodd proxy med `https` och med
+`http`) och får raderna ovan varje gång. Ett annat kör `CsrfExample.router` med
+`Router.builder().filter(ForwardedHeaders.trusting(...))`, sessioner utan `secure(true)` och
+`X-Forwarded-Proto: https` på varje förfrågan, och jämför varje `Set-Cookie` tecken för tecken med
+raden som `withCookie(c -> c.secure(true))` ger.
 
 ### Spring Security och Spola, CSRF
 
