@@ -26,3 +26,4 @@
 - 2026-10-14 03:32 · 20261014-0234-cookies-secure-efter-schemat · PASS · 1 rounds · Proxy part 2: Secure on session and CSRF cookies from the scheme · commits: cbc1140
 - 2026-10-18 12:40 · 20261014-0332-rest-klient · PASS · 2 rounds · REST client for JSON APIs on java.net.http (spola.client) · commits: b1b3c7a, a02d012
 - 2026-10-18 15:53 · 20261018-1305-sakerhet-sessioner-och-inloggning · PASS · 2 rounds · Security review part 1: per-user session limit and cache headers · commits: e392fec, b4d95f7
+- 2026-10-18 17:23 · 20261018-1553-sakerhet-proxy-och-cookies · PASS · 2 rounds · Security review part 2: proxy warning, cookie hardening and doc fixes · commits: 236b800, 1f82568
