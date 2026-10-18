@@ -3,10 +3,10 @@ package spola.security.web;
 import static spola.security.web.LoginSupport.ANNA;
 import static spola.security.web.LoginSupport.BERTIL;
 import static spola.security.web.LoginSupport.CECILIA;
-import static spola.security.web.ReviewSupport.issued;
-import static spola.security.web.ReviewSupport.login;
-import static spola.security.web.ReviewSupport.me;
-import static spola.security.web.ReviewSupport.named;
+import static spola.security.web.UserSessionSupport.issued;
+import static spola.security.web.UserSessionSupport.login;
+import static spola.security.web.UserSessionSupport.me;
+import static spola.security.web.UserSessionSupport.named;
 import static spola.test.Assertions.assertEquals;
 import static spola.test.Assertions.assertNotEquals;
 import static spola.test.Assertions.assertThrows;
@@ -21,7 +21,7 @@ import spola.web.SessionOptions;
 import spola.web.Sessions;
 
 /**
- * Uppdrag 15a, G1 (criterion 3): a user has at most {@code maximumSessions} sessions. A login
+ * Uppdrag 15a (criterion 3): a user has at most {@code maximumSessions} sessions. A login
  * beyond that ends the user's least recently used session, never the new login, so one account
  * that logs in again and again cannot fill {@code maxSessions} and lock other users out.
  */
@@ -35,7 +35,7 @@ final class UserLimitTests {
                 test("the README example (the default of 10): 15 logins of anna without a cookie never give her more"
                         + " than 10 sessions; the oldest get 401, the newest work, bertil can log in", () -> {
                     var sessions = LoginExample.sessions(false, InstantSource.system());
-                    try (var server = Support.serve(ReviewSupport.router(LoginExample.security(sessions)))) {
+                    try (var server = Support.serve(UserSessionSupport.router(LoginExample.security(sessions)))) {
                         var ids = new ArrayList<String>();
                         for (int i = 1; i <= 15; i++) {
                             var reply = login(server, ANNA, null);
@@ -58,7 +58,7 @@ final class UserLimitTests {
                 }),
                 test("maximumSessions(3): the session used longest ago ends, not the one created first", () -> {
                     var sessions = LoginExample.sessions(false, InstantSource.system());
-                    try (var server = Support.serve(ReviewSupport.router(ReviewSupport.loginSecurity(sessions, 3)))) {
+                    try (var server = Support.serve(UserSessionSupport.router(UserSessionSupport.loginSecurity(sessions, 3)))) {
                         var a = issued(login(server, ANNA, null));
                         var b = issued(login(server, ANNA, null));
                         var c = issued(login(server, ANNA, null));
@@ -78,7 +78,7 @@ final class UserLimitTests {
                 }),
                 test("maxSessions 50 and maximumSessions(5): 100 logins of one account do not stop a second user", () -> {
                     var sessions = Sessions.inMemory(SessionOptions.DEFAULT.withMaxSessions(50));
-                    try (var server = Support.serve(ReviewSupport.router(ReviewSupport.loginSecurity(sessions, 5)))) {
+                    try (var server = Support.serve(UserSessionSupport.router(UserSessionSupport.loginSecurity(sessions, 5)))) {
                         var last = new ArrayList<String>();
                         for (int i = 0; i < 100; i++) {
                             var reply = login(server, ANNA, null);
@@ -98,7 +98,7 @@ final class UserLimitTests {
                 }),
                 test("a login with the user's own cookie renews that session: no other session ends", () -> {
                     var sessions = LoginExample.sessions(false, InstantSource.system());
-                    try (var server = Support.serve(ReviewSupport.router(ReviewSupport.loginSecurity(sessions, 2)))) {
+                    try (var server = Support.serve(UserSessionSupport.router(UserSessionSupport.loginSecurity(sessions, 2)))) {
                         var a = issued(login(server, ANNA, null));
                         var b = issued(login(server, ANNA, null));
                         var a2 = issued(login(server, ANNA, a));
@@ -112,7 +112,7 @@ final class UserLimitTests {
                 test("maximumSessions(1): a second login ends the first; at maxSessions a user at the limit can still"
                         + " log in, while a user without a session gets 503", () -> {
                     var sessions = Sessions.inMemory(SessionOptions.DEFAULT.withMaxSessions(2));
-                    try (var server = Support.serve(ReviewSupport.router(ReviewSupport.loginSecurity(sessions, 1)))) {
+                    try (var server = Support.serve(UserSessionSupport.router(UserSessionSupport.loginSecurity(sessions, 1)))) {
                         var first = issued(login(server, ANNA, null));
                         var second = issued(login(server, ANNA, null));
                         assertEquals("401", me(server, first));
@@ -134,17 +134,17 @@ final class UserLimitTests {
                 }),
                 test("build(): maximumSessions below 1, and maximumSessions without sessions, are problems", () -> {
                     var sessions = LoginExample.sessions(false, InstantSource.system());
-                    var zero = ReviewSupport.thrown(assertThrows(IllegalArgumentException.class, () -> WebSecurity.builder()
+                    var zero = UserSessionSupport.thrown(assertThrows(IllegalArgumentException.class, () -> WebSecurity.builder()
                             .sessions(sessions).maximumSessions(0).rule(RequestMatcher.anyRequest(), AccessRule.permitAll())
                             .build()));
                     assertEquals("maximumSessions(0): a user needs at least 1 session", zero.getMessage());
-                    var alone = ReviewSupport.thrown(assertThrows(IllegalArgumentException.class, () -> WebSecurity.builder()
+                    var alone = UserSessionSupport.thrown(assertThrows(IllegalArgumentException.class, () -> WebSecurity.builder()
                             .maximumSessions(5).rule(RequestMatcher.anyRequest(), AccessRule.permitAll())
                             .rule(RequestMatcher.anyRequest(), AccessRule.denyAll()).build()));
                     assertEquals("rule 2 comes after anyRequest() in rule 1 and can never match\n"
                             + "maximumSessions(...) without sessions(...): it limits the sessions of WebSecurity.login;"
                             + " add sessions(sessions)", alone.getMessage());
-                    var negative = ReviewSupport.thrown(assertThrows(IllegalArgumentException.class, () -> WebSecurity.builder()
+                    var negative = UserSessionSupport.thrown(assertThrows(IllegalArgumentException.class, () -> WebSecurity.builder()
                             .maximumSessions(-1).build()));
                     assertEquals("maximumSessions(-1): a user needs at least 1 session\n"
                             + "maximumSessions(...) without sessions(...): it limits the sessions of WebSecurity.login;"
@@ -152,7 +152,7 @@ final class UserLimitTests {
                     // the last call wins
                     var security = WebSecurity.builder().sessions(sessions).maximumSessions(0).maximumSessions(2)
                             .rule(RequestMatcher.anyRequest(), AccessRule.permitAll()).build();
-                    assertEquals("WebSecurity[0 mechanisms, 1 rules, sessions]", ReviewSupport.text(security));
+                    assertEquals("WebSecurity[0 mechanisms, 1 rules, sessions]", UserSessionSupport.text(security));
                 }));
     }
 }

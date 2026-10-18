@@ -16,7 +16,7 @@ import spola.http.Response;
 import spola.test.Suite;
 
 /**
- * Uppdrag 15a, G3 for the session cookie: a response that sets or removes it never stays
+ * Uppdrag 15a, the session cookie: a response that sets or removes it never stays
  * storable by a shared cache. The handler's {@code Cache-Control} stays only when it already has
  * {@code no-store} or an unqualified {@code private} and neither {@code public} nor
  * {@code s-maxage}; anything else becomes one {@code Cache-Control: no-store}.

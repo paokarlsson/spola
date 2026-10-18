@@ -7,16 +7,21 @@ import java.util.Optional;
 
 /**
  * One session in the store of a {@link Sessions}: its attributes, the key it is stored under
- * (the SHA-256 of its id, never the id), when it was last used, its generation, which
- * {@link #renew} raises, and the user whose sessions it is counted among
- * ({@link Sessions#renewFor}). Every field is guarded by the entry's lock; the locks of the
- * store and of the index of users' sessions are taken inside it, never the other way round.
+ * (the SHA-256 of its id, never the id), when it was last used (for expiry, and its place in the
+ * order of uses), its generation, which {@link #renew} raises, the user it is logged in for
+ * ({@link Sessions#renewFor}) and how many logins are being handled with it. Every field is
+ * guarded by the entry's lock; the order in which the locks are taken is in {@link Sessions}.
  *
  * <p>A {@link Session} is a view of an entry for one request, with the generation the request
  * knows. Once another request renews the entry, the views with the old generation see an ended
  * session: a request that came with the old id loses the session at once, also when it was
  * already being handled. An entry that ended (invalidated or expired) never comes back, and it
  * leaves the index of its user's sessions when it ends.
+ *
+ * <p>The user is set when a login holds the entry: in the same step as the renewal
+ * ({@link #renewFor}), or right after the login created it, before any other request can know its
+ * id ({@link #hold}). It stays until the entry ends, so a session that holds a user's login is
+ * always among the user's sessions, whatever other requests do with it.
  */
 final class SessionEntry {
 
@@ -25,10 +30,12 @@ final class SessionEntry {
     private Sessions.Key key;
     private long generation;
     private Instant lastUsed;
-    /** When it was last used, in the owner's order of uses: a larger number was used later. */
-    private long lastUse;
-    /** The user whose sessions this entry is counted among, or {@code null}. */
+    /** Its place in the owner's order of uses: a larger number was used later. */
+    private long useOrder;
+    /** The user the session is logged in for ({@link Sessions#renewFor}), or {@code null}; cleared only when it ends. */
     private String user;
+    /** How many logins are being handled with the entry ({@link #hold} minus {@link #release}). */
+    private int logins;
     private boolean ended;
 
     /** A new entry under {@code key}, used at {@code now}; the caller puts it in the store. */
@@ -36,7 +43,7 @@ final class SessionEntry {
         this.owner = owner;
         this.key = key;
         this.lastUsed = now;
-        this.lastUse = owner.nextUse();
+        this.useOrder = owner.nextUse();
     }
 
     /** A view for the request that created this entry. */
@@ -129,67 +136,78 @@ final class SessionEntry {
         return alive(now) ? lastUsed.plus(owner.idleTimeout()) : null;
     }
 
-    /** The user whose sessions {@code view}'s session is counted among, or {@code null} (none, or not visible). */
+    /** The user {@code view}'s session is logged in for, or {@code null} (none, or not visible). */
     synchronized String user(Session view) {
         return visible(view) ? user : null;
     }
 
     /**
-     * Takes the entry out of its user's sessions while a login with it is handled
-     * ({@link Sessions#renewFor}), so that no other login of the user can end it as the user's
-     * oldest before the login has stored what it needs; {@link #join} puts it back.
+     * {@link #renew} for a login of {@code name}, in one step: the entry gets a new id, is logged
+     * in for {@code name} and is held by the login ({@link #hold}), so that the limit per user
+     * cannot end it between the renewal and the hold.
+     *
+     * @return the new id, or {@code null} if {@code view} no longer sees the session (then
+     *         nothing changed and nothing is held)
      */
-    synchronized void leave(Session view) {
-        if (visible(view) && user != null) {
-            owner.leave(user, this);
-            user = null;
+    synchronized String renewFor(Session view, String name) {
+        var id = renew(view);
+        if (id != null) {
+            hold(view, name);
         }
+        return id;
     }
 
     /**
-     * Counts the entry among {@code name}'s sessions (and no longer among another user's).
+     * Holds the entry for a login of {@code name} until {@link #release}: it is logged in for
+     * {@code name} (counted among the user's sessions) and the limit per user does not end it
+     * while a login is being handled with it.
      *
-     * @return whether {@code view} still sees the session; if not, nothing changed
+     * @return whether {@code view} still sees the session; if not, nothing changed and nothing
+     *         is held
      */
-    synchronized boolean join(Session view, String name) {
+    synchronized boolean hold(Session view, String name) {
         if (!visible(view)) {
             return false;
         }
         if (!name.equals(user)) {
             if (user != null) {
-                owner.leave(user, this);
+                owner.leave(user, this); // not through renewFor, which ends another user's session instead
             }
             owner.join(name, this);
             user = name;
         }
+        logins++;
         return true;
     }
 
+    /** A login that {@link #hold held} the entry is done with it. */
+    synchronized void release() {
+        logins--;
+    }
+
+    /** Whether a login is being handled with the entry: then the limit per user does not end it. */
+    synchronized boolean held() {
+        return logins > 0;
+    }
+
     /**
-     * When the entry was last used, in the owner's order of uses, if it is live and counted
-     * among {@code name}'s sessions; otherwise -1 (an expired entry ends here).
+     * The entry's place in the owner's order of uses if it is live and logged in for
+     * {@code name}; otherwise -1 (an expired entry ends here).
      */
-    synchronized long lastUseAs(String name) {
-        return alive(owner.now()) && name.equals(user) ? lastUse : -1;
+    synchronized long useOrderAs(String name) {
+        return alive(owner.now()) && name.equals(user) ? useOrder : -1;
     }
 
     /**
      * Ends the entry as {@code name}'s least recently used session, unless it has been used
-     * since {@code seen} (then it is no longer the least recently used, and the caller looks
-     * again). An entry that has ended or is no longer counted among {@code name}'s sessions is
-     * left as it is.
-     *
-     * @return {@code false} if it was used since {@code seen}
+     * since {@code seen} or a login is being handled with it: then it is no longer the one to
+     * end, and the caller looks again. An entry that has ended or is not logged in for
+     * {@code name} is left as it is.
      */
-    synchronized boolean endIfUnusedSince(String name, long seen) {
-        if (!alive(owner.now()) || !name.equals(user)) {
-            return true;
+    synchronized void endIfUnusedSince(String name, long seen) {
+        if (alive(owner.now()) && name.equals(user) && useOrder == seen && logins == 0) {
+            end();
         }
-        if (lastUse != seen) {
-            return false;
-        }
-        end();
-        return true;
     }
 
     /** The number of attributes, 0 once ended. */
@@ -213,7 +231,7 @@ final class SessionEntry {
         if (now.isAfter(lastUsed)) {
             lastUsed = now;
         }
-        lastUse = owner.nextUse();
+        useOrder = owner.nextUse();
     }
 
     private void end() {

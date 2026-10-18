@@ -16,7 +16,7 @@ import java.util.concurrent.TimeUnit;
 import spola.test.Suite;
 
 /**
- * Uppdrag 15a, G1 (criterion 4): 200 virtual threads log in five users at once, 40 logins each,
+ * Uppdrag 15a (criterion 4): 200 virtual threads log in five users at once, 40 logins each,
  * through the README example with the default limit of 10 per user.
  */
 final class UserLimitConcurrencyTests {
@@ -36,14 +36,14 @@ final class UserLimitConcurrencyTests {
                         + " exactly 10, and size() is the number of sessions that work", () -> {
                     var sessions = LoginExample.sessions(false, InstantSource.system());
                     var start = new CountDownLatch(1);
-                    try (var server = Support.serve(ReviewSupport.router(LoginExample.security(sessions)));
+                    try (var server = Support.serve(UserSessionSupport.router(LoginExample.security(sessions)));
                             var executor = Executors.newVirtualThreadPerTaskExecutor()) {
                         var futures = new ArrayList<Future<Login>>();
                         for (int t = 0; t < THREADS; t++) {
                             var name = LoginSupport.NAMES.get(t % LoginSupport.NAMES.size());
                             futures.add(executor.submit(() -> {
                                 start.await();
-                                var reply = ReviewSupport.login(server, name, null);
+                                var reply = UserSessionSupport.login(server, name, null);
                                 var cookies = LoginSupport.sessionCookies(reply);
                                 return new Login(name, reply.status() + " " + reply.body(),
                                         cookies.size() == 1 ? LoginSupport.idOf(cookies.getFirst()) : "");
@@ -65,8 +65,8 @@ final class UserLimitConcurrencyTests {
                         // which ids still work, per user: asking touches them, but ends none
                         var working = new HashMap<String, Integer>();
                         for (var login : logins) {
-                            var answer = ReviewSupport.me(server, login.id());
-                            if (answer.equals(ReviewSupport.named(login.name()))) {
+                            var answer = UserSessionSupport.me(server, login.id());
+                            if (answer.equals(UserSessionSupport.named(login.name()))) {
                                 working.merge(login.name(), 1, Integer::sum);
                             } else {
                                 assertEquals("401", answer, "an ended session is anonymous");

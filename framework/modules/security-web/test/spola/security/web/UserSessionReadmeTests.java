@@ -16,9 +16,9 @@ import spola.test.Suite;
  * Uppdrag 15a: the READMEs document the limit per user, the new session for another user and the
  * {@code Cache-Control} rules, and the table in "Cachar" says what {@link CacheHeaderTests} shows.
  */
-final class ReviewReadmeTests {
+final class UserSessionReadmeTests {
 
-    private ReviewReadmeTests() {
+    private UserSessionReadmeTests() {
     }
 
     static String readme() throws Exception {

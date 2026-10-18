@@ -114,7 +114,7 @@ public final class Session {
         return entry;
     }
 
-    /** The user whose sessions this one is counted among ({@link Sessions#renewFor}), or {@code null}. */
+    /** The user this session is logged in for ({@link Sessions#renewFor}), or {@code null} (none, or not visible). */
     String user() {
         return entry.user(this);
     }

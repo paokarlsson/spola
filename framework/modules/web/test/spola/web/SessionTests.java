@@ -19,6 +19,7 @@ final class SessionTests {
                 SessionScaleTests.tests(),
                 SessionSchemeTests.tests(),
                 SessionUserTests.tests(),
+                SessionLoginRaceTests.tests(),
                 SessionCacheTests.tests(),
                 SessionSweepTests.tests(),
                 SessionReadmeTests.tests(),

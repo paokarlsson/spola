@@ -817,10 +817,15 @@ kör det genom en riktig server med `HttpClient` och en `CookieManager`.
   - Skulle användaren få fler än `n` sessioner avslutas användarens **minst nyligen använda**,
     aldrig den nya inloggningen (en användning är en förfrågan som hittar sessionen, att den
     skapas och att den förnyas). Ett konto som loggar in om och om igen utan cookie kan därför
-    inte fylla `maxSessions` och stänga ute alla andra. Det sker innan den nya sessionen skapas,
-    så en användare vid sin gräns kan logga in också när `maxSessions` är nådd, och igen när
-    svaret byggs, så att gränsen håller också när samma användare loggar in på flera ställen
-    samtidigt; sessionen räknas till användaren först då.
+    inte fylla `maxSessions` och stänga ute alla andra. Det sker innan en ny session skapas, så
+    en användare vid sin gräns kan logga in också när `maxSessions` är nådd, och igen när svaret
+    byggs, så att gränsen håller också när samma användare loggar in på flera ställen samtidigt.
+  - Sessionen hör till användaren från inloggningen tills den slutar, vad andra förfrågningar med
+    samma cookie än gör (`renew` till exempel), så den räknas alltid mot gränsen och en senare
+    inloggning som en annan användare får alltid en ny session. Medan inloggningen hanteras
+    avslutar ingen annan inloggning den, inte heller en samtidig av samma användare; under
+    samtidiga inloggningar kan användaren därför ha fler sessioner än `n`, och när svaren är
+    byggda är det högst `n`.
   - Namn jämförs exakt. Indexet från namn till sessioner håller bara levande sessioner: en
     session lämnar det när den ogiltigförklaras, går ut, städas bort eller avslutas av gränsen,
     och en användare utan sessioner finns inte i det.

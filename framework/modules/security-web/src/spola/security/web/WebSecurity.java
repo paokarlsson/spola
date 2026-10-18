@@ -3,7 +3,6 @@ package spola.security.web;
 import java.io.Serial;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Locale;
 import java.util.Objects;
 import java.util.Optional;
 import spola.http.Headers;
@@ -157,7 +156,10 @@ import spola.web.WebRequest;
  *       their cookie is anonymous), never the new login. Users are compared on
  *       {@link Identity#name()}. One account that logs in again and again (every login without a
  *       cookie is a new session) therefore holds at most that many of the
- *       {@code SessionOptions.maxSessions} and cannot lock other users out.</li>
+ *       {@code SessionOptions.maxSessions} and cannot lock other users out. A session counts
+ *       for the user from the login until it ends, whatever other requests with its cookie do;
+ *       logins of one user at the same time never end each other's sessions while they are
+ *       handled, and once their responses are built the user has at most the limit.</li>
  *   <li><b>Another user gets a new session.</b> When the request's session already holds the
  *       identity of another user (a shared computer without a logout), {@link #login} ends that
  *       session and starts a new, empty one, so the new user never sees the previous user's
@@ -644,145 +646,6 @@ public final class WebSecurity {
     }
 
     /**
-     * The {@code Cache-Control} rules of the security filter (uppdrag 15a, G3 and G4); see
-     * "Caches" in the class documentation. The parser is a copy of the one in
-     * {@code spola.web}'s {@code CacheControl}, which applies the cookie rule to the session
-     * cookie: the modules share no internal code.
-     */
-    static final class CacheControl {
-
-        private CacheControl() {
-        }
-
-        /** One directive: its name in lower case, and whether it has an argument ({@code name=value}). */
-        private record Directive(String name, boolean argument) {
-        }
-
-        /**
-         * For a response that carries a cookie with a secret ({@code XSRF-TOKEN}): unchanged if
-         * its {@code Cache-Control} already keeps shared caches out ({@code no-store} or
-         * {@code private} without an argument, and neither {@code public} nor
-         * {@code s-maxage}), otherwise with one {@code Cache-Control: no-store} instead.
-         */
-        static Response withoutSharedCache(Response response) {
-            var directives = directives(response.headers());
-            boolean keep = directives != null && !shared(directives) && directives.stream()
-                    .anyMatch(d -> !d.argument() && (d.name().equals("no-store") || d.name().equals("private")));
-            return keep ? response : noStore(response);
-        }
-
-        /**
-         * For a response to a logged-in request: unchanged if it has a {@code Cache-Control}
-         * without {@code public} and {@code s-maxage}, otherwise with one
-         * {@code Cache-Control: no-store} instead (also when it has none, or an empty or
-         * malformed one).
-         */
-        static Response forIdentity(Response response) {
-            var directives = directives(response.headers());
-            boolean keep = directives != null && !directives.isEmpty() && !shared(directives);
-            return keep ? response : noStore(response);
-        }
-
-        /** Whether a directive lets a shared cache store the response although it may be personal. */
-        private static boolean shared(List<Directive> directives) {
-            return directives.stream().anyMatch(d -> d.name().equals("public") || d.name().equals("s-maxage"));
-        }
-
-        /**
-         * The directives of every {@code Cache-Control} field, in order (none without the
-         * field), or {@code null} if a value is not a list of
-         * {@code token [ "=" ( token / quoted-string ) ]} (RFC 9111 §5.2) with optional
-         * whitespace and empty elements between them.
-         */
-        private static List<Directive> directives(Headers headers) {
-            var directives = new ArrayList<Directive>();
-            for (var value : headers.all("Cache-Control")) {
-                int n = value.length();
-                int i = 0;
-                while (true) {
-                    while (i < n && (isWhitespace(value.charAt(i)) || value.charAt(i) == ',')) {
-                        i++;
-                    }
-                    if (i == n) {
-                        break;
-                    }
-                    int start = i;
-                    while (i < n && isTokenChar(value.charAt(i))) {
-                        i++;
-                    }
-                    if (i == start) {
-                        return null;
-                    }
-                    var name = value.substring(start, i).toLowerCase(Locale.ROOT);
-                    boolean argument = i < n && value.charAt(i) == '=';
-                    if (argument) {
-                        i = argumentEnd(value, i + 1);
-                        if (i < 0) {
-                            return null;
-                        }
-                    }
-                    directives.add(new Directive(name, argument));
-                    while (i < n && isWhitespace(value.charAt(i))) {
-                        i++;
-                    }
-                    if (i < n && value.charAt(i) != ',') {
-                        return null;
-                    }
-                }
-            }
-            return directives;
-        }
-
-        /** The index after the token or quoted string at {@code i}, or -1 if there is none. */
-        private static int argumentEnd(String value, int i) {
-            int n = value.length();
-            if (i < n && value.charAt(i) == '"') {
-                i++;
-                while (i < n) {
-                    char c = value.charAt(i++);
-                    if (c == '"') {
-                        return i;
-                    }
-                    if (c == '\\') {
-                        if (i == n) {
-                            return -1;
-                        }
-                        i++;
-                    }
-                }
-                return -1;
-            }
-            int start = i;
-            while (i < n && isTokenChar(value.charAt(i))) {
-                i++;
-            }
-            return i == start ? -1 : i;
-        }
-
-        /** {@code response} with its {@code Cache-Control} fields replaced by one {@code Cache-Control: no-store}. */
-        private static Response noStore(Response response) {
-            var fields = new ArrayList<Headers.Field>();
-            for (var field : response.headers().fields()) {
-                if (!field.name().equalsIgnoreCase("Cache-Control")) {
-                    fields.add(field);
-                }
-            }
-            fields.add(new Headers.Field("Cache-Control", "no-store"));
-            return new Response(response.status(), Headers.of(fields), response.body());
-        }
-
-        private static boolean isWhitespace(char c) {
-            return c == ' ' || c == '\t';
-        }
-
-        /** {@code tchar} of RFC 9110 §5.6.2. */
-        private static boolean isTokenChar(char c) {
-            return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')
-                    || "!#$%&'*+-.^_`|~".indexOf(c) >= 0;
-        }
-    }
-
-    /**
      * Builds a {@link WebSecurity}. Not thread-safe; the {@code WebSecurity} it builds is.
      * Nothing is checked until {@link #build()}, which reports every problem at once, except
      * {@code null} arguments, which fail at once.
@@ -860,7 +723,9 @@ public final class WebSecurity {
          * until every other login gets 503. Ten is enough for a user's browsers and devices; a
          * client that logs in for each call (a script without cookies) loses its oldest sessions
          * and should keep its cookie instead. Logging in again with a session of the same user
-         * renews it and does not count as another one.
+         * renews it and does not count as another one. Logins of the same user at the same time
+         * never end each other's sessions while they are handled, so for that moment the user
+         * can have more; once their responses are built the user has at most {@code maximum}.
          *
          * <p>Only logins are counted: a session that the application creates with
          * {@code Sessions.getOrCreate} has no user until {@code login}. The last call wins.

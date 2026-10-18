@@ -927,10 +927,16 @@
   maxPerUser)` (`renew` vid en inloggning), som `WebSecurity.login` anropar. `Sessions` har ett
   paketprivat index från namn till sessioner; en session lämnar det när den ogiltigförklaras, går
   ut, städas bort, överges eller avslutas av gränsen, och en användare utan sessioner finns inte i
-  det (testat). Gränsen tillämpas innan sessionen skapas (så en användare vid sin gräns kan logga
-  in också vid `maxSessions`) och igen när svaret byggs; först då räknas sessionen till
-  användaren, så samtidiga inloggningar av samma användare aldrig avslutar varandras sessioner
-  innan identiteten sparats (50 samtidiga inloggningar med gränsen 1 ger 200 för alla).
+  det (testat). Gränsen tillämpas innan en ny session skapas (så en användare vid sin gräns kan
+  logga in också vid `maxSessions`), och igen när svaret byggs.
+  Sessionen hör till användaren från inloggningen tills den slutar, vad andra förfrågningar med
+  samma cookie än gör (`Sessions.renew` till exempel), och inloggningen **håller** den tills
+  svaret byggs, så samtidiga inloggningar av samma användare aldrig avslutar varandras sessioner
+  innan identiteten sparats (50 samtidiga inloggningar med gränsen 1 ger 200 för alla). Rättat i
+  runda 2: i runda 1 togs sessionen ur indexet under inloggningen, och en samtidig
+  `Sessions.renew` på samma cookie kunde lämna en inloggad session utanför gränsen och utanför
+  bytet av användare för alltid; tester som låter förfrågningar tävla om en cookie 400 gånger
+  visar nu högst gränsen och inga ärvda attribut.
 - **Ny session vid byte av användare (G2).** Har förfrågans session en annan användares identitet
   ger `login` en ny, tom session och den gamla ogiltigförklaras (före skapandet, så bytet fungerar
   vid `maxSessions`). Samma användare eller en anonym session förnyas som förut och behåller
@@ -957,14 +963,19 @@
   och i `modules/security-web/` (inledningen, "Inloggning med session" med nya punkter, ett
   exempel med `maximumSessions` och den nya delen "Cachar" med en tabell, "CSRF-skydd för en SPA",
   två jämförelserader och fem avvikelserader). `requires` och `exports` är oförändrade, ingen
-  reflektion och inga nya filtyper; en ny huvudkällfil i `spola.web` (`CacheControl.java`, paketprivat).
-- Nya tester: 3 testklasser i `spola.web` (`SessionUserTests`, `SessionCacheTests`,
-  `SessionSweepTests`, i `SessionTests`) och `ReviewTests` i `spola.security.web` (`UserLimitTests`,
-  `UserLimitConcurrencyTests`, `UserSwitchTests`, `CacheHeaderTests`, `ReviewReadmeTests`,
-  `ReviewLeakTests`). Befintliga tester som ändrades med avsikt: `CsrfCookieTests` (`max-age=60`
-  på ett svar med `XSRF-TOKEN` blir nu `no-store`) och de tre testerna med 200 samtidiga
-  inloggningar (`LoginConcurrencyTests`, `CsrfConcurrencyTests`, `SchemeConcurrencyTests`), som
-  loggar in varje användare 40 gånger samtidigt och nu får plats för alla sessioner.
+  reflektion och inga nya filtyper; en ny huvudkällfil i var och en av `spola.web` och
+  `spola.security.web` (`CacheControl.java`, paketprivat).
+- Nya tester: 4 testklasser i `spola.web` (`SessionUserTests`, `SessionLoginRaceTests`,
+  `SessionCacheTests`, `SessionSweepTests`, i `SessionTests`) och `UserSessionTests` i
+  `spola.security.web` (`UserLimitTests`, `UserLimitConcurrencyTests`, `UserLimitRaceTests`,
+  `UserSwitchTests`, `CacheHeaderTests`, `CacheControlTests`, `UserSessionReadmeTests`,
+  `UserSessionLeakTests`). `CacheControlTests` kontrollerar att kopian av tolkningen i
+  `spola.security.web` har samma kod som originalet i `spola.web` och kör originalets tabell.
+  Befintliga tester som ändrades med avsikt: `CsrfCookieTests` (`max-age=60` på ett svar med
+  `XSRF-TOKEN` blir nu `no-store`), de tre testerna med 200 samtidiga inloggningar
+  (`LoginConcurrencyTests`, `CsrfConcurrencyTests`, `SchemeConcurrencyTests`), som loggar in varje
+  användare 40 gånger samtidigt och nu får plats för alla sessioner, och `SourceRulesTests` i
+  `spola.security.web` (13 huvudkällfiler i stället för 12: `CacheControl.java`).
 
 ### Versioner och releaser (gjort för hand, utanför loopen)
 - `VERSION` i `Build.java` (nu `0.1.0`) sätts som modulversion i varje jar
@@ -1011,9 +1022,10 @@
     kan fortfarande fylla `maxSessions` (fyndet S1 nämner också den vägen); ett konto kan ha högst
     `maximumSessions`, men många konton kan tillsammans fylla lagringen. Ingen
     hastighetsbegränsning (utanför uppdraget).
-  - **Under samtidiga inloggningar** av samma användare kan användaren ha fler levande sessioner än
-    gränsen, högst gränsen plus antalet inloggningar som hanteras just då; när de är klara är det
-    högst gränsen. Den inloggning som bygger sitt svar sist behåller sin session; webbläsaren
+  - **Medan inloggningar hanteras** kan användaren ha fler levande sessioner än gränsen, högst
+    gränsen plus antalet av användarens inloggningar som hanteras just då (också en enda
+    inloggning från en anonym session, som räknas från inloggningen men tar bort den äldsta först
+    när svaret byggs); när de är klara är det högst gränsen. Den inloggning som bygger sitt svar sist behåller sin session; webbläsaren
     behåller det `Set-Cookie` som kommer sist, så två samtidiga inloggningar med gränsen 1 kan
     lämna webbläsaren med den avslutade sessionens cookie.
   - En inloggning tar bort användarens äldsta sessioner innan den nya skapas; får skapandet ändå

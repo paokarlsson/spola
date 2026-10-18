@@ -21,11 +21,11 @@ import spola.web.Sessions;
  * value in the response's own {@code Set-Cookie}), a log line, an exception message or a
  * {@code toString()} from the new paths: the limit per user, the new session for another user,
  * the 503 at {@code maxSessions} and the {@code Cache-Control} rules. Runs after the other
- * tests of 15a and reads what they recorded through {@link ReviewSupport}.
+ * tests of 15a and reads what they recorded through {@link UserSessionSupport}.
  */
-final class ReviewLeakTests {
+final class UserSessionLeakTests {
 
-    private ReviewLeakTests() {
+    private UserSessionLeakTests() {
     }
 
     /** {@code Set-Cookie: SESSION=<value>} or {@code XSRF-TOKEN=<value>} in a response head. */
@@ -36,7 +36,7 @@ final class ReviewLeakTests {
                 test("a handler that fails after a login that ended the user's oldest session and another user's"
                         + " session logs no id", () -> {
                     var sessions = Sessions.inMemory(SessionOptions.DEFAULT.withMaxSessions(3));
-                    var security = ReviewSupport.loginSecurity(sessions, 1);
+                    var security = UserSessionSupport.loginSecurity(sessions, 1);
                     var routes = Support.router()
                             .post("/login-and-fail", request -> {
                                 WebSecurity.login(request, new Identity(LoginSupport.ANNA, Set.of("USER")));
@@ -48,30 +48,30 @@ final class ReviewLeakTests {
                     var router = LoginExample.router(routes, security, LoginSupport.authenticator());
                     int before = Support.LOG.records().size();
                     try (var server = Support.serve(router)) {
-                        var bertil = ReviewSupport.issued(ReviewSupport.login(server, LoginSupport.BERTIL, null));
-                        var anna = ReviewSupport.issued(ReviewSupport.login(server, LoginSupport.ANNA, null));
+                        var bertil = UserSessionSupport.issued(UserSessionSupport.login(server, LoginSupport.BERTIL, null));
+                        var anna = UserSessionSupport.issued(UserSessionSupport.login(server, LoginSupport.ANNA, null));
                         // as bertil's browser: anna's login over bertil's session, which ends anna's older one too
-                        var failed = ReviewSupport.raw(server, "POST", "/login-and-fail", null,
+                        var failed = UserSessionSupport.raw(server, "POST", "/login-and-fail", null,
                                 LoginSupport.cookie(bertil));
                         assertEquals(500, failed.status());
                         assertEquals(1, LoginSupport.sessionCookies(failed).size(), "the login stands");
-                        assertEquals("401", ReviewSupport.me(server, anna), "anna's older session ended");
-                        assertEquals("401", ReviewSupport.me(server, bertil), "bertil's session ended");
-                        ReviewSupport.text(sessions);
-                        ReviewSupport.text(security);
+                        assertEquals("401", UserSessionSupport.me(server, anna), "anna's older session ended");
+                        assertEquals("401", UserSessionSupport.me(server, bertil), "bertil's session ended");
+                        UserSessionSupport.text(sessions);
+                        UserSessionSupport.text(security);
                     }
                     assertEquals(1, Support.LOG.records().size() - before, "the router logged the failure");
                 }),
                 test("no session id, token or password in a response (but its own Set-Cookie), a log line, an"
                         + " exception message or a toString() of these tests", () -> {
-                    var secrets = new HashSet<String>(ReviewSupport.IDS);
-                    secrets.addAll(ReviewSupport.TOKENS);
-                    var replies = List.copyOf(ReviewSupport.REPLIES);
+                    var secrets = new HashSet<String>(UserSessionSupport.IDS);
+                    secrets.addAll(UserSessionSupport.TOKENS);
+                    var replies = List.copyOf(UserSessionSupport.REPLIES);
                     var lines = Support.LOG.records();
-                    var texts = List.copyOf(ReviewSupport.TEXTS);
+                    var texts = List.copyOf(UserSessionSupport.TEXTS);
                     // the record is not empty: 200 logins in the concurrency test alone
-                    assertTrue(ReviewSupport.IDS.size() > 300, "only " + ReviewSupport.IDS.size() + " ids recorded");
-                    assertTrue(ReviewSupport.TOKENS.size() >= 30, "only " + ReviewSupport.TOKENS.size() + " tokens");
+                    assertTrue(UserSessionSupport.IDS.size() > 300, "only " + UserSessionSupport.IDS.size() + " ids recorded");
+                    assertTrue(UserSessionSupport.TOKENS.size() >= 30, "only " + UserSessionSupport.TOKENS.size() + " tokens");
                     assertTrue(replies.size() > 600, "only " + replies.size() + " replies recorded");
                     assertTrue(texts.stream().anyMatch(t -> t.contains("a user needs at least 1 session")),
                             "the build() problems were recorded");

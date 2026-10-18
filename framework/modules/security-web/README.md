@@ -253,7 +253,9 @@ utan `WWW-Authenticate`, så att webbläsaren inte visar Basic-rutan.
   med den avslutade sessionens cookie är anonym (401 på en skyddad väg). Användare jämförs på
   `Identity.name()`. Ett konto som loggar in om och om igen utan cookie (varje sådan inloggning är
   en ny session) kan alltså bara ha 10 av `maxSessions` och kan inte stänga ute andra användare.
-  En inloggning med användarens egen session förnyar den och räknas inte som en till.
+  En inloggning med användarens egen session förnyar den och räknas inte som en till. Samtidiga
+  inloggningar av samma användare avslutar aldrig varandras sessioner medan de hanteras; när
+  svaren är byggda har användaren högst gränsen.
 - **En annan användare får en ny session.** Har förfrågans session redan en annan användares
   identitet (en delad dator där ingen loggade ut) avslutas den sessionen, och inloggningen får en
   ny, tom session: den nya användaren ser inget av det den förra sparade, och den förras id slutar

@@ -2,7 +2,7 @@ package spola.security.web;
 
 import static spola.security.web.LoginSupport.ANNA;
 import static spola.security.web.LoginSupport.ANNA_PASSWORD;
-import static spola.security.web.ReviewSupport.raw;
+import static spola.security.web.UserSessionSupport.raw;
 import static spola.test.Assertions.assertEquals;
 import static spola.test.Assertions.assertTrue;
 import static spola.test.Tests.parameterized;
@@ -21,7 +21,7 @@ import spola.web.Sessions;
 import spola.web.WebRequest;
 
 /**
- * Uppdrag 15a, G3 and G4 (criteria 6 and 7): a response that sets the session cookie or
+ * Uppdrag 15a (criteria 6 and 7): a response that sets the session cookie or
  * {@code XSRF-TOKEN} never stays storable by a shared cache, and a response to a logged-in
  * request without {@code Cache-Control} gets {@code no-store}, while a {@code Cache-Control} that
  * the handler set stays unless it has {@code public} or {@code s-maxage}. An anonymous response
@@ -155,7 +155,7 @@ final class CacheHeaderTests {
                 parameterized("a logged-in GET whose response sets no cookie (criterion 7)", CASES, c -> {
                     var sessions = LoginExample.sessions(false, InstantSource.system());
                     try (var server = Support.serve(router(sessionSecurity(sessions)))) {
-                        var id = ReviewSupport.issued(raw(server, "POST", path("/login-cached/", CASES.getFirst()), null));
+                        var id = UserSessionSupport.issued(raw(server, "POST", path("/login-cached/", CASES.getFirst()), null));
                         var session = call(server, "GET", path("/private/", c), LoginSupport.cookie(id));
                         assertEquals(List.of(), session.all("Set-Cookie"));
                         assertEquals(c.loggedIn(), session.all("Cache-Control"), "logged in with the session");
@@ -188,7 +188,7 @@ final class CacheHeaderTests {
                         () -> {
                     var sessions = LoginExample.sessions(false, InstantSource.system());
                     try (var server = Support.serve(router(sessionSecurity(sessions)))) {
-                        var id = ReviewSupport.issued(raw(server, "POST", path("/login-cached/", CASES.getFirst()), null));
+                        var id = UserSessionSupport.issued(raw(server, "POST", path("/login-cached/", CASES.getFirst()), null));
                         var missing = raw(server, "GET", "/nowhere", null, LoginSupport.cookie(id));
                         assertEquals(404, missing.status());
                         assertEquals(NO_STORE, missing.all("Cache-Control"));

@@ -189,15 +189,18 @@ import spola.http.Response;
  *   <li>The request's session is renewed as with {@code renew} (the attributes stay) when it has
  *       no user or the same user. When it belongs to <b>another user</b> (a shared computer
  *       without a logout), it is invalidated and a new, empty session is created, so the new
- *       user never sees the previous user's attributes and the old id stops working.</li>
+ *       user never sees the previous user's attributes and the old id stops working. A session
+ *       belongs to the user whose login renewed or created it, from that moment until it ends;
+ *       {@link #renew} and other requests with the session do not change that.</li>
  *   <li>When the user would get more than {@code maxPerUser} sessions, the user's <b>least
  *       recently used</b> sessions end (a use is a request that finds the session, its creation
- *       and its renewal), never the one being logged in. They end before the new session is
- *       created, so a user at the limit can log in even when {@code maxSessions} is reached, and
- *       again when the response is built, which keeps the count within the limit also when the
- *       user logs in from several places at once. Until then the session being logged in is not
- *       counted among the user's sessions, so a concurrent login of the same user can never end
- *       it while the request is handled; the response built last decides which sessions stay.</li>
+ *       and its renewal). They end before a new session is created, so a user at the limit can
+ *       log in even when {@code maxSessions} is reached, and again when the response is built.
+ *       A session being logged in is <b>held</b> until its response is built: no login ends it,
+ *       not even a concurrent login of the same user, so one login never makes another fail.
+ *       Logins of one user at the same time can therefore leave the user above the limit while
+ *       they are handled; once their responses are built the user has at most
+ *       {@code maxPerUser}, and the response built last decides which sessions stay.</li>
  *   <li>The index holds only live sessions: a session leaves it when it is invalidated, expires,
  *       is removed by a cleanup, is abandoned or is ended by the limit, and a user without
  *       sessions has no entry. The index never holds an id.</li>
@@ -229,10 +232,18 @@ public final class Sessions {
         }
     }
 
+    /*
+     * The order of the locks, never the other way round: a request's SessionState, then a user's
+     * UserSessions, then a SessionEntry, then the internal locks of the maps and sets (store,
+     * users, UserSessions.entries). No code takes a UserSessions or a SessionState while it holds
+     * an entry's lock.
+     */
+
     /**
      * The sessions of one user. Its lock is held while the user's sessions are kept within a
-     * limit, so that two logins of the user do not both pick the same oldest session; the set
-     * itself is concurrent, since a session leaves it when it ends, under the session's lock.
+     * limit ({@link #limit}), so that two logins of the user do not both pick the same oldest
+     * session; the set itself is concurrent, since a session joins it when a login holds it and
+     * leaves it when it ends, under the session's lock and without this one.
      */
     private static final class UserSessions {
         final Set<SessionEntry> entries = ConcurrentHashMap.newKeySet();
@@ -402,13 +413,16 @@ public final class Sessions {
      *   <li>A live session that belongs to another user is invalidated (as {@link #invalidate}),
      *       and a new, empty session is created; a session without a user or with this user is
      *       renewed and keeps its attributes. Without a live session a new one is created.</li>
+     *   <li>The session belongs to {@code user} from now on, until it ends, and it is held until
+     *       the response is built: no login ends it before then.</li>
      *   <li>The user's least recently used sessions end until, with this one, there are at most
-     *       {@code maxPerUser}; the one being logged in never ends this way.</li>
-     *   <li>When the response is built, the session is counted among the user's sessions, and the
-     *       limit is applied again (for logins of the same user at the same time).</li>
+     *       {@code maxPerUser}: before a new session is created, and again when the response is
+     *       built (for logins of the same user at the same time). A held session never ends this
+     *       way.</li>
      * </ol>
      * Names are compared exactly ({@link String#equals}). Calling it again in the same request
-     * for the same user changes nothing more; for another user it starts another new session.
+     * for the same user renews the id once more (the attributes stay); for another user it
+     * starts another new session.
      *
      * @param request    the request, as a handler or a filter inside the session filter gets it
      * @param user       who logs in, such as {@code identity.name()}
@@ -627,7 +641,7 @@ public final class Sessions {
         }
     }
 
-    /** Counts {@code entry} among {@code user}'s sessions; called under the entry's lock. */
+    /** Counts {@code entry} among {@code user}'s sessions; under the entry's lock. */
     void join(String user, SessionEntry entry) {
         users.compute(user, (name, sessions) -> {
             var result = sessions == null ? new UserSessions() : sessions;
@@ -645,10 +659,11 @@ public final class Sessions {
     }
 
     /**
-     * Ends {@code user}'s least recently used sessions, never {@code keep}, until the user has at
-     * most {@code max} (with {@code keep}, if it is one of them). Two calls for the same user take
-     * turns, so they never end more than needed between them; a session used while it is being
-     * picked is not ended, and the oldest is looked for again.
+     * Ends {@code user}'s least recently used sessions until the user has at most {@code max}
+     * (counting {@code keep} and the sessions held for logins, if they are the user's), but never
+     * {@code keep} or a held one. Two calls for the same user take turns, so they never end more
+     * than needed between them; a session used or held while it is being picked is not ended,
+     * and the oldest is looked for again.
      */
     void limit(String user, int max, SessionEntry keep) {
         var sessions = users.get(user);
@@ -659,19 +674,19 @@ public final class Sessions {
             while (true) {
                 SessionEntry oldest = null;
                 long oldestUse = Long.MAX_VALUE;
-                int count = 0;
+                int live = 0;
                 for (var entry : sessions.entries) {
-                    long use = entry.lastUseAs(user);
+                    long use = entry.useOrderAs(user);
                     if (use < 0) {
                         continue; // ended, or no longer the user's
                     }
-                    count++;
-                    if (entry != keep && use < oldestUse) {
+                    live++;
+                    if (entry != keep && use < oldestUse && !entry.held()) {
                         oldest = entry;
                         oldestUse = use;
                     }
                 }
-                if (count <= max || oldest == null) {
+                if (live <= max || oldest == null) {
                     return;
                 }
                 oldest.endIfUnusedSince(user, oldestUse);

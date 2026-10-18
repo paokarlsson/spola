@@ -27,7 +27,7 @@ import spola.http.Response;
 import spola.test.Suite;
 
 /**
- * Uppdrag 15a, G1 and G2 in {@code spola.web}: {@link Sessions#renewFor} keeps at most a number
+ * Uppdrag 15a in {@code spola.web}: {@link Sessions#renewFor} keeps at most a number
  * of sessions per user by ending the least recently used, gives another user a new, empty
  * session, and keeps an index from names to sessions that is empty once the sessions are gone.
  */
@@ -166,6 +166,23 @@ final class SessionUserTests {
                         assertEquals("found:1", send(server, "GET", "/find", cookie(again)).body());
                     }
                 }),
+                test("a login with an anonymous session (a cart) when the user is at the limit keeps the cart's values"
+                        + " and ends the user's least recently used session", () -> {
+                    var sessions = Sessions.inMemory(SessionOptions.DEFAULT);
+                    try (var server = Support.serve(app(sessions, 2))) {
+                        var a1 = login(server, "anna");
+                        var a2 = login(server, "anna");
+                        assertEquals("anna", whoami(server, a1)); // a2 is now the least recently used
+                        var cart = issued(send(server, "POST", "/count"));
+                        var renewed = issued(send(server, "POST", "/login/anna", cookie(cart)));
+                        assertEquals("found:1", send(server, "GET", "/find", cookie(renewed)).body());
+                        assertEquals(2, sessions.sessionsOf("anna"));
+                        assertEquals(2, sessions.size());
+                        assertEquals("nobody", whoami(server, a2), "the least recently used ended");
+                        assertEquals("anna", whoami(server, a1));
+                        assertEquals("anna", whoami(server, renewed));
+                    }
+                }),
                 test("another user's session ends before the new one is created, so the switch works at maxSessions;"
                         + " a user at the limit can also log in there", () -> {
                     var sessions = Sessions.inMemory(SessionOptions.DEFAULT.withMaxSessions(2));
@@ -201,7 +218,7 @@ final class SessionUserTests {
                         assertEquals(4, sessions.users());
                         assertEquals(2, sessions.sessionsOf("david"));
                         assertEquals(400, failingLogin(server, "erik", null).status());
-                        assertEquals(0, sessions.sessionsOf("erik"), "the abandoned login never counted");
+                        assertEquals(0, sessions.sessionsOf("erik"), "the abandoned login's session left the index");
                         assertEquals(5, sessions.size(), "and its session is gone");
                         assertEquals("bye", send(server, "POST", "/logout", cookie(loggedOut)).body());
                         assertEquals(0, sessions.sessionsOf("bertil"));

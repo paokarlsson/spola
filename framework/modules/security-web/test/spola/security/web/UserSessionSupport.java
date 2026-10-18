@@ -1,17 +1,11 @@
 package spola.security.web;
 
-import java.io.ByteArrayOutputStream;
 import java.io.IOException;
-import java.net.Socket;
-import java.net.SocketException;
 import java.nio.charset.StandardCharsets;
-import java.util.ArrayList;
-import java.util.List;
 import java.util.Queue;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
-import java.util.regex.Pattern;
 import spola.http.HttpServer;
 import spola.http.Response;
 import spola.web.AttributeKey;
@@ -19,20 +13,20 @@ import spola.web.Router;
 import spola.web.Sessions;
 
 /**
- * Helpers for the tests of uppdrag 15a (the fixes for G1–G5 of the security review): the
- * example's rules with a chosen limit per user, a router with a few extra paths, requests over a
- * raw socket, and the record that {@link ReviewLeakTests} reads at the end: every reply, every
- * session id and CSRF token seen in a {@code Set-Cookie} or made up, and every exception message
- * and {@code toString()} the tests looked at.
+ * Helpers for the tests of the sessions per user, the new session for another user and the
+ * {@code Cache-Control} rules (15a): the example's rules with a chosen limit per user, a router
+ * with a few extra paths, requests over a raw socket, and the record that
+ * {@link UserSessionLeakTests} reads at the end: every reply, every session id and CSRF token
+ * seen in a {@code Set-Cookie} or made up, and every exception message and {@code toString()}
+ * the tests looked at.
  *
- * <p>Every reply also goes to {@link Support#REPLIES}, so {@link LeakTests} checks it, as a copy
- * whose own {@code SESSION} and {@code XSRF-TOKEN} values are replaced by
- * {@link CsrfSupport#OWN_VALUE} (the reason is in {@link CsrfSupport}: hundreds of random ids
- * would sometimes hold a four-character marker of {@code LeakTests}).
+ * <p>The requests go through {@link CsrfSupport#raw}, which also puts every reply in
+ * {@link Support#REPLIES} for {@link LeakTests}, with the values of the reply's own
+ * {@code SESSION} and {@code XSRF-TOKEN} cookies masked (the reason is in {@link CsrfSupport}).
  */
-final class ReviewSupport {
+final class UserSessionSupport {
 
-    private ReviewSupport() {
+    private UserSessionSupport() {
     }
 
     /** A value the open path {@code /note} stores in the session. */
@@ -48,9 +42,6 @@ final class ReviewSupport {
     static final Queue<Support.Reply> REPLIES = new ConcurrentLinkedQueue<>();
     /** Every exception message and {@code toString()} these tests looked at. */
     static final Queue<String> TEXTS = new ConcurrentLinkedQueue<>();
-
-    private static final Pattern OWN_LINE = Pattern.compile("(?im)^(Set-Cookie:\\s*(?:XSRF-TOKEN|SESSION)=)([^;\\r\\n]+)");
-    private static final Pattern OWN_FIELD = Pattern.compile("^((?:XSRF-TOKEN|SESSION)=)([^;]+)");
 
     /** {@code String.valueOf(value)}, recorded. */
     static String text(Object value) {
@@ -75,7 +66,7 @@ final class ReviewSupport {
         return id;
     }
 
-    /** Records a reply: its ids and tokens, the reply itself, and a masked copy in {@link Support#REPLIES}. */
+    /** Records a reply for {@link UserSessionLeakTests}: the reply, and the ids and tokens it sets. */
     static void keep(Support.Reply reply) {
         for (var setCookie : reply.all("Set-Cookie")) {
             var value = CsrfSupport.valueOf(setCookie);
@@ -89,14 +80,6 @@ final class ReviewSupport {
             }
         }
         REPLIES.add(reply);
-        var head = OWN_LINE.matcher(reply.head()).replaceAll("$1" + CsrfSupport.OWN_VALUE);
-        var headers = new ArrayList<String[]>();
-        for (var field : reply.headers()) {
-            headers.add(field[0].equalsIgnoreCase("Set-Cookie")
-                    ? new String[] {field[0], OWN_FIELD.matcher(field[1]).replaceFirst("$1" + CsrfSupport.OWN_VALUE)}
-                    : field);
-        }
-        Support.recordReply(new Support.Reply(reply.status(), head, List.copyOf(headers), reply.body()));
     }
 
     // ---- the security ----------------------------------------------------------------------------
@@ -104,7 +87,7 @@ final class ReviewSupport {
     /**
      * The rules of {@link LoginExample#security} with at most {@code maximum} sessions per user.
      * The concurrency tests of 11b–13b log in each of five users 40 times at once and need every
-     * session to stay; since 15a the default of 10 ends the oldest.
+     * session to stay; with the default of 10 per user the oldest end.
      */
     static WebSecurity loginSecurity(Sessions sessions, int maximum) {
         return WebSecurity.builder()
@@ -150,25 +133,12 @@ final class ReviewSupport {
 
     /**
      * One request on a new connection with {@code Connection: close}, {@code headers} (each
-     * {@code Name: value}) and an optional body ({@code Content-Length} for {@code POST}); the
-     * reply is recorded.
+     * {@code Name: value}) and an optional body, as {@link CsrfSupport#raw} sends it; the reply
+     * is recorded.
      */
     static Support.Reply raw(HttpServer server, String method, String target, String body, String... headers)
             throws IOException {
-        var bytes = body == null ? new byte[0] : body.getBytes(StandardCharsets.UTF_8);
-        var head = new StringBuilder(method).append(' ').append(target)
-                .append(" HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n");
-        for (var header : headers) {
-            head.append(header).append("\r\n");
-        }
-        if (body != null || method.equals("POST")) {
-            head.append("Content-Length: ").append(bytes.length).append("\r\n");
-        }
-        head.append("\r\n");
-        var request = new ByteArrayOutputStream();
-        request.writeBytes(head.toString().getBytes(StandardCharsets.ISO_8859_1));
-        request.writeBytes(bytes);
-        var reply = exchange(server.port(), request.toByteArray());
+        var reply = CsrfSupport.raw(server, method, target, body, headers);
         keep(reply);
         return reply;
     }
@@ -199,38 +169,5 @@ final class ReviewSupport {
     /** The body {@code /api/auth/me} gives {@code name}. */
     static String named(String name) {
         return "{\"username\":\"" + name + "\"}";
-    }
-
-    /** Sends {@code bytes} and reads the one response until the server closes (unrecorded). */
-    private static Support.Reply exchange(int port, byte[] bytes) throws IOException {
-        var all = new ByteArrayOutputStream();
-        try (var socket = new Socket(Support.LOCALHOST, port)) {
-            socket.setSoTimeout(20_000);
-            socket.getOutputStream().write(bytes);
-            socket.getOutputStream().flush();
-            var buffer = new byte[8_192];
-            try {
-                int n;
-                while ((n = socket.getInputStream().read(buffer)) >= 0) {
-                    all.write(buffer, 0, n);
-                }
-            } catch (SocketException e) {
-                // reset after the response: closed as well
-            }
-        }
-        var text = new String(all.toByteArray(), StandardCharsets.ISO_8859_1);
-        int end = text.indexOf("\r\n\r\n");
-        if (end < 0) {
-            throw new IOException("no complete response");
-        }
-        var head = text.substring(0, end);
-        var lines = head.split("\r\n");
-        var headers = new ArrayList<String[]>();
-        for (int i = 1; i < lines.length; i++) {
-            int colon = lines[i].indexOf(':');
-            headers.add(new String[] {lines[i].substring(0, colon), lines[i].substring(colon + 1).strip()});
-        }
-        var body = new String(all.toByteArray(), end + 4, all.size() - end - 4, StandardCharsets.UTF_8);
-        return new Support.Reply(Integer.parseInt(lines[0].substring(9, 12)), head, List.copyOf(headers), body);
     }
 }

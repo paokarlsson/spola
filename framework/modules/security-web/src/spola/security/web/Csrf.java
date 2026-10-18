@@ -392,14 +392,14 @@ public final class Csrf {
         /**
          * {@code response} with a new token (with {@code Secure} also when the request was
          * {@code https}) if the request had no well-formed cookie or a new one was asked for, and
-         * then never storable by a shared cache ({@link WebSecurity.CacheControl#withoutSharedCache}).
+         * then never storable by a shared cache ({@link CacheControl#withoutSharedCache}).
          */
         synchronized Response finish(Response response) {
             finished = true;
             if (hasCookie && !renew) {
                 return response;
             }
-            return WebSecurity.CacheControl.withoutSharedCache(Responses.withCookie(response, protection.newCookie(https)));
+            return CacheControl.withoutSharedCache(Responses.withCookie(response, protection.newCookie(https)));
         }
 
         /** The rest of the chain threw: no response will carry a token. */

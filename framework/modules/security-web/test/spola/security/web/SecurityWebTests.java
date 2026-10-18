@@ -30,7 +30,7 @@ public final class SecurityWebTests {
                 SessionLoginTests.tests(),
                 CsrfTests.tests(),
                 ForwardedSecurityTests.tests(),
-                ReviewTests.tests(),
+                UserSessionTests.tests(),
                 ReadmeTests.tests(),
                 LeakTests.tests())
                 .timeout(Duration.ofSeconds(120));

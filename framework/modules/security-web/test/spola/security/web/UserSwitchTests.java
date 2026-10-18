@@ -2,11 +2,11 @@ package spola.security.web;
 
 import static spola.security.web.LoginSupport.ANNA;
 import static spola.security.web.LoginSupport.BERTIL;
-import static spola.security.web.ReviewSupport.issued;
-import static spola.security.web.ReviewSupport.login;
-import static spola.security.web.ReviewSupport.me;
-import static spola.security.web.ReviewSupport.named;
-import static spola.security.web.ReviewSupport.raw;
+import static spola.security.web.UserSessionSupport.issued;
+import static spola.security.web.UserSessionSupport.login;
+import static spola.security.web.UserSessionSupport.me;
+import static spola.security.web.UserSessionSupport.named;
+import static spola.security.web.UserSessionSupport.raw;
 import static spola.test.Assertions.assertEquals;
 import static spola.test.Assertions.assertNotEquals;
 import static spola.test.Tests.suite;
@@ -20,7 +20,7 @@ import spola.web.SessionOptions;
 import spola.web.Sessions;
 
 /**
- * Uppdrag 15a, G2 (criterion 5): a login as another user over a session that holds a login
+ * Uppdrag 15a (criterion 5): a login as another user over a session that holds a login
  * (a shared computer without a logout) gets a new, empty session; the same user keeps the
  * session's values.
  */
@@ -30,7 +30,7 @@ final class UserSwitchTests {
     }
 
     static String note(HttpServer server, String id) throws Exception {
-        var reply = ReviewSupport.send(server, "GET", "/note", id);
+        var reply = UserSessionSupport.send(server, "GET", "/note", id);
         return reply.status() == 200 ? reply.body() : String.valueOf(reply.status());
     }
 
@@ -44,7 +44,7 @@ final class UserSwitchTests {
                 test("anna stores a value; bertil logs in from the same client without a logout and does not see"
                         + " it; anna's old id stops working; a login of the same user keeps the values", () -> {
                     var sessions = LoginExample.sessions(false, InstantSource.system());
-                    try (var server = Support.serve(ReviewSupport.router(LoginExample.security(sessions)))) {
+                    try (var server = Support.serve(UserSessionSupport.router(LoginExample.security(sessions)))) {
                         var anna = issued(login(server, ANNA, null));
                         store(server, anna, "anna's private note");
                         assertEquals("anna's private note", note(server, anna));
@@ -78,7 +78,7 @@ final class UserSwitchTests {
                 test("the switch frees the previous user's session first, so it works at maxSessions, and a failed"
                         + " login leaves the session as it was", () -> {
                     var sessions = Sessions.inMemory(SessionOptions.DEFAULT.withMaxSessions(1));
-                    try (var server = Support.serve(ReviewSupport.router(LoginExample.security(sessions)))) {
+                    try (var server = Support.serve(UserSessionSupport.router(LoginExample.security(sessions)))) {
                         var anna = issued(login(server, ANNA, null));
                         store(server, anna, "anna's note");
                         var wrong = raw(server, "POST", "/api/auth/login",

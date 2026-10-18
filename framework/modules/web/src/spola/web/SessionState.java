@@ -12,9 +12,10 @@ import spola.http.Response;
  * the request the filter got was {@code https} (fixed when the filter starts; nothing later in
  * the chain changes it). The new id lives here only until the filter has built the response.
  *
- * <p>After {@link #renewFor} it also holds the user the session is for and their limit: the
- * session is counted among the user's sessions only when the filter builds the response, so
- * that no other login of the same user can end it in the meantime (see {@link Sessions#renewFor}).
+ * <p>After {@link #renewFor} it also holds the session's entry for the login until the filter
+ * builds the response (or abandons the request): the session counts among the user's sessions at
+ * once, but no other login of the same user can end it in the meantime, and the user's limit is
+ * applied again when the hold ends (see {@link Sessions#renewFor}).
  *
  * <p>Synchronized, since a {@link WebRequest} may be handed to other threads.
  */
@@ -27,10 +28,12 @@ final class SessionState {
     private String issued;
     private boolean cleared;
     private boolean finished;
-    /** The user {@link #renewFor} renewed {@link #session} for, or {@code null}; counted at {@link #finish}. */
-    private String pendingUser;
-    /** The most sessions {@link #pendingUser} may have. */
-    private int pendingLimit;
+    /** The entry {@link #renewFor} holds for a login until the response is built, or {@code null}. */
+    private SessionEntry held;
+    /** The user {@link #held} is held for. */
+    private String heldUser;
+    /** The most sessions {@link #heldUser} may have. */
+    private int heldLimit;
 
     /**
      * @param session the session the filter found for the request, or {@code null}
@@ -67,26 +70,45 @@ final class SessionState {
     }
 
     /**
-     * {@link #renew} for {@code user}: a session of another user ends first and a new, empty one
-     * is created; the user's least recently used sessions end so that, with this one, they have
-     * at most {@code limit}; and this one is counted among them when the response is built.
+     * {@link #renew} for a login of {@code user}: a session of another user ends first and a new,
+     * empty one is created; the session is held for the login until the response is built; and
+     * the user's least recently used sessions end so that, with this one, they have at most
+     * {@code limit}, before a new session is created and again when the hold ends.
      */
     synchronized Session renewFor(String user, int limit) {
         requireOpen("renewFor");
         var current = current();
-        if (current != null) {
-            var before = pendingUser != null ? pendingUser : current.user();
-            if (before != null && !before.equals(user)) {
-                invalidate(); // another user's session: its attributes are not the new user's
-            } else {
-                current.entry().leave(current); // not among the user's sessions until the response is built
+        var before = current == null ? null : current.user();
+        if (before != null && !before.equals(user)) {
+            invalidate(); // another user's session: its attributes are not the new user's
+        } else if (current != null) {
+            var id = current.entry().renewFor(current, user); // renewed and held in one step
+            if (id != null) {
+                issued = id;
+                cleared = false;
+                return recordHold(current, user, limit);
             }
+            session = null; // renewed or ended by another request meanwhile
         }
-        owner.limit(user, limit - 1, null); // room for this one, also under maxSessions
-        var renewed = renew();
-        pendingUser = user;
-        pendingLimit = limit;
-        return renewed;
+        owner.limit(user, limit - 1, null); // room for a new session, also under maxSessions
+        var created = create("renewFor");
+        return created.entry().hold(created, user) ? recordHold(created, user, limit) : created;
+    }
+
+    /**
+     * Notes that this request holds {@code view}'s entry for {@code user}'s login until
+     * {@link #release}. An earlier hold of the request ends at once: its entry is this one, or it
+     * has ended (another user's session, or one that was invalidated).
+     */
+    private Session recordHold(Session view, String user, int limit) {
+        var previous = held;
+        held = view.entry();
+        heldUser = user;
+        heldLimit = limit;
+        if (previous != null) {
+            previous.release();
+        }
+        return view;
     }
 
     synchronized void invalidate() {
@@ -97,7 +119,6 @@ final class SessionState {
         current.invalidate();
         session = null;
         issued = null;
-        pendingUser = null;
         cleared = !finished;
     }
 
@@ -105,13 +126,12 @@ final class SessionState {
      * The response with the outcome for the cookie: the new id, the removal, or nothing, with
      * {@code Secure} also when the request the filter got was {@code https}.
      * A response that gets a {@code Set-Cookie} here never stays storable by a shared cache
-     * ({@link CacheControl#withoutSharedCache}). A session renewed with {@link #renewFor} is
-     * counted among its user's sessions now, and their least recently used ones beyond the
-     * limit end.
+     * ({@link CacheControl#withoutSharedCache}). A session held for a login ({@link #renewFor})
+     * is released now, and the user's least recently used sessions beyond the limit end.
      */
     synchronized Response finish(Response response) {
         finished = true;
-        countPending();
+        release();
         ResponseCookie cookie = null;
         if (issued != null) {
             cookie = owner.sessionCookie(issued, https);
@@ -126,20 +146,26 @@ final class SessionState {
         return CacheControl.withoutSharedCache(Responses.withCookie(response, cookie));
     }
 
-    /** Counts the session that {@link #renewFor} renewed among its user's sessions, and keeps them within the limit. */
-    private void countPending() {
-        var user = pendingUser;
-        pendingUser = null;
-        var current = current();
-        if (user != null && current != null && current.entry().join(current, user)) {
-            owner.limit(user, pendingLimit, current.entry());
+    /**
+     * Ends the hold of {@link #renewFor}, if any, and keeps the user within the limit with the
+     * session: it may have joined the user's sessions without a new one being created (an
+     * anonymous session), and logins of the same user that were handled at the same time could
+     * not end each other's sessions.
+     */
+    private void release() {
+        var entry = held;
+        if (entry == null) {
+            return;
         }
+        held = null;
+        entry.release();
+        owner.limit(heldUser, heldLimit, entry);
     }
 
     /**
      * The rest of the chain threw (a request body failure or an {@link Error}), so no response
      * will carry a new id: a session created or renewed during this request can never be
-     * reached, and it ends now.
+     * reached, and it ends now. A hold for a login ends too.
      */
     synchronized void abandon() {
         finished = true;
@@ -149,7 +175,7 @@ final class SessionState {
         }
         issued = null;
         cleared = false;
-        pendingUser = null;
+        release();
     }
 
     /** The request's session if it is still visible to the request, else {@code null}. */
@@ -166,7 +192,6 @@ final class SessionState {
         session = created.session();
         issued = created.id();
         cleared = false;
-        pendingUser = null;
         return session;
     }
 

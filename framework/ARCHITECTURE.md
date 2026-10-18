@@ -3663,14 +3663,15 @@ delad cache (G3, G4), och städningen vid gränsen körs av en förfrågan åt g
 | `WebSecurity.Builder` (`spola.security.web`) | ny `maximumSessions(int)`, standard 10; `build()` rapporterar ett värde under 1 och ett anrop utan `sessions(...)` |
 | `WebSecurity` | `login` anropar `Sessions.renewFor(request, identity.name(), maximumSessions)`; filtret sätter `Cache-Control` på inloggade svar |
 
-Interna tillägg: `CacheControl` i `spola.web` (regeln för svar med sessionscookien) och den
-nästlade `WebSecurity.CacheControl` i `spola.security.web` (samma regel för `XSRF-TOKEN` och
-regeln för inloggade svar); i `Sessions` ett index `users` från namn till sessioner
-(`UserSessions`), en räknare `uses` för ordningen mellan användningar och flaggan `sweeping`; i
-`SessionEntry` fälten `lastUse` och `user`; i `SessionState` fälten `pendingUser` och
-`pendingLimit`. `requires` och `exports` är oförändrade i alla moduler, ingen reflektion och inga
-nya filtyper. `SourceRulesTests` i `spola.security.web` räknar fortfarande 12 huvudkällfiler,
-eftersom regeln där ligger som nästlad klass.
+Interna tillägg: `CacheControl` i `spola.web` (regeln för svar med sessionscookien) och
+`CacheControl` i `spola.security.web` (samma kod, och regeln för inloggade svar), båda
+paketprivata; i `Sessions` ett index `users` från namn till sessioner (`UserSessions`), en
+räknare `uses` för ordningen mellan användningar och flaggan `sweeping`; i `SessionEntry` fälten
+`useOrder` (platsen i ordningen), `user` (användaren sessionen är inloggad för) och `logins`
+(inloggningar som håller den); i `SessionState` fälten `held`, `heldUser` och `heldLimit`.
+`requires` och `exports` är oförändrade i alla moduler, ingen reflektion och inga nya filtyper.
+`SourceRulesTests` i `spola.security.web` räknar 13 huvudkällfiler i stället för 12 (den nya
+`CacheControl.java`).
 
 ### Beslut
 
@@ -3708,26 +3709,43 @@ eftersom regeln där ligger som nästlad klass.
   `Instant` inte gör. Identiteter jämförs på namn (`Identity.name()`, exakt), som uppdraget säger;
   `Authenticator` lägger användarens lagrade namn i identiteten, så skiftlägesvarianter av ett
   inloggningsnamn blir inte olika användare.
-- **Gränsen tillämpas två gånger: före och efter.** `renewFor` avslutar först användarens äldsta
-  sessioner tills det finns plats för en till (gränsen minus ett), innan sessionen skapas eller
-  förnyas. Då kan en användare vid sin gräns logga in också när `maxSessions` är nådd, och i det
-  vanliga fallet blir användarens sessioner aldrig fler än gränsen, inte ens en kort stund. När
-  svaret byggs räknas sessionen till användaren och gränsen tillämpas igen, med sessionen själv
-  undantagen, eftersom samtidiga inloggningar av samma användare kan ha lagt till sessioner
-  under tiden. Två tillämpningar för samma användare turas om (användarens `UserSessions` är
-  låset), så de väljer aldrig båda bort samma session och avslutar aldrig fler än nödvändigt.
-  En session som används medan den väljs avslutas inte; den äldsta söks igen.
-- **Sessionen räknas till användaren först när svaret byggs.** Under inloggningen ligger den
-  inte i indexet (en session som redan var användarens tas ur det), så ingen samtidig inloggning
-  av samma användare kan avsluta den innan `WebSecurity.login` har sparat identiteten i den. Med
-  sessionen i indexet direkt fick ett test med 50 samtidiga inloggningar och gränsen 1 (en
-  dubbelklickad inloggningsknapp, många gånger om) 500 när `put` mötte en session som en annan
-  inloggning just avslutat. Nu ger varje inloggning 200, och den som byggde sitt svar sist har
+- **Gränsen tillämpas före och efter.** Innan `renewFor` skapar en ny session avslutar den
+  användarens äldsta sessioner tills det finns plats för en till (gränsen minus ett). Då kan en
+  användare vid sin gräns logga in också när `maxSessions` är nådd, och en ny session gör aldrig
+  användarens sessioner fler än gränsen, inte ens en kort stund. Gränsen tillämpas igen när
+  inloggningens hållning släpps (se nästa punkt), när svaret byggs, med sessionen själv undantagen:
+  en anonym session som förnyades för användaren har då lagts till utan att en ny skapades, och
+  samtidiga inloggningar av samma användare kan ha lagt till sessioner under tiden. En inloggning
+  med användarens egen session tar inte bort någon annan, eftersom den redan räknas. Två tillämpningar för samma användare
+  turas om (användarens `UserSessions` är låset), så de väljer aldrig båda bort samma session och
+  avslutar aldrig fler än nödvändigt. En session som används eller hålls medan den väljs avslutas
+  inte; den äldsta söks igen.
+- **Sessionen hör till användaren från inloggningen, och inloggningen håller den tills svaret
+  byggs.** `SessionEntry.user` sätts när en inloggning förnyar sessionen, i samma steg och under
+  samma lås som det nya id:t (`SessionEntry.renewFor`), eller direkt efter att inloggningen skapat
+  den, innan någon annan förfrågan kan känna till id:t. Fältet ändras sedan aldrig medan sessionen
+  lever; det töms bara när sessionen slutar (`end()`). En session som har en användares
+  inloggning ligger därför alltid i användarens index, vad andra förfrågningar med samma cookie
+  än gör. Samtidigt **hålls** sessionen (`SessionEntry.logins`) tills inloggningens svar byggs
+  eller förfrågan överges: `limit` räknar en hållen session men avslutar den aldrig. Det ger de
+  två egenskaperna som behövs: ingen samtidig inloggning av samma användare kan avsluta sessionen
+  innan `WebSecurity.login` har sparat identiteten i den (ett test med 50 samtidiga inloggningar
+  och gränsen 1, en dubbelklickad inloggningsknapp många gånger om, ger 200 för alla; utan
+  hållningen fick det 500 när `put` mötte en session som en annan inloggning just avslutat), och
+  när alla inloggningar är klara har användaren högst gränsen. Den som byggde sitt svar sist har
   kvar sin session, vilket oftast är den cookie som webbläsaren behåller. Följden: under
   pågående inloggningar kan en användare ha fler levande sessioner än gränsen, högst gränsen plus
-  antalet inloggningar som hanteras samtidigt; när de är klara är det högst gränsen (testat med
-  200 virtuella trådar). En förfrågan som överges (ett fel i kroppen som går förbi filtret)
-  räknas aldrig, och dess session tas bort som förut.
+  antalet inloggningar som hanteras samtidigt.
+  - **Varför inte räkna sessionen först när svaret byggs** (rundan före den här): då togs en
+    session som redan var användarens ur indexet medan inloggningen hanterades. Förnyade en
+    samtidig förfrågan samma session med `Sessions.renew` under tiden, blev inloggningens vy
+    inaktuell och inloggningen skapade en annan session; den första låg kvar inloggad men utanför
+    indexet för alltid, utanför gränsen och "anonym" för bytet av användare. En prob fick på så
+    vis 77 fungerande sessioner för ett konto med gränsen 10. Med användaren kvar på sessionen
+    och hållningen i stället för urtagningen finns inget fönster där sessionen saknar ägare.
+  - En förfrågan som överges (ett fel i kroppen som går förbi filtret) släpper sin hållning, och
+    dess session tas bort som förut. Varje hållning släpps exakt en gång (`SessionState.release`
+    i `finish` och `abandon`), och gränsen tillämpas igen när den släpps.
 - **Indexet läcker inte.** Varje väg till att en session slutar går genom `SessionEntry.end()`:
   ogiltigförklaring, utgång vid uppslagning eller städning, en övergiven förfrågan och gränsen
   per användare. `end()` tar bort sessionen ur lagringen och ur användarens `UserSessions`, och en
@@ -3736,12 +3754,15 @@ eftersom regeln där ligger som nästlad klass.
   Ett test visar att indexet är tomt när alla sessioner gått ut, loggats ut, städats bort,
   övergetts eller avslutats av gränsen.
 - **Låsordningen.** Förfrågans `SessionState` före användarens `UserSessions` före en
-  `SessionEntry` före kartornas interna lås. Ingen kod tar `UserSessions` eller `SessionState`
-  med en posts lås, och `limit` läser posternas räknare under deras egna lås. Medlemmarna ligger i
-  en samtidig mängd, så `end()` kan ta bort en post under postens lås utan användarens lås.
+  `SessionEntry` före kartornas och mängdernas interna lås (`store`, `users`,
+  `UserSessions.entries`); ordningen står en gång, i en kommentar i `Sessions`. Ingen kod tar
+  `UserSessions` eller `SessionState` med en posts lås, och `limit` läser posternas ordning och
+  hållning under deras egna lås. Medlemmarna ligger i en samtidig mängd, så en post kan gå med
+  (när en inloggning håller den) och ta bort sig (`end()`) under postens lås utan användarens.
 - **Ny, tom session när en annan användare loggar in (G2).** Hör förfrågans session till en
   annan användare (den har loggats in som en annan med `renewFor`, vilket `WebSecurity.login`
-  alltid gör) ogiltigförklaras den och en ny skapas, så den nya användaren aldrig ser den förras
+  alltid gör; frågan avgörs av `SessionEntry.user`, som en samtidig inloggning aldrig tömmer)
+  ogiltigförklaras den och en ny skapas, så den nya användaren aldrig ser den förras
   attribut och den förras id slutar gälla. Regeln ligger i `renewFor`, där användaren redan är
   känd, i stället för att `WebSecurity` läser identiteten ur sessionen och ogiltigförklarar
   själv: samma skydd gäller då också en app som använder `spola.web` direkt, och "annan
@@ -3785,10 +3806,11 @@ eftersom regeln där ligger som nästlad klass.
 - **Två kopior av tolkningen.** Regeln för sessionscookien behövs i `spola.web`, där `Sessions`
   används utan säkerhet, och regeln för `XSRF-TOKEN` och inloggade svar i `spola.security.web`.
   Modulerna delar ingen intern kod, och en publik hjälpmetod i `spola.web` bara för detta hade
-  vidgat API:t (samma val som `Text` och `isWellFormed`, som finns i båda modulerna). Kopian i
-  `spola.security.web` ligger som nästlad klass i `WebSecurity`, så att antalet huvudkällfiler
-  (som `SourceRulesTests` räknar) är oförändrat, och båda kopiorna testas genom en riktig server
-  med en tabell av värden.
+  vidgat API:t (samma val som `Text` och `isWellFormed`, som finns i båda modulerna). Kopian är
+  en egen paketprivat klass, `CacheControl` i `spola.security.web`, med samma kod som originalet
+  och en metod till (`forIdentity`). `CacheControlTests` jämför de två filernas kod (utan
+  kommentarer, `package`-raden och `forIdentity`) och kör originalets tabell med 24 värden mot
+  kopian, så att de inte kan glida isär obemärkt; båda testas också genom en riktig server.
 - **En städning åt gången vid gränsen (G5).** En `AtomicBoolean` med `compareAndSet` skyddar
   `sweep`. En förfrågan som nekas vid gränsen och hittar en städning igång svarar 503 direkt, utan
   att gå igenom lagringen själv, som uppdraget säger; den som får köra städar och försöker sedan
@@ -3802,20 +3824,29 @@ eftersom regeln där ligger som nästlad klass.
   testerna med 200 samtidiga inloggningar av fem användare (`LoginConcurrencyTests`,
   `CsrfConcurrencyTests` och `SchemeConcurrencyTests`) loggar in varje användare 40 gånger
   samtidigt och väntade sig att alla sessioner levde; med standardgränsen 10 avslutas de äldsta,
-  så de använder nu exemplets regler med plats för alla (`ReviewSupport.loginSecurity` och
-  `csrfSecurity`). Inget annat i dem ändrades.
+  så de använder nu exemplets regler med plats för alla (`UserSessionSupport.loginSecurity` och
+  `csrfSecurity`). Inget annat i dem ändrades. `SourceRulesTests` i `spola.security.web` räknar
+  13 huvudkällfiler i stället för 12, eftersom `CacheControl.java` är en egen fil.
 - **Tester.** I `spola.web` (`SessionUserTests`, `SessionCacheTests` och `SessionSweepTests`,
   registrerade i `SessionTests` före läcktestet): gränsen och ordningen mellan användningar,
   inloggning med egen cookie, bytet av användare, gränsen vid `maxSessions`, att indexet blir tomt,
   felaktiga argument, 200 virtuella trådar med fem användare, 50 samtidiga inloggningar med
-  gränsen 1, 24 fall av `Cache-Control` när sessionen skapas, förnyas och tas bort, och städningen
-  med flaggan hållen av testet och med 200 samtidiga nekade förfrågningar. I `spola.security.web`
-  (`ReviewTests`, registrerad före `ReadmeTests` och `LeakTests`): README-exemplet med
-  standardgränsen, 100 inloggningar mot `maxSessions` 50, 200 virtuella trådar, anna och bertil på
-  samma klient, 15 fall av `Cache-Control` för sessionen, `XSRF-TOKEN`, inloggade svar (session och
-  Basic) och anonyma svar, README och markörtestet `ReviewLeakTests`, som letar efter varje
-  sessions-id, token och lösenord i svar, loggrader och texter från de nya vägarna. Mutationer
-  (ingen gräns, ordning efter skapande i stället för användning, inget byte av användare, den
-  gamla regeln för `Cache-Control`, ingen regel för inloggade svar, ingen `compareAndSet`, ingen
-  borttagning ur indexet, sessionen i indexet direkt, ingen gräns före skapandet) fångas av
-  testerna.
+  gränsen 1, en inloggning från en anonym session vid gränsen, inloggningar som tävlar
+  (`SessionLoginRaceTests`: en inloggning som hålls i sin handler medan en annan av samma
+  användare blir klar, med gränsen 1; en inloggning mot `Sessions.renew` på samma cookie och två
+  användares inloggningar med samma cookie, 400 gånger var; och 100 klienter som
+  loggar in, förnyar, loggar ut och byter användare slumpvis, varefter indexet räknar exakt de
+  fungerande sessionerna), 24 fall av `Cache-Control` när sessionen skapas, förnyas och tas bort,
+  och städningen med flaggan hållen av testet och med 200 samtidiga nekade förfrågningar. I
+  `spola.security.web` (`UserSessionTests`, registrerad före `ReadmeTests` och `LeakTests`):
+  README-exemplet med standardgränsen, 100 inloggningar mot `maxSessions` 50, 200 virtuella
+  trådar, samma två kapplöpningar genom `WebSecurity.login` (`UserLimitRaceTests`), anna och
+  bertil på samma klient, 15 fall av `Cache-Control` för sessionen, `XSRF-TOKEN`, inloggade svar
+  (session och Basic) och anonyma svar, kopian av tolkningen (`CacheControlTests`), README och
+  markörtestet `UserSessionLeakTests`, som letar efter varje sessions-id, token och lösenord i
+  svar, loggrader och texter från de nya vägarna. Kapplöpningstesterna föll med koden från
+  rundan före (19 och 30 fungerande sessioner mot gränsen 3 och 10, och den andra användaren
+  ärvde attribut i 13 och 17 av 400 omgångar). Mutationer (ingen gräns, ordning efter skapande i
+  stället för användning, inget byte av användare, den gamla regeln för `Cache-Control`, ingen
+  regel för inloggade svar, ingen `compareAndSet`, ingen borttagning ur indexet, ingen hållning,
+  ingen gräns före skapandet, ingen gräns när hållningen släpps) fångas av testerna.

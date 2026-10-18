@@ -7,9 +7,9 @@ import spola.http.Headers;
 import spola.http.Response;
 
 /**
- * The {@code Cache-Control} rule for a response that carries the session cookie (uppdrag 15a,
- * G3): such a response must never be stored by a shared cache, since the id in it would be
- * handed to whoever asks next.
+ * The {@code Cache-Control} rule for a response that carries the session cookie: such a
+ * response must never be stored by a shared cache, since the id in it would be handed to
+ * whoever asks next.
  *
  * <p>The handler's value is kept only when it already stops a shared cache on its own: it has a
  * {@code no-store} or an unqualified {@code private} directive (RFC 9111 §5.2.2.5, §5.2.2.7) and
@@ -21,9 +21,9 @@ import spola.http.Response;
  * compared without regard to case, and every {@code Cache-Control} field of the response counts
  * (RFC 9110 §5.3).
  *
- * <p>{@code spola.security.web} has a copy of the parser for {@code XSRF-TOKEN} and for
- * responses to logged-in requests ({@code WebSecurity.CacheControl}); the modules share no
- * internal code.
+ * <p>{@code spola.security.web} has a copy of this class, with the same code and one more rule
+ * (for responses to logged-in requests), for {@code XSRF-TOKEN} and the security filter; the
+ * modules share no internal code.
  */
 final class CacheControl {
 

@@ -19,7 +19,7 @@ import java.util.concurrent.TimeUnit;
 import spola.test.Suite;
 
 /**
- * Uppdrag 15a, G5: the cleanup at the limit runs for one request at a time. A request that finds
+ * Uppdrag 15a: the cleanup at the limit runs for one request at a time. A request that finds
  * a cleanup running is refused with 503 without walking the store itself.
  */
 final class SessionSweepTests {
