@@ -95,8 +95,12 @@ import spola.web.WebRequest;
  *       matches anything and stops working.</li>
  *   <li>A response gets at most one {@code Set-Cookie} for {@value #COOKIE_NAME} from the
  *       security filter; the cookie belongs to it, so handlers and other filters do not set it.
- *       A response that sets it gets {@code Cache-Control: no-store} unless it has a
- *       {@code Cache-Control}.</li>
+ *       A response that sets it must never be kept by a shared cache: it gets
+ *       {@code Cache-Control: no-store} unless the handler's {@code Cache-Control} already keeps
+ *       shared caches out ({@code no-store}, or {@code private} without a field list, and neither
+ *       {@code public} nor {@code s-maxage}); any other value, {@code public, max-age=60},
+ *       {@code s-maxage=60} and {@code max-age=60} among them, is replaced by
+ *       {@code Cache-Control: no-store}.</li>
  *   <li>An exception that the router maps outside the security filter (the 400 for several
  *       {@code Authorization} fields or more than 200 cookies, an exception from a mechanism, a
  *       matcher or a rule) and a request body failure get no cookie.</li>
@@ -388,16 +392,14 @@ public final class Csrf {
         /**
          * {@code response} with a new token (with {@code Secure} also when the request was
          * {@code https}) if the request had no well-formed cookie or a new one was asked for, and
-         * then {@code Cache-Control: no-store} unless it has a {@code Cache-Control}.
+         * then never storable by a shared cache ({@link WebSecurity.CacheControl#withoutSharedCache}).
          */
         synchronized Response finish(Response response) {
             finished = true;
             if (hasCookie && !renew) {
                 return response;
             }
-            var withCookie = Responses.withCookie(response, protection.newCookie(https));
-            return withCookie.headers().contains("Cache-Control") ? withCookie
-                    : withCookie.withHeader("Cache-Control", "no-store");
+            return WebSecurity.CacheControl.withoutSharedCache(Responses.withCookie(response, protection.newCookie(https)));
         }
 
         /** The rest of the chain threw: no response will carry a token. */

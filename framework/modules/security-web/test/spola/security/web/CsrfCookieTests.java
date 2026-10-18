@@ -244,14 +244,16 @@ final class CsrfCookieTests {
                         assertTrue(xsrfCookies(reply).size() <= 1, "a " + reply.status() + " with two XSRF-TOKEN cookies");
                     }
                 }),
-                test("Cache-Control: no-store is added only when the response sets the cookie and has none", () -> {
+                test("Cache-Control: no-store is added only when the response sets the cookie, and replaces a"
+                        + " Cache-Control that lets a shared cache keep it (15a)", () -> {
                     try (var server = Support.serve(router(security(Csrf.cookie()), new AtomicInteger()))) {
                         var fresh = raw(server, "GET", "/open/hello", null);
                         issued(fresh);
                         assertEquals(List.of("no-store"), fresh.all("Cache-Control"));
                         var cached = raw(server, "GET", "/open/cached", null);
                         issued(cached);
-                        assertEquals(List.of("max-age=60"), cached.all("Cache-Control"), "the handler's is kept");
+                        assertEquals(List.of("no-store"), cached.all("Cache-Control"),
+                                "max-age=60 lets a shared cache keep the token: replaced since 15a");
                         var token = CsrfSupport.madeUp();
                         var known = raw(server, "GET", "/open/hello", null, cookie(token));
                         assertEquals(List.of(), known.all("Set-Cookie"));

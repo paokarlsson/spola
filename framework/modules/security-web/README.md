@@ -35,12 +35,17 @@ fungerar utan säkerhet.
   förfrågans session, före mekanismerna. Säkerhetsfiltret kör sessionsfiltret självt, så bara
   `security.filter()` registreras.
 - `WebSecurity.login(request, identity)` (nytt sessions-id, identiteten i sessionen) och
-  `WebSecurity.logout(request)` (sessionen tas bort) i en handler.
+  `WebSecurity.logout(request)` (sessionen tas bort) i en handler. En användare har högst
+  `maximumSessions` sessioner (standard 10), och en inloggning som en annan användare får en ny,
+  tom session.
 - `WebSecurity.builder().csrf(Csrf.cookie())`: CSRF-skydd med cookien `XSRF-TOKEN` och huvudet
   `X-XSRF-TOKEN` (Angulars standard). Ändrande anrop utan matchande huvud får 403, och
   `login`/`logout` ger en ny token.
 - Sessions- och CSRF-cookien får `Secure` när förfrågans schema är `https`, som i Spring: över
   TLS, och bakom en TLS-proxy när `ForwardedHeaders` registreras före `security.filter()`.
+- Svar till en inloggad användare får `Cache-Control: no-store` om handlern inte satt något
+  (eller satt `public` eller `s-maxage`), och ett svar som sätter sessions- eller CSRF-cookien kan
+  aldrig sparas av en delad cache (se [Cachar](#cachar)).
 
 Den första regeln vars matcher matchar avgör, och **en förfrågan som ingen regel matchar nekas**.
 Nekas en anonym förfrågan, eller är uppgifterna fel, blir svaret 401 med
@@ -225,6 +230,7 @@ svarar med samma 401 och 403 som det centrala filtret. `requireIdentity` motsvar
 | Samma svar oavsett orsak, utan `detail` | 401 och 403 skiljer inte på fel lösenord, okänd användare, avstängt konto eller trasig kodning, så att svaret inte hjälper någon att gissa konton. |
 | Ingen cache av lyckade Basic-inloggningar och ingen hastighetsbegränsning | Varje förfrågan med Basic-uppgifter kostar en PBKDF2-beräkning. Använd Basic för tjänst-till-tjänst eller bakom en hastighetsbegränsning. |
 | Ingen loggning av inloggningar | Auditloggning hör till uppdrag 18; modulen skriver inga loggrader alls. |
+| `Cache-Control` på inloggade svar | Spring Security skriver `Cache-Control: no-cache, no-store, max-age=0, must-revalidate`, `Pragma: no-cache` och `Expires: 0` på varje svar som saknar `Cache-Control`. Här får bara svar till en inloggad förfrågan (session eller mekanism) `Cache-Control: no-store`, och ett anonymt svar utan cookie lämnas som handlern gjorde det. Ett värde med `public` eller `s-maxage` ersätts också på inloggade svar, vilket Spring inte gör. Inget `Pragma` och inget `Expires`. |
 
 ## Inloggning med session
 
@@ -239,8 +245,21 @@ utan `WWW-Authenticate`, så att webbläsaren inte visar Basic-rutan.
   ytterst, och läser identiteten ur förfrågans session **före** mekanismerna. Registrera bara
   `security.filter()`; registreras `sessions.filter()` också ger förfrågan 500.
 - `WebSecurity.login(request, identity)` i inloggningens handler: sessionen får ett nytt id
-  (`Sessions.renew`, skydd mot session fixation) och identiteten sparas i den. Utan session skapas
-  en. Svaret sätter cookien. Vid sessionsgränsen ger anropet 503.
+  (`Sessions.renewFor`, skydd mot session fixation) och identiteten sparas i den. Utan session
+  skapas en. Svaret sätter cookien. Vid sessionsgränsen ger anropet 503.
+- **Högst `maximumSessions` sessioner per användare** (standard 10), motsvarigheten till
+  `sessionManagement(s -> s.maximumSessions(10))`. Skulle en inloggning ge användaren fler
+  avslutas användarens minst nyligen använda session, aldrig den nya inloggningen; nästa förfrågan
+  med den avslutade sessionens cookie är anonym (401 på en skyddad väg). Användare jämförs på
+  `Identity.name()`. Ett konto som loggar in om och om igen utan cookie (varje sådan inloggning är
+  en ny session) kan alltså bara ha 10 av `maxSessions` och kan inte stänga ute andra användare.
+  En inloggning med användarens egen session förnyar den och räknas inte som en till.
+- **En annan användare får en ny session.** Har förfrågans session redan en annan användares
+  identitet (en delad dator där ingen loggade ut) avslutas den sessionen, och inloggningen får en
+  ny, tom session: den nya användaren ser inget av det den förra sparade, och den förras id slutar
+  gälla. Samma användare, eller en session utan identitet, behåller sina attribut.
+- **Inloggade svar sparas inte i en delad cache.** Svaret till en förfrågan med en inloggad
+  identitet får `Cache-Control: no-store` om handlern inte satt något; se [Cachar](#cachar).
 - `WebSecurity.logout(request)`: sessionen tas bort med alla attribut och svaret tar bort
   cookien. Utan session händer ingenting.
 - Säkerhetsfiltret skapar aldrig en session: anonyma anrop, 401, 403 och `/actuator/health` får
@@ -469,6 +488,52 @@ riktig server med `HttpClient` och `CookieManager`: `/actuator/health` ger 200 u
 `Set-Cookie`, `/api/auth/me` ger sedan `{"username":"anna"}`, och efter utloggningen ger både
 cookien och det gamla id:t 401.
 
+Gränsen per användare är 10 utan att något anges. Ett annat värde ges till byggaren, som
+`maximumSessions(n)` i Spring Security:
+
+```java
+// Spring Security
+http.sessionManagement(s -> s.sessionCreationPolicy(SessionCreationPolicy.IF_REQUIRED).maximumSessions(3));
+
+// Spola
+WebSecurity.builder()
+        .sessions(sessions)
+        .maximumSessions(3) // a fourth login ends the user's least recently used session
+        ...
+```
+
+### Cachar
+
+Ett svar till en inloggad användare, och ett svar som bär sessions-id:t eller en CSRF-token, får
+aldrig sparas av en delad cache (en proxy eller ett CDN) och lämnas ut till någon annan.
+
+- **Svar till en inloggad förfrågan** (identiteten från sessionen eller en mekanism som
+  `HttpBasic`) får `Cache-Control: no-store` när handlern inte satt något `Cache-Control`. Ett
+  värde som handlern satt behålls, till exempel `private, no-cache` eller `max-age=60`, utom ett
+  med `public` eller `s-maxage` (eller ett som inte går att tolka): då ersätts alla
+  `Cache-Control`-fält med ett `Cache-Control: no-store`. Det gäller också routerns 404 och
+  mappade fel.
+- **Svar som sätter sessionscookien eller `XSRF-TOKEN`** (och svaret som tar bort
+  sessionscookien vid utloggning) behåller handlerns värde bara när det redan håller delade cachar
+  borta: `no-store` eller `private` (utan fältlista), och varken `public` eller `s-maxage`. Allt
+  annat, också `max-age=60` och `no-cache`, och inget alls, blir `Cache-Control: no-store`.
+- 401 och 403 har alltid `Cache-Control: no-store`. **Ett anonymt svar utan cookie** lämnas som
+  handlern gjorde det, så öppna sidor kan cachas som förut.
+- Direktivens namn jämförs utan hänsyn till skiftläge, och alla `Cache-Control`-fält räknas.
+  `Expires`, `Pragma` och riktade fält som `CDN-Cache-Control` och `Surrogate-Control` ändras inte;
+  ett CDN som följer ett sådant fält i stället för `Cache-Control` kan fortfarande spara svaret,
+  så sätt inga sådana på svar som kan bära en cookie eller en inloggad användares data.
+
+| Handlern satte | Svar som sätter en cookie | Inloggat svar utan cookie | Anonymt svar utan cookie |
+|---|---|---|---|
+| inget | `no-store` | `no-store` | inget |
+| `public, max-age=60` | `no-store` | `no-store` | `public, max-age=60` |
+| `s-maxage=60` | `no-store` | `no-store` | `s-maxage=60` |
+| `max-age=60` | `no-store` | `max-age=60` | `max-age=60` |
+| `private, max-age=60` | `private, max-age=60` | `private, max-age=60` | `private, max-age=60` |
+| `private, no-cache` | `private, no-cache` | `private, no-cache` | `private, no-cache` |
+| `no-store` | `no-store` | `no-store` | `no-store` |
+
 ### Spring Security och Spola, inloggning med session
 
 | Spring Security | Spola |
@@ -478,7 +543,9 @@ cookien och det gamla id:t 401.
 | `server.servlet.session.timeout`, `server.servlet.session.cookie.*` | `SessionOptions.DEFAULT.withIdleTimeout(...).withCookie(c -> c.secure(...))` |
 | `@RequestBody LoginRequest` (Jackson) | `request.readJson(LOGIN)` med en `JsonCodec` som skrivs explicit |
 | `authenticationManager.authenticate(...)` | `authenticator.authenticate(username, password)` med `AuthResult` |
-| `request.changeSessionId()` och `saveContext(...)` | `WebSecurity.login(request, identity)` (`Sessions.renew` och identiteten i sessionen) |
+| `request.changeSessionId()` och `saveContext(...)` | `WebSecurity.login(request, identity)` (`Sessions.renewFor` och identiteten i sessionen) |
+| `sessionManagement(s -> s.maximumSessions(3))` | `WebSecurity.builder().maximumSessions(3)`; standard 10 |
+| `HeaderWriterFilter` med `CacheControlHeadersWriter` | säkerhetsfiltret sätter `Cache-Control: no-store` på inloggade svar och svar med en cookie |
 | `session.invalidate()` och `SecurityContextHolder.clearContext()` | `WebSecurity.logout(request)` (`Sessions.invalidate`) |
 | `HttpStatusEntryPoint(HttpStatus.UNAUTHORIZED)` | inget att ställa in: utan `HttpBasic` har 401 inget `WWW-Authenticate` |
 | `httpBasic(b -> b.disable())` | ingen `authentication(HttpBasic.of(...))` |
@@ -497,6 +564,9 @@ cookien och det gamla id:t 401.
 | `Responses.json(request, 200, JsonObject.of(...))` i stället för `Map.of(...)` | JSON mappas explicit och utan reflektion (`spola.json`). |
 | CSRF-skyddet slås på uttryckligen | Spring har CSRF-skydd påslaget som standard; här krävs `csrf(Csrf.cookie())` (se [CSRF-skydd för en SPA](#csrf-skydd-för-en-spa)). Exemplet ovan har det inte, så att det visar inloggningen för sig. |
 | Inloggningar loggas inte | Varken lyckade eller misslyckade inloggningar ger en loggrad (auditloggning är ett eget behov). |
+| Högst 10 sessioner per användare som standard | Spring har ingen gräns utan `maximumSessions(n)`. Här är gränsen 10 utan att något anges, så att ett konto som loggar in om och om igen inte kan fylla `maxSessions` och ge alla andras inloggningar 503. En klient som loggar in för varje anrop utan att spara cookien förlorar sina äldsta sessioner. |
+| En avslutad session tas bort direkt | Spring markerar den minst nyligen använda sessionen som utgången, och `ConcurrentSessionFilter` avslutar den vid nästa förfrågan (med `expiredUrl` eller ett meddelande). Här tas den bort vid inloggningen, och nästa förfrågan med dess cookie är anonym (401 på en skyddad väg). Ingen `maxSessionsPreventsLogin(true)` (den nya inloggningen nekas aldrig), ingen `SessionRegistry` för att lista eller avsluta en användares sessioner, och bara inloggningar räknas. |
+| Ny, tom session när en annan användare loggar in | Springs `changeSessionId()` behåller attributen också när en annan användare loggar in över en inloggad session. Här avslutas den förra användarens session och inloggningen får en tom; samma användare, eller en session utan identitet, behåller attributen som i Spring. |
 
 ## CSRF-skydd för en SPA
 
@@ -533,6 +603,10 @@ anrop som kan ändra något. Ett sådant anrop utan matchande huvud får 403.
   cookien, och den gamla token slutar fungera.
 - Servern sparar inga token, varken i minnet eller i sessionen: huvudet jämförs med cookien i
   samma förfrågan.
+- Ett svar som sätter `XSRF-TOKEN` kan aldrig sparas av en delad cache: det får
+  `Cache-Control: no-store` om handlerns värde inte redan har `no-store` eller `private` (och
+  varken `public` eller `s-maxage`), så `public, max-age=60`, `s-maxage=60` och `max-age=60`
+  ersätts. Se [Cachar](#cachar).
 - Skyddet bygger på att en annan origin inte kan läsa cookien och inte kan sätta ett eget huvud
   utan CORS. Det skyddar inte mot XSS (skript på appens egna sidor kan läsa cookien) och inte mot
   en origin som CORS släpper igenom med huvudet.
@@ -791,4 +865,5 @@ utan `secure(true)` och `X-Forwarded-Proto: https` på varje förfrågan, och j�
 | Ny token också med en egen inloggningshandler | Springs `CsrfAuthenticationStrategy` och `CsrfLogoutHandler` körs av Springs egna inloggnings- och utloggningsfilter; behovets `AuthController` (med `logout(l -> l.disable())`) byter alltså inte token. Här gör `WebSecurity.login` och `WebSecurity.logout` det alltid. |
 | Strikt format | Ett huvud- eller cookievärde som inte är exakt 43 tecken ur `[A-Za-z0-9_-]` räknas som saknat, och två `X-XSRF-TOKEN`-fält ger 403. Spring jämför vilka värden som helst. |
 | `Secure` efter schemat kan inte stängas av | Spring sätter `secure` efter `request.isSecure()` om inget annat sägs, och en cookie customizer (`c -> c.secure(false)`) kan ta bort det över HTTPS. Här finns inget sådant val: en `XSRF-TOKEN` som sätts över `https` har alltid `Secure`, eftersom en app på samma origin aldrig behöver en utan `Secure` från `https`. `withCookie(c -> c.secure(true))` ger `Secure` också över `http`. |
+| `Cache-Control` när cookien sätts | Spring Securitys `CacheControlHeadersWriter` lämnar ett `Cache-Control` som handlern satt orört, också `public` på ett svar som sätter `XSRF-TOKEN`. Här ersätts allt som låter en delad cache spara svaret med `no-store`, så att ingen annan besökare får samma token. |
 | `ForwardedHeaders` före säkerhetsfiltret | Tomcats `RemoteIpValve` körs före alla filter, så `request.isSecure()` är klientens schema överallt. Här är `ForwardedHeaders` ett filter som ska registreras före `security.filter()`. Registreras det efter får sessions- och CSRF-cookien inget `Secure` bakom en proxy, fast handlern ser `https`. |

@@ -35,9 +35,15 @@
  *       session filter itself, outermost (register only the security filter), and takes the
  *       identity from the request's session before any mechanism.
  *       {@link spola.security.web.WebSecurity#login} gives the session a new id (protection
- *       against session fixation) and stores the identity in it, a snapshot;
- *       {@link spola.security.web.WebSecurity#logout} removes the session. Without
- *       {@code sessions(...)} both throw {@link java.lang.IllegalStateException} (500).</li>
+ *       against session fixation) and stores the identity in it, a snapshot; a session that
+ *       holds another user's identity is replaced by a new, empty one, and a user has at most
+ *       {@link spola.security.web.WebSecurity.Builder#maximumSessions} sessions (10 unless set;
+ *       the least recently used end). {@link spola.security.web.WebSecurity#logout} removes the
+ *       session. Without {@code sessions(...)} both throw
+ *       {@link java.lang.IllegalStateException} (500).</li>
+ *   <li>Caches: a response to a logged-in request gets {@code Cache-Control: no-store} unless
+ *       the handler set one without {@code public} and {@code s-maxage}, and a response that
+ *       sets the session cookie or {@code XSRF-TOKEN} is never storable by a shared cache.</li>
  *   <li>CSRF protection: {@link spola.security.web.WebSecurity.Builder#csrf} with
  *       {@link spola.security.web.Csrf#cookie()}, Angular's double-submit cookie. The response
  *       sets the cookie {@code XSRF-TOKEN} (not {@code HttpOnly}) on the first response and

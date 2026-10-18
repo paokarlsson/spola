@@ -12,6 +12,10 @@ import spola.http.Response;
  * the request the filter got was {@code https} (fixed when the filter starts; nothing later in
  * the chain changes it). The new id lives here only until the filter has built the response.
  *
+ * <p>After {@link #renewFor} it also holds the user the session is for and their limit: the
+ * session is counted among the user's sessions only when the filter builds the response, so
+ * that no other login of the same user can end it in the meantime (see {@link Sessions#renewFor}).
+ *
  * <p>Synchronized, since a {@link WebRequest} may be handed to other threads.
  */
 final class SessionState {
@@ -23,6 +27,10 @@ final class SessionState {
     private String issued;
     private boolean cleared;
     private boolean finished;
+    /** The user {@link #renewFor} renewed {@link #session} for, or {@code null}; counted at {@link #finish}. */
+    private String pendingUser;
+    /** The most sessions {@link #pendingUser} may have. */
+    private int pendingLimit;
 
     /**
      * @param session the session the filter found for the request, or {@code null}
@@ -58,6 +66,29 @@ final class SessionState {
         return create("renew");
     }
 
+    /**
+     * {@link #renew} for {@code user}: a session of another user ends first and a new, empty one
+     * is created; the user's least recently used sessions end so that, with this one, they have
+     * at most {@code limit}; and this one is counted among them when the response is built.
+     */
+    synchronized Session renewFor(String user, int limit) {
+        requireOpen("renewFor");
+        var current = current();
+        if (current != null) {
+            var before = pendingUser != null ? pendingUser : current.user();
+            if (before != null && !before.equals(user)) {
+                invalidate(); // another user's session: its attributes are not the new user's
+            } else {
+                current.entry().leave(current); // not among the user's sessions until the response is built
+            }
+        }
+        owner.limit(user, limit - 1, null); // room for this one, also under maxSessions
+        var renewed = renew();
+        pendingUser = user;
+        pendingLimit = limit;
+        return renewed;
+    }
+
     synchronized void invalidate() {
         var current = current();
         if (current == null) {
@@ -66,17 +97,21 @@ final class SessionState {
         current.invalidate();
         session = null;
         issued = null;
+        pendingUser = null;
         cleared = !finished;
     }
 
     /**
      * The response with the outcome for the cookie: the new id, the removal, or nothing, with
      * {@code Secure} also when the request the filter got was {@code https}.
-     * A response that gets a {@code Set-Cookie} here gets {@code Cache-Control: no-store} too,
-     * unless it has a {@code Cache-Control}.
+     * A response that gets a {@code Set-Cookie} here never stays storable by a shared cache
+     * ({@link CacheControl#withoutSharedCache}). A session renewed with {@link #renewFor} is
+     * counted among its user's sessions now, and their least recently used ones beyond the
+     * limit end.
      */
     synchronized Response finish(Response response) {
         finished = true;
+        countPending();
         ResponseCookie cookie = null;
         if (issued != null) {
             cookie = owner.sessionCookie(issued, https);
@@ -88,9 +123,17 @@ final class SessionState {
         if (cookie == null) {
             return response;
         }
-        var withCookie = Responses.withCookie(response, cookie);
-        return withCookie.headers().contains("Cache-Control") ? withCookie
-                : withCookie.withHeader("Cache-Control", "no-store");
+        return CacheControl.withoutSharedCache(Responses.withCookie(response, cookie));
+    }
+
+    /** Counts the session that {@link #renewFor} renewed among its user's sessions, and keeps them within the limit. */
+    private void countPending() {
+        var user = pendingUser;
+        pendingUser = null;
+        var current = current();
+        if (user != null && current != null && current.entry().join(current, user)) {
+            owner.limit(user, pendingLimit, current.entry());
+        }
     }
 
     /**
@@ -106,6 +149,7 @@ final class SessionState {
         }
         issued = null;
         cleared = false;
+        pendingUser = null;
     }
 
     /** The request's session if it is still visible to the request, else {@code null}. */
@@ -122,6 +166,7 @@ final class SessionState {
         session = created.session();
         issued = created.id();
         cleared = false;
+        pendingUser = null;
         return session;
     }
 

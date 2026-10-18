@@ -3,6 +3,7 @@ package spola.security.web;
 import java.io.Serial;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.Objects;
 import java.util.Optional;
 import spola.http.Headers;
@@ -73,7 +74,10 @@ import spola.web.WebRequest;
  *       denied</b> (fail-closed);</li>
  *   <li>passes an allowed request on with {@code next.proceed}, and answers a denied one with
  *       401 or 403. Neither the handler nor any filter inside this one runs for a denied
- *       request.</li>
+ *       request. The response to an allowed request with an identity (from the session or a
+ *       mechanism) gets {@code Cache-Control: no-store} when it has no {@code Cache-Control},
+ *       and when its {@code Cache-Control} has {@code public} or {@code s-maxage}; another
+ *       value that the handler set stays (see "Caches" below).</li>
  * </ol>
  * With CSRF protection, the response that comes back (the handler's, 401, 403, 404, a mapped
  * error) gets a {@code Set-Cookie} with a new {@code XSRF-TOKEN} when the request had no
@@ -147,6 +151,17 @@ import spola.web.WebRequest;
  *       requests, 401, 403 and open paths get no session cookie (with CSRF protection they can
  *       get an {@code XSRF-TOKEN} cookie, which is not a session). {@link #login} creates or
  *       renews it.</li>
+ *   <li><b>At most {@link Builder#maximumSessions} sessions per user</b> (10 unless set), the
+ *       counterpart of {@code sessionManagement(s -> s.maximumSessions(10))}: when a login would
+ *       give a user more, the user's least recently used sessions end (a later request with
+ *       their cookie is anonymous), never the new login. Users are compared on
+ *       {@link Identity#name()}. One account that logs in again and again (every login without a
+ *       cookie is a new session) therefore holds at most that many of the
+ *       {@code SessionOptions.maxSessions} and cannot lock other users out.</li>
+ *   <li><b>Another user gets a new session.</b> When the request's session already holds the
+ *       identity of another user (a shared computer without a logout), {@link #login} ends that
+ *       session and starts a new, empty one, so the new user never sees the previous user's
+ *       attributes. The same user, or a session without an identity, keeps its attributes.</li>
  *   <li><b>A snapshot.</b> The session holds the {@link Identity} that {@link #login} got.
  *       Changed roles, a disabled account or a removed user in the {@code UserStore} do not
  *       affect a session that is already logged in, until {@link #logout} or the session expires
@@ -188,6 +203,32 @@ import spola.web.WebRequest;
  *       response a new token, so the token from before stops working.</li>
  *   <li><b>No stored tokens.</b> The server compares the header with the cookie of the same
  *       request and keeps nothing, so the protection works with and without sessions.</li>
+ * </ul>
+ *
+ * <h2>Caches</h2>
+ * A response to a logged-in user, or one that carries the session id or a CSRF token, must not
+ * be stored by a shared cache (a proxy or a CDN) and handed to someone else; Spring Security
+ * writes {@code Cache-Control: no-cache, no-store, max-age=0, must-revalidate} on every response
+ * that has none for the same reason.
+ * <ul>
+ *   <li><b>A response to a request with an identity</b> (from the session or a mechanism) gets
+ *       {@code Cache-Control: no-store} when it has no {@code Cache-Control}. A value that the
+ *       handler set stays, such as {@code private, no-cache} or {@code max-age=60}, except one
+ *       with {@code public} or {@code s-maxage} (or one that does not parse as a list of
+ *       directives): then every {@code Cache-Control} field is replaced by one
+ *       {@code Cache-Control: no-store}.</li>
+ *   <li><b>A response that sets {@code XSRF-TOKEN}</b> (and, with sessions, one that sets or
+ *       removes the session cookie) keeps the handler's {@code Cache-Control} only when it already
+ *       keeps shared caches out ({@code no-store}, or {@code private} without a field list, and no
+ *       {@code public} or {@code s-maxage}); any other value, or none, becomes
+ *       {@code Cache-Control: no-store}.</li>
+ *   <li>The 401 and 403 have {@code Cache-Control: no-store}. A response to an anonymous request
+ *       that sets no cookie is left as the handler made it.</li>
+ *   <li>Directive names are compared without regard to case, and every {@code Cache-Control}
+ *       field counts. Other fields ({@code Expires}, {@code Pragma}, {@code CDN-Cache-Control},
+ *       {@code Surrogate-Control}) are not changed: a CDN that obeys a targeted field of its own
+ *       instead of {@code Cache-Control} can still store the response, so do not set one on
+ *       responses that can carry a cookie or a logged-in user's data.</li>
  * </ul>
  *
  * <h2>{@code Secure} from the scheme</h2>
@@ -236,10 +277,15 @@ public final class WebSecurity {
     private record Rule(RequestMatcher matcher, AccessRule access) {
     }
 
+    /** The most sessions per user unless {@link Builder#maximumSessions} says otherwise. */
+    static final int DEFAULT_MAXIMUM_SESSIONS = 10;
+
     private final List<RequestAuthentication> mechanisms;
     private final List<Rule> rules;
     /** The sessions whose filter this security runs, or {@code null} without {@link Builder#sessions}. */
     private final Sessions sessions;
+    /** The most sessions per user ({@link Builder#maximumSessions}). */
+    private final int maximumSessions;
     /** The CSRF protection, or {@code null} without {@link Builder#csrf}. */
     private final Csrf.Protection csrf;
     private final Headers challenges;
@@ -248,10 +294,11 @@ public final class WebSecurity {
     private final Filter filter;
 
     private WebSecurity(List<RequestAuthentication> mechanisms, List<Rule> rules, Sessions sessions,
-            Csrf.Protection csrf) {
+            int maximumSessions, Csrf.Protection csrf) {
         this.mechanisms = mechanisms;
         this.rules = rules;
         this.sessions = sessions;
+        this.maximumSessions = maximumSessions;
         this.csrf = csrf;
         var challenges = new ArrayList<Headers.Field>();
         for (var mechanism : mechanisms) {
@@ -367,10 +414,13 @@ public final class WebSecurity {
      * session. Call it in a handler once the password has been checked (with
      * {@code Authenticator.authenticate}):
      * <ol>
-     *   <li>the session gets a new id with {@link Sessions#renew}, the protection against
-     *       session fixation: an id that existed before the login (one an attacker planted, say)
-     *       stops working at once, and the session keeps its attributes. Without a live session a
-     *       new one is created;</li>
+     *   <li>the session gets a new id with {@link Sessions#renewFor} (and the identity's name),
+     *       the protection against session fixation: an id that existed before the login (one an
+     *       attacker planted, say) stops working at once, and the session keeps its attributes.
+     *       Without a live session a new one is created. A session that holds <b>another
+     *       user's</b> identity is ended instead, and the login gets a new, empty session;</li>
+     *   <li>if the user would have more than {@link Builder#maximumSessions} sessions (10 unless
+     *       set), the user's least recently used ones end, never this one;</li>
      *   <li>the identity is stored in the session under a key only this module has;</li>
      *   <li>the response sets the session cookie with the new id (the session filter adds the
      *       {@code Set-Cookie});</li>
@@ -388,13 +438,17 @@ public final class WebSecurity {
      * ran (usually anonymous, on a {@code permitAll} login path), and the rules that already let
      * the request through are not asked again. Answer with the {@code identity} you passed in.
      *
-     * <p>Logging in again replaces the identity (and renews the id again). Nothing is logged.
+     * <p>Logging in again as the same user replaces the identity (and renews the id again); as
+     * another user it starts another new session. Nothing is logged.
      *
      * @param request  the request, as a handler or a filter inside the security filter gets it
      * @param identity who logged in
-     * @throws WebException          503 if the request has no live session and the session limit
-     *                               is reached ({@code SessionOptions.maxSessions}); nothing is
-     *                               stored and no cookie is set
+     * @throws WebException          503 if a new session is needed and the session limit is
+     *                               reached ({@code SessionOptions.maxSessions}, after the user's
+     *                               own oldest sessions beyond {@link Builder#maximumSessions}
+     *                               ended); nothing is stored and no session id is set (a session
+     *                               of another user has then ended, and the response removes its
+     *                               cookie)
      * @throws IllegalStateException if the request has not passed the filter of a
      *                               {@code WebSecurity} built with
      *                               {@link Builder#sessions(Sessions) sessions(...)} (no security
@@ -406,7 +460,8 @@ public final class WebSecurity {
         Objects.requireNonNull(request, "request");
         Objects.requireNonNull(identity, "identity");
         var owner = requireSessions(request, "login");
-        Sessions.renew(request).put(LOGGED_IN, identity);
+        // a new id; another user's session ends; the user's oldest sessions beyond the limit end
+        Sessions.renewFor(request, identity.name(), owner.maximumSessions).put(LOGGED_IN, identity);
         owner.renewToken(request, "login");
     }
 
@@ -525,7 +580,11 @@ public final class WebSecurity {
         var secured = request.withAttribute(CONTEXT, new SecurityContext(identity)).withAttribute(OWNER, this);
         for (var rule : rules) {
             if (rule.matcher().matches(secured)) {
-                return rule.access().allows(identity, secured) ? next.proceed(secured) : denied(identity);
+                if (!rule.access().allows(identity, secured)) {
+                    return denied(identity);
+                }
+                var response = next.proceed(secured);
+                return identity.isPresent() ? CacheControl.forIdentity(response) : response;
             }
         }
         return denied(identity);
@@ -585,6 +644,145 @@ public final class WebSecurity {
     }
 
     /**
+     * The {@code Cache-Control} rules of the security filter (uppdrag 15a, G3 and G4); see
+     * "Caches" in the class documentation. The parser is a copy of the one in
+     * {@code spola.web}'s {@code CacheControl}, which applies the cookie rule to the session
+     * cookie: the modules share no internal code.
+     */
+    static final class CacheControl {
+
+        private CacheControl() {
+        }
+
+        /** One directive: its name in lower case, and whether it has an argument ({@code name=value}). */
+        private record Directive(String name, boolean argument) {
+        }
+
+        /**
+         * For a response that carries a cookie with a secret ({@code XSRF-TOKEN}): unchanged if
+         * its {@code Cache-Control} already keeps shared caches out ({@code no-store} or
+         * {@code private} without an argument, and neither {@code public} nor
+         * {@code s-maxage}), otherwise with one {@code Cache-Control: no-store} instead.
+         */
+        static Response withoutSharedCache(Response response) {
+            var directives = directives(response.headers());
+            boolean keep = directives != null && !shared(directives) && directives.stream()
+                    .anyMatch(d -> !d.argument() && (d.name().equals("no-store") || d.name().equals("private")));
+            return keep ? response : noStore(response);
+        }
+
+        /**
+         * For a response to a logged-in request: unchanged if it has a {@code Cache-Control}
+         * without {@code public} and {@code s-maxage}, otherwise with one
+         * {@code Cache-Control: no-store} instead (also when it has none, or an empty or
+         * malformed one).
+         */
+        static Response forIdentity(Response response) {
+            var directives = directives(response.headers());
+            boolean keep = directives != null && !directives.isEmpty() && !shared(directives);
+            return keep ? response : noStore(response);
+        }
+
+        /** Whether a directive lets a shared cache store the response although it may be personal. */
+        private static boolean shared(List<Directive> directives) {
+            return directives.stream().anyMatch(d -> d.name().equals("public") || d.name().equals("s-maxage"));
+        }
+
+        /**
+         * The directives of every {@code Cache-Control} field, in order (none without the
+         * field), or {@code null} if a value is not a list of
+         * {@code token [ "=" ( token / quoted-string ) ]} (RFC 9111 §5.2) with optional
+         * whitespace and empty elements between them.
+         */
+        private static List<Directive> directives(Headers headers) {
+            var directives = new ArrayList<Directive>();
+            for (var value : headers.all("Cache-Control")) {
+                int n = value.length();
+                int i = 0;
+                while (true) {
+                    while (i < n && (isWhitespace(value.charAt(i)) || value.charAt(i) == ',')) {
+                        i++;
+                    }
+                    if (i == n) {
+                        break;
+                    }
+                    int start = i;
+                    while (i < n && isTokenChar(value.charAt(i))) {
+                        i++;
+                    }
+                    if (i == start) {
+                        return null;
+                    }
+                    var name = value.substring(start, i).toLowerCase(Locale.ROOT);
+                    boolean argument = i < n && value.charAt(i) == '=';
+                    if (argument) {
+                        i = argumentEnd(value, i + 1);
+                        if (i < 0) {
+                            return null;
+                        }
+                    }
+                    directives.add(new Directive(name, argument));
+                    while (i < n && isWhitespace(value.charAt(i))) {
+                        i++;
+                    }
+                    if (i < n && value.charAt(i) != ',') {
+                        return null;
+                    }
+                }
+            }
+            return directives;
+        }
+
+        /** The index after the token or quoted string at {@code i}, or -1 if there is none. */
+        private static int argumentEnd(String value, int i) {
+            int n = value.length();
+            if (i < n && value.charAt(i) == '"') {
+                i++;
+                while (i < n) {
+                    char c = value.charAt(i++);
+                    if (c == '"') {
+                        return i;
+                    }
+                    if (c == '\\') {
+                        if (i == n) {
+                            return -1;
+                        }
+                        i++;
+                    }
+                }
+                return -1;
+            }
+            int start = i;
+            while (i < n && isTokenChar(value.charAt(i))) {
+                i++;
+            }
+            return i == start ? -1 : i;
+        }
+
+        /** {@code response} with its {@code Cache-Control} fields replaced by one {@code Cache-Control: no-store}. */
+        private static Response noStore(Response response) {
+            var fields = new ArrayList<Headers.Field>();
+            for (var field : response.headers().fields()) {
+                if (!field.name().equalsIgnoreCase("Cache-Control")) {
+                    fields.add(field);
+                }
+            }
+            fields.add(new Headers.Field("Cache-Control", "no-store"));
+            return new Response(response.status(), Headers.of(fields), response.body());
+        }
+
+        private static boolean isWhitespace(char c) {
+            return c == ' ' || c == '\t';
+        }
+
+        /** {@code tchar} of RFC 9110 §5.6.2. */
+        private static boolean isTokenChar(char c) {
+            return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')
+                    || "!#$%&'*+-.^_`|~".indexOf(c) >= 0;
+        }
+    }
+
+    /**
      * Builds a {@link WebSecurity}. Not thread-safe; the {@code WebSecurity} it builds is.
      * Nothing is checked until {@link #build()}, which reports every problem at once, except
      * {@code null} arguments, which fail at once.
@@ -597,6 +795,8 @@ public final class WebSecurity {
         private final List<Sessions> sessions = new ArrayList<>();
         /** Every {@link #csrf} call; more than one is a problem for {@link #build()}. */
         private final List<Csrf> csrf = new ArrayList<>();
+        /** The last {@link #maximumSessions} value, or {@code null} if it was not called. */
+        private Integer maximumSessions;
 
         private Builder() {
         }
@@ -633,7 +833,8 @@ public final class WebSecurity {
          *       (without {@code sessions(...)} they throw {@link IllegalStateException}).</li>
          * </ul>
          * The security filter never creates a session; only {@link WebSecurity#login} (or the
-         * application's own {@code Sessions.getOrCreate}) does. Call it once: a second call is a
+         * application's own {@code Sessions.getOrCreate}) does. A user has at most
+         * {@link #maximumSessions} sessions (10 unless set). Call it once: a second call is a
          * problem that {@link #build()} reports.
          *
          * @param sessions the sessions, the same instance for the whole router
@@ -642,6 +843,34 @@ public final class WebSecurity {
          */
         public Builder sessions(Sessions sessions) {
             this.sessions.add(Objects.requireNonNull(sessions, "sessions"));
+            return this;
+        }
+
+        /**
+         * The most sessions a user may have at once, the counterpart of Spring Security's
+         * {@code sessionManagement(s -> s.maximumSessions(n))}; 10 unless set. When a
+         * {@link WebSecurity#login} would give a user more, the user's least recently used
+         * sessions end (as Spring's default {@code maxSessionsPreventsLogin(false)}), never the
+         * new login: a later request with an ended session's cookie is anonymous. Users are
+         * compared on {@link Identity#name()}, exactly. A use is a request that finds the
+         * session, its creation and its renewal.
+         *
+         * <p>The limit keeps one account from filling {@code SessionOptions.maxSessions}: without
+         * it, a client that logs in again and again without a cookie gets a new session each time,
+         * until every other login gets 503. Ten is enough for a user's browsers and devices; a
+         * client that logs in for each call (a script without cookies) loses its oldest sessions
+         * and should keep its cookie instead. Logging in again with a session of the same user
+         * renews it and does not count as another one.
+         *
+         * <p>Only logins are counted: a session that the application creates with
+         * {@code Sessions.getOrCreate} has no user until {@code login}. The last call wins.
+         * {@link #build()} reports a value below 1, and a call without {@link #sessions}.
+         *
+         * @param maximum the most sessions per user, at least 1
+         * @return this builder
+         */
+        public Builder maximumSessions(int maximum) {
+            this.maximumSessions = maximum;
             return this;
         }
 
@@ -719,7 +948,9 @@ public final class WebSecurity {
          * @throws IllegalArgumentException with one line per problem: a rule after a rule with
          *                                  {@link RequestMatcher#anyRequest()} (it can never
          *                                  match), {@link #sessions} called more than once,
-         *                                  {@link #csrf} called more than once, and a cookie
+         *                                  {@link #maximumSessions} below 1 or without
+         *                                  {@link #sessions}, {@link #csrf} called more than
+         *                                  once, and a cookie
          *                                  function of {@link #csrf} that returns {@code null} or
          *                                  a builder for another cookie, turns {@code HttpOnly}
          *                                  on, sets {@code Max-Age=0} or gives a cookie that
@@ -741,6 +972,13 @@ public final class WebSecurity {
                 problems.add("sessions(...) is called " + sessions.size() + " times; call it once, with the one"
                         + " Sessions of the router");
             }
+            if (maximumSessions != null && maximumSessions < 1) {
+                problems.add("maximumSessions(" + maximumSessions + "): a user needs at least 1 session");
+            }
+            if (maximumSessions != null && sessions.isEmpty()) {
+                problems.add("maximumSessions(...) without sessions(...): it limits the sessions of WebSecurity.login;"
+                        + " add sessions(sessions)");
+            }
             if (csrf.size() > 1) {
                 problems.add("csrf(...) is called " + csrf.size() + " times; call it once");
             }
@@ -749,7 +987,8 @@ public final class WebSecurity {
                 throw new IllegalArgumentException(String.join("\n", problems));
             }
             return new WebSecurity(List.copyOf(mechanisms), List.copyOf(rules),
-                    sessions.isEmpty() ? null : sessions.getFirst(), protection);
+                    sessions.isEmpty() ? null : sessions.getFirst(),
+                    maximumSessions == null ? DEFAULT_MAXIMUM_SESSIONS : maximumSessions, protection);
         }
     }
 }

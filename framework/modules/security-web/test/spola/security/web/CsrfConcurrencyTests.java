@@ -52,7 +52,9 @@ final class CsrfConcurrencyTests {
                         + " users", () -> {
                     var sessions = CsrfExample.sessions(false, InstantSource.system());
                     var counting = new Support.Counting(LoginSupport.USERS);
-                    var router = CsrfExample.router(Support.router(), CsrfExample.security(sessions),
+                    // the example's rules with room for every thread's session (15a: the default of 10 per
+                    // user would end the oldest of each user's 40 logins)
+                    var router = CsrfExample.router(Support.router(), ReviewSupport.csrfSecurity(sessions, THREADS),
                             counting.authenticator);
                     var start = new CountDownLatch(1);
                     try (var server = Support.serve(router);

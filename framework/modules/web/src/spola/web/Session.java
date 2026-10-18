@@ -109,6 +109,16 @@ public final class Session {
         return entry.invalidate(this);
     }
 
+    /** The entry this view shows. */
+    SessionEntry entry() {
+        return entry;
+    }
+
+    /** The user whose sessions this one is counted among ({@link Sessions#renewFor}), or {@code null}. */
+    String user() {
+        return entry.user(this);
+    }
+
     /**
      * {@code Session[n attributes]}, or {@code Session[ended]}: never the id or the values.
      *

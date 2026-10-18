@@ -109,7 +109,9 @@ final class SchemeConcurrencyTests {
                     Sessions sessions = CsrfExample.sessions(false, InstantSource.system());
                     var router = CsrfExample.router(
                             Support.router().filter(ForwardedHeaders.trusting(TrustedProxies.privateNetworks())),
-                            CsrfExample.security(sessions), LoginSupport.authenticator());
+                            // the example's rules with room for every thread's session (15a: the default of 10 per
+                            // user would end the oldest of each user's 40 logins)
+                            ReviewSupport.csrfSecurity(sessions, THREADS), LoginSupport.authenticator());
                     var secure = new AtomicInteger();
                     var plain = new AtomicInteger();
                     var start = new CountDownLatch(1);

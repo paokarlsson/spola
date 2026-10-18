@@ -606,7 +606,8 @@
   (funktionen körs en gång, i `inMemory`, och fel i den ger `IllegalArgumentException` vid
   uppstart); borttagningen med samma `Path`, `Domain` och `Secure` och `Max-Age=0`; högst ett
   `Set-Cookie` per svar med det slutliga utfallet; `Cache-Control: no-store` om svaret saknar
-  `Cache-Control`. `Secure` i 11a bara uttryckligen; sedan 13b också när förfrågans schema är
+  `Cache-Control` (sedan 15a också när handlerns värde låter en delad cache spara svaret, se 15a
+  nedan). `Secure` i 11a bara uttryckligen; sedan 13b också när förfrågans schema är
   `https` (se 13b nedan).
 - Utgång efter `idleTimeout` sedan senaste användningen (filtrets uppslagning räknas), borttagning
   vid uppslagning, städning högst en gång per minut i filtret, ingen bakgrundstråd. Gränsen
@@ -640,7 +641,8 @@
   sessionscookie ger aldrig 401 i sig: ingen, en okänd eller utgången cookie, eller en session
   utan identitet gör att mekanismerna provas som i 10b.
 - `WebSecurity.login(request, identity)`: `Sessions.renew` (nytt id, det gamla slutar gälla
-  direkt; utan session skapas en) och identiteten i sessionen under en nyckel som bara modulen
+  direkt; utan session skapas en; sedan 15a `Sessions.renewFor` med gränsen per användare och en
+  ny session för en annan användare) och identiteten i sessionen under en nyckel som bara modulen
   har. Vid sessionsgränsen 503 från 11a. `WebSecurity.logout(request)`: `Sessions.invalidate`
   (sessionen tas bort och svaret tar bort cookien; utan session ingenting). Båda kastar
   `IllegalStateException` (500) om förfrågan inte passerat filtret för en `WebSecurity` med
@@ -689,7 +691,8 @@
   svar som går ut genom säkerhetsfiltret till en
   förfrågan utan välformad cookie (200, 401, 403, 404, 405, mappade fel), och med en ny token av
   `WebSecurity.login` och `WebSecurity.logout`; högst ett `Set-Cookie` per svar och
-  `Cache-Control: no-store` om svaret saknar `Cache-Control`. Cookie-funktionen körs en gång, i
+  `Cache-Control: no-store` om svaret saknar `Cache-Control` (sedan 15a också när handlerns värde
+  låter en delad cache spara svaret). Cookie-funktionen körs en gång, i
   `build()`; `null`, `HttpOnly`, en annan cookie, `Max-Age=0` och en cookie som
   `ResponseCookie.Builder.build()` avvisar (`SameSite=None` utan `Secure`) ger
   `IllegalArgumentException`.
@@ -900,6 +903,69 @@
   `spola.client`.
 - Nya tester: ungefär 330 i `spola.client` (`ClientTests`), ungefär 15 s.
 
+### Uppdrag 15a: säkerhetsgranskning del 1, sessioner och inloggning (`spola.web`, `spola.security.web`)
+- **Första delen av rättningarna efter säkerhetsgranskningen 2026-10-18**
+  (`gauntlet/granskningar/2026-10-18-sakerhet.md`). Fynden G1–G5 är rättade: G1 (MEDIUM, ett konto
+  kunde fylla `maxSessions` och ge alla andras inloggningar 503), G2 (en inloggning som en annan
+  användare ärvde den förras attribut), G3 (`public`/`s-maxage` från handlern på ett svar med
+  sessions- eller CSRF-cookien), G4 (inget `Cache-Control` på inloggade svar) och G5 (städningen
+  vid gränsen kunde köras parallellt). 15b (proxy och dokumentation), 15c (lösenord) och 15d
+  (`spola.client`) återstår.
+- **Granskningen ersätter inte en mänsklig granskning.** Den gjordes av AI-granskare, och
+  rättningarna är testade av samma slags granskare. Koden är säkerhetskritisk, och **en människa
+  bör granska den** innan ramverket används på riktigt.
+- **Gräns per användare (G1).** `WebSecurity.Builder.maximumSessions(n)`, motsvarigheten till
+  `sessionManagement(s -> s.maximumSessions(n))`, med **standardvärdet 10** (motiverat i
+  ARCHITECTURE.md). Skulle en inloggning ge användaren fler sessioner avslutas användarens minst
+  nyligen använda (en användning är en förfrågan som hittar sessionen, att den skapas och att den
+  förnyas), aldrig den nya inloggningen; nästa förfrågan med en avslutad sessions cookie är
+  anonym. Användare jämförs på `Identity.name()`. Med `maxSessions` 50 och gränsen 5 hindrar 100
+  inloggningar av ett konto inte en andra användare, och 200 samtidiga inloggningar av fem
+  användare lämnar exakt gränsen per användare. `build()` rapporterar ett värde under 1 och
+  `maximumSessions` utan `sessions(...)`.
+- **Tillägget i `spola.web`** är en publik statisk metod, `Sessions.renewFor(request, user,
+  maxPerUser)` (`renew` vid en inloggning), som `WebSecurity.login` anropar. `Sessions` har ett
+  paketprivat index från namn till sessioner; en session lämnar det när den ogiltigförklaras, går
+  ut, städas bort, överges eller avslutas av gränsen, och en användare utan sessioner finns inte i
+  det (testat). Gränsen tillämpas innan sessionen skapas (så en användare vid sin gräns kan logga
+  in också vid `maxSessions`) och igen när svaret byggs; först då räknas sessionen till
+  användaren, så samtidiga inloggningar av samma användare aldrig avslutar varandras sessioner
+  innan identiteten sparats (50 samtidiga inloggningar med gränsen 1 ger 200 för alla).
+- **Ny session vid byte av användare (G2).** Har förfrågans session en annan användares identitet
+  ger `login` en ny, tom session och den gamla ogiltigförklaras (före skapandet, så bytet fungerar
+  vid `maxSessions`). Samma användare eller en anonym session förnyas som förut och behåller
+  attributen.
+- **`Cache-Control` (G3, G4).** Ett svar som sätter eller tar bort sessionscookien, eller sätter
+  `XSRF-TOKEN`, behåller handlerns `Cache-Control` bara när det redan håller delade cachar borta
+  (`no-store`, eller `private` utan fältlista, och varken `public` eller `s-maxage`); annars, också
+  utan värde, blir det ett `Cache-Control: no-store`. Svaret till en tillåten förfrågan med en
+  identitet (session eller mekanism) får `Cache-Control: no-store` när det saknar ett, och ett
+  värde med `public` eller `s-maxage` ersätts; andra värden som handlern satt behålls
+  (`private, no-cache`, `max-age=60`). Anonyma svar utan cookie ändras inte. **Avvikelse från
+  uppdragets uppräkning:** `max-age=60`, `no-cache` och andra värden utan `private`/`no-store`
+  ersätts också på svar med en cookie, eftersom de låter en delad cache spara svaret (se
+  ARCHITECTURE.md).
+- **Skyddad städning (G5).** Städningen vid gränsen (och minutstädningen) skyddas av en
+  `compareAndSet`; en nekad förfrågan som hittar en städning igång svarar 503 utan att gå igenom
+  lagringen. 200 samtidiga nekade förfrågningar mot 100 000 sessioner går igenom lagringen högst
+  två gånger.
+- Javadoc för `Sessions` (nytt avsnitt "Sessions per user", "The cookie out", "The limit"),
+  `SessionState`, `SessionEntry`, `WebSecurity` (filtrets steg, "Login with a session", nytt
+  avsnitt "Caches", `login`, `Builder.maximumSessions`, `build`), `Csrf` och båda
+  `module-info.java`. `README.md` i `modules/web/` (avsnittet "Sessioner": punkterna
+  `Cache-Control`, Gränsen och Sessioner per användare, en jämförelserad och tre avvikelserader)
+  och i `modules/security-web/` (inledningen, "Inloggning med session" med nya punkter, ett
+  exempel med `maximumSessions` och den nya delen "Cachar" med en tabell, "CSRF-skydd för en SPA",
+  två jämförelserader och fem avvikelserader). `requires` och `exports` är oförändrade, ingen
+  reflektion och inga nya filtyper; en ny huvudkällfil i `spola.web` (`CacheControl.java`, paketprivat).
+- Nya tester: 3 testklasser i `spola.web` (`SessionUserTests`, `SessionCacheTests`,
+  `SessionSweepTests`, i `SessionTests`) och `ReviewTests` i `spola.security.web` (`UserLimitTests`,
+  `UserLimitConcurrencyTests`, `UserSwitchTests`, `CacheHeaderTests`, `ReviewReadmeTests`,
+  `ReviewLeakTests`). Befintliga tester som ändrades med avsikt: `CsrfCookieTests` (`max-age=60`
+  på ett svar med `XSRF-TOKEN` blir nu `no-store`) och de tre testerna med 200 samtidiga
+  inloggningar (`LoginConcurrencyTests`, `CsrfConcurrencyTests`, `SchemeConcurrencyTests`), som
+  loggar in varje användare 40 gånger samtidigt och nu får plats för alla sessioner.
+
 ### Versioner och releaser (gjort för hand, utanför loopen)
 - `VERSION` i `Build.java` (nu `0.1.0`) sätts som modulversion i varje jar
   (`jar --module-version`). `java Build.java version` skriver ut den.
@@ -916,7 +982,9 @@
   (psykologen) är levererat i sin helhet (11a–11c), behovet "BCrypt-hashar och delegerande
   lösenordshasher" (psykologen) i uppdrag 12 och behovet "Rätt schema och klientadress bakom en
   omvänd proxy" (psykologen) i 13a–13b och behovet "HTTP-klient för JSON-API:er" (psykologen) i
-  uppdrag 14; appen byter sin Spring-konfiguration och sina klienter efter nästa release. Idéerna i `uppdrag/PLAN.md` (JWT, PostgreSQL, pool och
+  uppdrag 14; appen byter sin Spring-konfiguration och sina klienter efter nästa release.
+  Rättningarna efter säkerhetsgranskningen 2026-10-18: 15a är klar, **15b** (proxy och
+  dokumentation), **15c** (lösenord) och **15d** (`spola.client`) återstår. Idéerna i `uppdrag/PLAN.md` (JWT, PostgreSQL, pool och
   transaktioner, query-DSL, migreringar, schemaläggning, observability, starter) byggs när ett
   behov kommer.
 - **Kvar från friktionsrapporten i 05c** (`modules/demo/README.md`, avsnitt "Friktion"):
@@ -935,6 +1003,36 @@
     `LoggingSettings` efter bindningen, inte i `ConfigException` (punkt 7).
 
 ## Kända problem och begränsningar
+- **Säkerhetsgranskningen 2026-10-18 (15a):** granskningen gjordes av AI-granskare och **ersätter
+  inte en mänsklig granskning**; modulerna nedan bör fortfarande granskas av en människa. Kända
+  begränsningar efter rättningarna i 15a:
+  - **Gränsen per användare räknar bara inloggningar.** En session som appen skapar med
+    `Sessions.getOrCreate` har ingen användare, så anonyma sessioner (en varukorg på en öppen väg)
+    kan fortfarande fylla `maxSessions` (fyndet S1 nämner också den vägen); ett konto kan ha högst
+    `maximumSessions`, men många konton kan tillsammans fylla lagringen. Ingen
+    hastighetsbegränsning (utanför uppdraget).
+  - **Under samtidiga inloggningar** av samma användare kan användaren ha fler levande sessioner än
+    gränsen, högst gränsen plus antalet inloggningar som hanteras just då; när de är klara är det
+    högst gränsen. Den inloggning som bygger sitt svar sist behåller sin session; webbläsaren
+    behåller det `Set-Cookie` som kommer sist, så två samtidiga inloggningar med gränsen 1 kan
+    lämna webbläsaren med den avslutade sessionens cookie.
+  - En inloggning tar bort användarens äldsta sessioner innan den nya skapas; får skapandet ändå
+    503 (`maxSessions`) är de borta. På samma sätt är en annan användares session redan avslutad
+    när en inloggning med byte av användare får 503, och svaret tar bort dess cookie.
+  - Inget sätt att lista eller avsluta en användares sessioner (Springs `SessionRegistry`), ingen
+    `maxSessionsPreventsLogin(true)` och inget meddelande till den avslutade sessionen (Springs
+    `expiredUrl`): nästa förfrågan med dess cookie är bara anonym.
+  - **`Cache-Control` på inloggade svar utan cookie** behåller handlerns värde utom `public` och
+    `s-maxage`, som uppdraget säger; `max-age=60` på ett inloggat svar låter alltså en delad cache
+    spara det (förfrågningar med en sessionscookie har inget `Authorization`, RFC 9111 §3.5).
+    Anonyma svar utan cookie ändras inte. Inget `Pragma` och inget `Expires`.
+  - **Riktade cachefält ändras inte:** `CDN-Cache-Control` (RFC 9213), `Surrogate-Control` och
+    leverantörernas egna fält. Ett CDN som följer ett sådant fält i stället för `Cache-Control` kan
+    spara ett svar med en cookie; sätt inga sådana på svar som kan bära en cookie eller en inloggad
+    användares data.
+  - Ett `Cache-Control` som inte går att tolka ersätts med `no-store`, också på inloggade svar.
+  - Tolkningen av `Cache-Control` finns i två kopior (`spola.web` och `spola.security.web`) som
+    måste ändras tillsammans.
 - **REST-klienten (spola.client, 14):** säkerhetskritisk; **bör granskas av en människa** innan
   ramverket används på riktigt. Kända begränsningar:
   - **Sökvägen skickas som den står**, utan kodning och utan mallar, så värden utifrån måste
@@ -1039,7 +1137,8 @@
   ögonblicksbild:** ändrade roller, ett avstängt konto eller en borttagen användare i
   `UserStore` påverkar inte en inloggad session förrän utloggning eller utgång (som Springs
   standard); det finns inget sätt att logga ut alla sessioner för en användare (efter ett
-  lösenordsbyte, till exempel) och ingen gräns för samtidiga sessioner per användare.
+  lösenordsbyte, till exempel). En gräns för samtidiga sessioner per användare finns sedan 15a
+  (`maximumSessions`, standard 10; se ovan).
   **`login` ändrar inte förfrågans egen identitet:** `identity(request)` svarar i
   inloggningsförfrågan som när filtret körde, och nästa förfrågan ser identiteten; samma för
   `logout`. **Inloggningen loggas inte** (varken lyckade eller misslyckade inloggningar;
@@ -1064,8 +1163,9 @@
   förfrågan förnyade sessionen ingen session längre, och anropar den `getOrCreate` får den en
   ny session med ett eget `Set-Cookie` (det som kommer sist gäller). Städningen går igenom alla
   sessioner på en förfrågans tråd högst en gång per minut (med 10 000 sessioner snabbt, med
-  miljontals märkbart för den förfrågan). Ingen absolut maxlivstid, inget "kom ihåg mig", ingen
-  gräns per användare och inga händelser vid skapande och utgång (`HttpSessionListener`). `Secure`
+  miljontals märkbart för den förfrågan). Ingen absolut maxlivstid, inget "kom ihåg mig" och inga
+  händelser vid skapande och utgång (`HttpSessionListener`); en gräns per användare finns sedan
+  15a, men bara för inloggningar med `renewFor` (se ovan). `Secure`
   efter schemat och `X-Forwarded-Proto` kom i 13b (se ovan). Attributvärden
   sparas som referenser: ett föränderligt värde delas mellan samtidiga förfrågningar och måste
   vara trådsäkert. Cookie-funktionen körs en gång vid `inMemory`, så en funktion som läser
@@ -1080,7 +1180,8 @@
   människa. **Varje förfrågan med Basic-uppgifter kostar en PBKDF2-beräkning** (inga cachade
   inloggningar), så många förfrågningar med uppgifter belastar CPU:n; **ingen
   hastighetsbegränsning** och ingen låsning av konton. **Inga säkerhetshuvuden**
-  (`X-Content-Type-Options`, `X-Frame-Options`, HSTS) sätts. **Ingen auditloggning** av
+  (`X-Content-Type-Options`, `X-Frame-Options`, HSTS) sätts; bara `Cache-Control` på inloggade
+  svar och svar med en cookie (sedan 15a). **Ingen auditloggning** av
   inloggningar (uppdrag 18); modulen loggar ingenting. Inloggning och utloggning med session
   finns sedan 11b (se nedan), men ingen formulärinloggning med HTML-formulär och
   omdirigeringar, inget JWT och ingen CORS; CSRF-skydd för en SPA finns sedan 11c

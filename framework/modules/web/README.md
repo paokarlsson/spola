@@ -63,6 +63,7 @@ förfrågans schema är `https`, också bakom en proxy, kom i 13b.
 | `server.servlet.session.cookie.secure=true` | `withCookie(cookie -> cookie.secure(true))` |
 | `server.servlet.session.cookie.name` | `withCookieName("__Host-SESSION")` |
 | Tomcats `maxActiveSessions` | `withMaxSessions(10_000)` (standard 10 000) |
+| `sessionManagement(s -> s.maximumSessions(10))` (Spring Security) | `Sessions.renewFor(request, name, 10)` vid inloggningen; `WebSecurity.login` gör det med `maximumSessions` |
 | `server.forward-headers-strategy=native` (Tomcats `RemoteIpValve`) | `.filter(ForwardedHeaders.trusting(TrustedProxies.privateNetworks()))`, registrerat först |
 | `request.getScheme()`, `request.isSecure()` | `request.scheme()`, `request.scheme().equals("https")` |
 | `request.getRemoteAddr()` | `request.clientAddress()` (`InetAddress`); anslutningens adress är `request.http().remoteAddress()` |
@@ -588,7 +589,8 @@ kör det genom en riktig server, också med `HttpClient` och en `CookieManager`.
 Sessioner i minnet, motsvarigheten till servlet-API:ts `HttpSession` med Spring Boots
 `server.servlet.session.*`: en session per webbläsare, identifierad av ett slumpat id i en
 cookie, med typade attribut, utgång efter inaktivitet, en övre gräns för antalet sessioner, nytt
-id (`request.changeSessionId()`) och ogiltigförklaring (`session.invalidate()`). Koden är
+id (`request.changeSessionId()`), en gräns per användare vid inloggning och ogiltigförklaring
+(`session.invalidate()`). Koden är
 säkerhetskritisk, eftersom sessions-id:t kan bära en inloggning, och bör granskas av en människa
 innan den används på riktigt.
 
@@ -766,8 +768,16 @@ kör det genom en riktig server med `HttpClient` och en `CookieManager`.
   inställningarna (`SameSite=None` utan `Secure`, `__Host-` med `Domain`) ger
   `IllegalArgumentException` vid uppstart. Borttagningen är
   `SESSION=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax` med samma `Path` och `Domain`.
-  Ett svar får högst ett `Set-Cookie` för sessionen, med det slutliga utfallet, och ett svar som
-  sätter eller tar bort cookien får `Cache-Control: no-store` om det saknar `Cache-Control`.
+  Ett svar får högst ett `Set-Cookie` för sessionen, med det slutliga utfallet.
+- **`Cache-Control`.** Ett svar som sätter eller tar bort sessionscookien får aldrig kunna sparas av
+  en delad cache (en proxy eller ett CDN), eftersom nästa besökare då skulle få id:t. Saknar svaret
+  `Cache-Control` får det `Cache-Control: no-store`. Handlerns värde behålls bara när det redan
+  håller delade cachar borta: `no-store` eller `private` (utan fältlista), och varken `public`
+  eller `s-maxage`. Allt annat, till exempel `public, max-age=60`, `s-maxage=60`, `max-age=60`,
+  `no-cache`, `private="Set-Cookie"` eller ett värde som inte går att tolka, ersätts med ett enda
+  `Cache-Control: no-store`. Direktivens namn jämförs utan hänsyn till skiftläge, och alla
+  `Cache-Control`-fält räknas. Andra fält (`Expires`, `CDN-Cache-Control`, `Surrogate-Control`)
+  ändras inte; sätt inga sådana på svar som kan bära sessionscookien.
 - **`Secure`**, som Tomcat sätter det på `JSESSIONID`: cookien och borttagningen får `Secure` när
   förfrågans schema (`request.scheme()`) är `https`, eller när `withCookie` säger det
   (`cookie.secure(true)` ger `Secure` på varje svar, också över `http`). Inget annat i raden
@@ -781,16 +791,39 @@ kör det genom en riktig server med `HttpClient` och en `CookieManager`.
 - **Livscykeln.** `find` skapar aldrig en session. `getOrCreate` ger den levande sessionen eller
   skapar en. `renew` ger en levande session ett nytt id atomärt (det gamla slutar gälla direkt,
   attributen finns kvar) eller skapar en ny; använd den när sessionen får högre behörighet, till
-  exempel vid inloggning (skydd mot session fixation). `invalidate` tar bort sessionen och
-  cookien. Ett `Session`-objekt för en session som ogiltigförklarats eller gått ut ger tomt från
-  `get`, och `put` ger `IllegalStateException`.
+  exempel vid inloggning (skydd mot session fixation). `renewFor` är `renew` vid en inloggning
+  (se "Sessioner per användare" nedan). `invalidate` tar bort sessionen och cookien. Ett
+  `Session`-objekt för en session som ogiltigförklarats eller gått ut ger tomt från `get`, och
+  `put` ger `IllegalStateException`.
 - **Utgång och städning.** En session går ut när `idleTimeout` (standard 30 minuter) har gått
   sedan den senast användes, och varje förfrågan med cookien räknas som användning. En utgången
   session tas bort när den slås upp, och filtret städar bort alla utgångna högst en gång per
   minut. Ingen bakgrundstråd, ingen `close()`.
-- **Gränsen.** Högst `maxSessions` (standard 10 000). När gränsen är nådd även efter städningen
-  ger `getOrCreate` 503 (`application/problem+json`, utan `Set-Cookie`). Befintliga sessioner
-  tas aldrig bort för att ge plats.
+- **Gränsen.** Högst `maxSessions` (standard 10 000). När gränsen är nådd städas först, av en
+  förfrågan åt gången: en förfrågan som kommer medan en annan städar får 503 direkt, utan att gå
+  igenom lagringen själv. Är gränsen nådd även efter städningen ger `getOrCreate` 503
+  (`application/problem+json`, utan `Set-Cookie`). Befintliga sessioner tas aldrig bort för att
+  ge plats åt anonyma; bara en användares egna inloggningar avslutar användarens sessioner (se
+  nästa punkt).
+- **Sessioner per användare.** `Sessions.renewFor(request, name, n)` är `renew` vid en
+  inloggning, motsvarigheten till Spring Securitys `sessionManagement(s -> s.maximumSessions(n))`
+  med Spring Sessions index på användarnamn. `WebSecurity.login` i `spola.security.web` anropar
+  den med identitetens namn och `maximumSessions` (standard 10), så en app med `WebSecurity`
+  skriver den inte själv.
+  - Hör förfrågans session till **en annan användare** (en delad dator utan utloggning)
+    ogiltigförklaras den, och inloggningen får en ny, tom session: den nya användaren ser aldrig
+    den förras attribut, och det gamla id:t slutar gälla. En session utan användare eller med
+    samma användare förnyas och behåller sina attribut.
+  - Skulle användaren få fler än `n` sessioner avslutas användarens **minst nyligen använda**,
+    aldrig den nya inloggningen (en användning är en förfrågan som hittar sessionen, att den
+    skapas och att den förnyas). Ett konto som loggar in om och om igen utan cookie kan därför
+    inte fylla `maxSessions` och stänga ute alla andra. Det sker innan den nya sessionen skapas,
+    så en användare vid sin gräns kan logga in också när `maxSessions` är nådd, och igen när
+    svaret byggs, så att gränsen håller också när samma användare loggar in på flera ställen
+    samtidigt; sessionen räknas till användaren först då.
+  - Namn jämförs exakt. Indexet från namn till sessioner håller bara levande sessioner: en
+    session lämnar det när den ogiltigförklaras, går ut, städas bort eller avslutas av gränsen,
+    och en användare utan sessioner finns inte i det.
 - **I produktion** rekommenderas cookienamnet `__Host-SESSION` med `secure(true)`: webbläsaren
   behåller då cookien bara för den här värden, över HTTPS och med `Path=/`, så att en underdomän
   inte kan sätta eller skugga den.
@@ -1230,12 +1263,13 @@ Router.builder()
 | Flera värden för ett fält | `a=1&a=2` till en `String` blir `"1,2"`, till en `Integer` det första värdet | Fler än ett värde för `required`, `optional` och `flag` ger felet `single`. Bara `all` tar emot flera värden. |
 | `ValidationException` från egen kod | `ConstraintViolationException` från en `@Validated`-tjänst ger 500 utan en egen `@ExceptionHandler` | Samma: 500 utan mapper. 400 kräver en uttrycklig rad, `onException(ValidationException.class, (e, r) -> WebException.invalid(e).toResponse(r))`. |
 | Sessionens id | `HttpSession.getId()` ger id:t | Ingen `getId()`: id:t är en hemlighet som bara cookien bär, och applikationen behöver det inte. `Session.toString()` visar bara antalet attribut. |
-| Gräns för antalet sessioner | Ingen gräns som standard (Tomcats `maxActiveSessions` är -1). Med en gräns kastar Tomcat `TooManyActiveSessionsException` när en ny session ska skapas | Högst `maxSessions` (standard 10 000). Vid gränsen ger `getOrCreate` 503 (problem-svar utan `Set-Cookie`) i stället för att ta bort sessioner för att ge plats: befintliga sessioner tas aldrig bort, så den som kan skapa sessioner kan inte logga ut andra. |
+| Gräns för antalet sessioner | Ingen gräns som standard (Tomcats `maxActiveSessions` är -1). Med en gräns kastar Tomcat `TooManyActiveSessionsException` när en ny session ska skapas | Högst `maxSessions` (standard 10 000). Vid gränsen ger `getOrCreate` 503 (problem-svar utan `Set-Cookie`) i stället för att ta bort sessioner för att ge plats: befintliga sessioner tas aldrig bort, så den som kan skapa sessioner kan inte logga ut andra. Bara en användares egna inloggningar avslutar användarens äldsta sessioner (`renewFor`). |
+| Sessioner per användare | Spring Securitys `maximumSessions(n)` med en `SessionRegistry` markerar den minst nyligen använda sessionen som utgången, och `ConcurrentSessionFilter` avslutar den vid nästa förfrågan; utan `maximumSessions` finns ingen gräns. `changeSessionId()` behåller attributen också när en annan användare loggar in | `Sessions.renewFor(request, name, n)` avslutar den minst nyligen använda sessionen direkt; nästa förfrågan med dess cookie är anonym. `WebSecurity.login` har gränsen 10 som standard. En session som hör till en annan användare ger en ny, tom session i stället för att förnyas. Ingen `maxSessionsPreventsLogin(true)`, inget `SessionRegistry`-API för att lista eller avsluta en användares sessioner. |
 | Cookienamn | `JSESSIONID` (Tomcat) | `SESSION`, som Spring Session, i stället för `JSESSIONID`. I produktion rekommenderas `__Host-SESSION` med `secure(true)`. |
 | `Secure` på sessionscookien | Tomcat sätter `Secure` på `JSESSIONID` när `request.isSecure()`, och `server.servlet.session.cookie.secure=true` tvingar det | Samma regel: `Secure` när `request.scheme()` är `https`, och `withCookie(cookie -> cookie.secure(true))` tvingar det, också över `http`. Bakom en proxy krävs att `ForwardedHeaders` registreras före `sessions.filter()` (se raden om `Secure` bakom en proxy nedan). Som i Tomcat går regeln inte att stänga av. |
 | Persistens och flera servrar | Tomcat kan spara sessioner mellan omstarter (`server.servlet.session.persistent`), och Spring Session delar dem mellan servrar med JDBC eller Redis | Ingen persistens och ingen delning: sessionerna finns bara i minnet, försvinner vid omstart och delas inte mellan servrar. Attributen sparas som referenser (ingen serialisering, inget krav på `Serializable`). |
-| Städning av utgångna sessioner | Tomcat städar i en bakgrundstråd | Ingen bakgrundstråd: en utgången session tas bort när den slås upp, filtret städar alla utgångna högst en gång per minut, och alltid innan en ny session nekas vid gränsen. `Sessions` behöver ingen `close()`. |
-| `Cache-Control` för sessionscookien | Inget särskilt utan Spring Security (som sätter `no-cache, no-store` på alla svar) | Ett svar som sätter eller tar bort sessionscookien får `Cache-Control: no-store` om det saknar `Cache-Control`, så att en delad cache aldrig sparar ett svar med ett sessions-id. |
+| Städning av utgångna sessioner | Tomcat städar i en bakgrundstråd | Ingen bakgrundstråd: en utgången session tas bort när den slås upp, filtret städar alla utgångna högst en gång per minut, och alltid innan en ny session nekas vid gränsen. En städning åt gången: en förfrågan som nekas medan en annan städar får 503 utan att gå igenom lagringen. `Sessions` behöver ingen `close()`. |
+| `Cache-Control` för sessionscookien | Inget särskilt utan Spring Security (som sätter `no-cache, no-store, max-age=0, must-revalidate` på alla svar som saknar `Cache-Control`, och annars behåller handlerns värde) | Ett svar som sätter eller tar bort sessionscookien får `Cache-Control: no-store`, så att en delad cache aldrig sparar ett svar med ett sessions-id. Handlerns värde behålls bara om det redan har `no-store` eller `private` och varken `public` eller `s-maxage`; `public, max-age=60`, `s-maxage=60` och `max-age=60` ersätts. |
 | Gamla id:t efter `changeSessionId` | En förfrågan som redan har `HttpSession`-objektet fortsätter att använda det | `renew` gäller direkt också för förfrågningar som redan hanteras: en förfrågan som kom med det gamla id:t ser ingen session längre (`get` ger tomt, `put` kastar). |
 | Proxyhuvuden som läses | Med `native` läser Tomcat `X-Forwarded-For`, `X-Forwarded-Proto`, `X-Forwarded-Host` och `X-Forwarded-Port`; med `framework` läser `ForwardedHeaderFilter` också `Forwarded` (RFC 7239) och `X-Forwarded-Prefix` | Bara `X-Forwarded-For` och `X-Forwarded-Proto`. `Forwarded` (RFC 7239), `X-Forwarded-Host`, `X-Forwarded-Port` och `X-Forwarded-Prefix` stöds inte: `request.http().host()` är det `Host` som proxyn skickar, och porten och absoluta URL:er ändras inte. |
 | Ogiltiga värden från en betrodd proxy | `RemoteIpValve` avvisar aldrig förfrågan: elementen i `X-Forwarded-For` jämförs som text med reguljära uttryck, och ett `X-Forwarded-Proto` som inte är `https` ger `http` | 400 (problem-svar som namnger huvudet men inte värdet), aldrig 500: ett element i `X-Forwarded-For` som genomgången når och som inte är en IP-adress, fler än ett `X-Forwarded-Proto` och ett annat värde än `http` eller `https`. Element till vänster om klienten läses inte, och en obetrodd avsändare kan aldrig få 400 med huvudena. |

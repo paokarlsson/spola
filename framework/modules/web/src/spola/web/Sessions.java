@@ -13,8 +13,11 @@ import java.util.Base64;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import spola.http.Response;
 
@@ -93,8 +96,12 @@ import spola.http.Response;
  * used for every session cookie. A response gets at most one {@code Set-Cookie} for the session,
  * with the final outcome: created and then invalidated during one request gives only the
  * removal, invalidated and then created gives only the new id. A response that sets or removes
- * the cookie also gets {@code Cache-Control: no-store} unless it has a {@code Cache-Control}, so
- * that a shared cache never keeps a response with an id.
+ * the cookie must never be kept by a shared cache, so it gets {@code Cache-Control: no-store}
+ * unless the handler's {@code Cache-Control} already keeps it out of shared caches: a value with
+ * {@code no-store} or {@code private} (without a field list) and without {@code public} or
+ * {@code s-maxage} stays; any other value ({@code public, max-age=60}, {@code s-maxage=60},
+ * {@code max-age=60}, {@code no-cache}, one that does not parse), and every
+ * {@code Cache-Control} field with it, is replaced by one {@code Cache-Control: no-store}.
  *
  * <h2>{@code Secure}</h2>
  * As Tomcat sets {@code Secure} on {@code JSESSIONID} when {@code request.isSecure()}, the
@@ -136,14 +143,15 @@ import spola.http.Response;
  *       session fixation: a live session gets a new id atomically (the old id stops working at
  *       once, also for requests with the old id that are being handled) and keeps its
  *       attributes; without a session a new, empty one is created.</li>
+ *   <li>{@link #renewFor} is {@code renew} at a login: see "Sessions per user" below.</li>
  *   <li>{@link #invalidate} removes the session with all its attributes, and the response
  *       removes the cookie. Without a session it does nothing (no {@code Set-Cookie}).</li>
  *   <li>A {@link Session} whose session ended (invalidated by any request, or expired), or
  *       that came with an id another request has since renewed: {@code get} gives empty,
  *       {@code remove} does nothing, {@code put} throws {@link IllegalStateException}.</li>
- *   <li>{@code getOrCreate} that has to create a session, and {@code renew}, throw
- *       {@link IllegalStateException} once the filter has built the response (from a thread
- *       that outlived the request, say): the new id could not reach the browser.</li>
+ *   <li>{@code getOrCreate} that has to create a session, {@code renew} and {@code renewFor}
+ *       throw {@link IllegalStateException} once the filter has built the response (from a
+ *       thread that outlived the request, say): the new id could not reach the browser.</li>
  * </ul>
  *
  * <h2>Expiry and cleanup</h2>
@@ -157,13 +165,43 @@ import spola.http.Response;
  *
  * <h2>The limit</h2>
  * At most {@link SessionOptions#maxSessions} sessions are in memory, also when many requests
- * create sessions at once. When the limit is reached, expired sessions are removed first (a pass
- * over every session, skipped only when none can have expired since the last pass, so that a
- * flood of refused requests does not repeat it); if the limit is still reached, {@link #getOrCreate} (and {@link #renew} without a session) throws a
- * {@link WebException} 503 with a fixed detail, which gives a problem response without
- * {@code Set-Cookie}. Existing sessions are never removed to make room, so whoever can create
- * sessions cannot log others out. Renewing an existing session does not count as a new one.
- * Sessions are lost when the process stops and are not shared between servers.
+ * create sessions at once. When the limit is reached, expired sessions are removed first: a pass
+ * over every session, skipped when none can have expired since the last pass, and run by one
+ * request at a time (a compare-and-set, shared with the cleanup once a minute). If the limit is
+ * still reached, or another request is running the pass, {@link #getOrCreate} (and
+ * {@link #renew} or {@link #renewFor} without a session) throws a {@link WebException} 503 with
+ * a fixed detail, which gives a problem response without {@code Set-Cookie}; a flood of refused
+ * requests therefore never walks the store more than once at a time. Existing sessions are never
+ * removed to make room for anonymous ones, so whoever can create sessions cannot log others out;
+ * only a user's own logins end the user's sessions (see below). Renewing an existing session does
+ * not count as a new one. Sessions are lost when the process stops and are not shared between
+ * servers.
+ *
+ * <h2>Sessions per user</h2>
+ * {@link #renewFor renewFor(request, user, maxPerUser)}, which {@code WebSecurity.login} calls,
+ * is {@link #renew} for a login, the counterpart of Spring Security's
+ * {@code sessionManagement(s -> s.maximumSessions(n))} with the principal name index of Spring
+ * Session ({@code FindByIndexNameSessionRepository}). Sessions keeps an index from each user's
+ * name (compared exactly) to the user's sessions, so that one account that logs in again and
+ * again (without a cookie, every login is a new session) cannot fill {@code maxSessions} and
+ * lock everyone else out:
+ * <ul>
+ *   <li>The request's session is renewed as with {@code renew} (the attributes stay) when it has
+ *       no user or the same user. When it belongs to <b>another user</b> (a shared computer
+ *       without a logout), it is invalidated and a new, empty session is created, so the new
+ *       user never sees the previous user's attributes and the old id stops working.</li>
+ *   <li>When the user would get more than {@code maxPerUser} sessions, the user's <b>least
+ *       recently used</b> sessions end (a use is a request that finds the session, its creation
+ *       and its renewal), never the one being logged in. They end before the new session is
+ *       created, so a user at the limit can log in even when {@code maxSessions} is reached, and
+ *       again when the response is built, which keeps the count within the limit also when the
+ *       user logs in from several places at once. Until then the session being logged in is not
+ *       counted among the user's sessions, so a concurrent login of the same user can never end
+ *       it while the request is handled; the response built last decides which sessions stay.</li>
+ *   <li>The index holds only live sessions: a session leaves it when it is invalidated, expires,
+ *       is removed by a cleanup, is abandoned or is ended by the limit, and a user without
+ *       sessions has no entry. The index never holds an id.</li>
+ * </ul>
  */
 public final class Sessions {
 
@@ -191,6 +229,15 @@ public final class Sessions {
         }
     }
 
+    /**
+     * The sessions of one user. Its lock is held while the user's sessions are kept within a
+     * limit, so that two logins of the user do not both pick the same oldest session; the set
+     * itself is concurrent, since a session leaves it when it ends, under the session's lock.
+     */
+    private static final class UserSessions {
+        final Set<SessionEntry> entries = ConcurrentHashMap.newKeySet();
+    }
+
     /** A session created for a request, with its new id. */
     record Issued(Session session, String id) {
         /** Never the id. */
@@ -214,6 +261,12 @@ public final class Sessions {
     private final AtomicReference<Instant> nothingExpiresBefore = new AtomicReference<>(Instant.MIN);
     /** How many cleanups ran, for tests. */
     private final AtomicInteger sweeps = new AtomicInteger();
+    /** Whether a cleanup is running: only one at a time. Package-private so that tests can hold it. */
+    final AtomicBoolean sweeping = new AtomicBoolean();
+    /** The order of uses: every creation, lookup and renewal of a session takes the next number. */
+    private final AtomicLong uses = new AtomicLong();
+    /** Each user's sessions ({@link #renewFor}), by name; a user without sessions has no entry. */
+    private final ConcurrentHashMap<String, UserSessions> users = new ConcurrentHashMap<>();
     /** The session cookie as the options' function made it, with {@link #PLACEHOLDER} as value. */
     private final ResponseCookie template;
     /** The removal with the template's attributes: for a request whose scheme is not {@code https}. */
@@ -341,6 +394,47 @@ public final class Sessions {
     }
 
     /**
+     * {@link #renew} for a login of {@code user}, who may have at most {@code maxPerUser}
+     * sessions: the counterpart of Spring Security's {@code maximumSessions(n)} with
+     * {@code changeSessionId()}. {@code WebSecurity.login} calls it with the identity's name; see
+     * "Sessions per user" in the class documentation.
+     * <ol>
+     *   <li>A live session that belongs to another user is invalidated (as {@link #invalidate}),
+     *       and a new, empty session is created; a session without a user or with this user is
+     *       renewed and keeps its attributes. Without a live session a new one is created.</li>
+     *   <li>The user's least recently used sessions end until, with this one, there are at most
+     *       {@code maxPerUser}; the one being logged in never ends this way.</li>
+     *   <li>When the response is built, the session is counted among the user's sessions, and the
+     *       limit is applied again (for logins of the same user at the same time).</li>
+     * </ol>
+     * Names are compared exactly ({@link String#equals}). Calling it again in the same request
+     * for the same user changes nothing more; for another user it starts another new session.
+     *
+     * @param request    the request, as a handler or a filter inside the session filter gets it
+     * @param user       who logs in, such as {@code identity.name()}
+     * @param maxPerUser the most sessions {@code user} may have, at least 1
+     * @return the session, with its new id
+     * @throws WebException             503 if a new session is needed and {@code maxSessions} is
+     *                                  reached (a session of another user has then ended, and the
+     *                                  response removes its cookie)
+     * @throws IllegalStateException    if the session filter has not run for the request (500), or
+     *                                  if it is called after the response was built
+     * @throws IllegalArgumentException if {@code user} is empty or {@code maxPerUser} is below 1
+     * @throws NullPointerException     if {@code request} or {@code user} is {@code null}
+     */
+    public static Session renewFor(WebRequest request, String user, int maxPerUser) {
+        var state = state(request);
+        Objects.requireNonNull(user, "user");
+        if (user.isEmpty()) {
+            throw new IllegalArgumentException("user must not be empty");
+        }
+        if (maxPerUser < 1) {
+            throw new IllegalArgumentException("maxPerUser must be at least 1, was " + maxPerUser);
+        }
+        return state.renewFor(user, maxPerUser);
+    }
+
+    /**
      * Ends the request's session, the counterpart of {@code session.invalidate()}: the session
      * and all its attributes are removed, every {@link Session} object for it sees it as ended,
      * and the response removes the cookie ({@code Max-Age=0}). Without a session nothing
@@ -423,13 +517,29 @@ public final class Sessions {
         return true;
     }
 
-    /** Removes every expired session if a minute has passed since the last time (or the clock went back). */
+    /**
+     * Removes every expired session if a minute has passed since the last time (or the clock went
+     * back), unless a cleanup is already running.
+     */
     private void sweepIfDue(Instant now) {
         var due = nextSweep.get();
         boolean wentBack = now.isBefore(due.minus(SWEEP_INTERVAL));
         if ((!now.isBefore(due) || wentBack) && nextSweep.compareAndSet(due, now.plus(SWEEP_INTERVAL))) {
-            sweep(now);
+            trySweep(now);
         }
+    }
+
+    /** Runs {@link #sweep} unless another request is running a cleanup; whether it ran. */
+    private boolean trySweep(Instant now) {
+        if (!sweeping.compareAndSet(false, true)) {
+            return false;
+        }
+        try {
+            sweep(now);
+        } finally {
+            sweeping.set(false);
+        }
+        return true;
     }
 
     /**
@@ -457,13 +567,14 @@ public final class Sessions {
     Issued create() {
         var now = clock.instant();
         if (!reserve()) {
-            // the cleanup first; skipped only when no session can have expired since the last one,
-            // so that a flood of refused requests does not walk the whole store each time
-            if (!now.isBefore(nothingExpiresBefore.get())) {
-                sweep(now);
+            // the cleanup first, by one request at a time, and skipped when no session can have
+            // expired since the last one: a flood of refused requests does not walk the whole store
+            // each time, and a request that finds a cleanup running is refused without a walk of its own
+            if (!now.isBefore(nothingExpiresBefore.get()) && !trySweep(now)) {
+                throw unavailable();
             }
             if (!reserve()) {
-                throw new WebException(503, "The server cannot take more sessions right now.");
+                throw unavailable();
             }
         }
         try {
@@ -479,6 +590,11 @@ public final class Sessions {
             count.decrementAndGet();
             throw e;
         }
+    }
+
+    /** The 503 at the limit: a fixed detail, never a value from the request. */
+    private static WebException unavailable() {
+        return new WebException(503, "The server cannot take more sessions right now.");
     }
 
     /** Counts one more session if the limit allows it. */
@@ -509,6 +625,74 @@ public final class Sessions {
         if (store.remove(key, entry)) {
             count.decrementAndGet();
         }
+    }
+
+    /** Counts {@code entry} among {@code user}'s sessions; called under the entry's lock. */
+    void join(String user, SessionEntry entry) {
+        users.compute(user, (name, sessions) -> {
+            var result = sessions == null ? new UserSessions() : sessions;
+            result.entries.add(entry);
+            return result;
+        });
+    }
+
+    /** No longer counts {@code entry} among {@code user}'s sessions, and forgets a user without any; under the entry's lock. */
+    void leave(String user, SessionEntry entry) {
+        users.computeIfPresent(user, (name, sessions) -> {
+            sessions.entries.remove(entry);
+            return sessions.entries.isEmpty() ? null : sessions;
+        });
+    }
+
+    /**
+     * Ends {@code user}'s least recently used sessions, never {@code keep}, until the user has at
+     * most {@code max} (with {@code keep}, if it is one of them). Two calls for the same user take
+     * turns, so they never end more than needed between them; a session used while it is being
+     * picked is not ended, and the oldest is looked for again.
+     */
+    void limit(String user, int max, SessionEntry keep) {
+        var sessions = users.get(user);
+        if (sessions == null) {
+            return;
+        }
+        synchronized (sessions) {
+            while (true) {
+                SessionEntry oldest = null;
+                long oldestUse = Long.MAX_VALUE;
+                int count = 0;
+                for (var entry : sessions.entries) {
+                    long use = entry.lastUseAs(user);
+                    if (use < 0) {
+                        continue; // ended, or no longer the user's
+                    }
+                    count++;
+                    if (entry != keep && use < oldestUse) {
+                        oldest = entry;
+                        oldestUse = use;
+                    }
+                }
+                if (count <= max || oldest == null) {
+                    return;
+                }
+                oldest.endIfUnusedSince(user, oldestUse);
+            }
+        }
+    }
+
+    /** The next number in the order of uses. */
+    long nextUse() {
+        return uses.incrementAndGet();
+    }
+
+    /** How many users have sessions in the index, for tests. */
+    int users() {
+        return users.size();
+    }
+
+    /** How many sessions the index counts for {@code user}, for tests. */
+    int sessionsOf(String user) {
+        var sessions = users.get(user);
+        return sessions == null ? 0 : sessions.entries.size();
     }
 
     /** A new id: 32 bytes from this instance's {@link SecureRandom}, Base64url without padding. */

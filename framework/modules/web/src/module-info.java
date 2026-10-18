@@ -31,7 +31,10 @@
  *       a cookie, created only when something is stored, with an idle timeout, a limit (503)
  *       and a new id on demand ({@code changeSessionId}); its filter is registered on the
  *       router. The cookie is {@code Secure} when the options say so or when the request's
- *       scheme is {@code https}, as with Tomcat.</li>
+ *       scheme is {@code https}, as with Tomcat. A login renews the session with
+ *       {@code Sessions.renewFor(request, user, n)}, which ends another user's session and
+ *       keeps at most {@code n} sessions per user ({@code maximumSessions(n)}). A response that
+ *       sets or removes the cookie is never storable by a shared cache.</li>
  *   <li>Validation and binding ({@code @Valid}, {@code @ModelAttribute},
  *       {@code MethodArgumentNotValidException}): {@code WebRequest.readJson(codec, validator)},
  *       {@code readForm(binder, validator)} and {@code bindQuery(binder, validator)} with a
