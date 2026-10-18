@@ -3,10 +3,11 @@ title: Security review part 1: per-user session limit and cache headers
 mission_source: uppdrag/15a-sakerhet-sessioner-och-inloggning.md
 max_rounds: 5
 round: 2
-next_step: 3d
-status: verifying
+next_step: done
+status: PASS
 green: yes
-counts: 0 blocker, 1 major, 9 minor
+counts: 0 blocker, 0 major, 11 minor
 commits:
   - round 1: e392fec
+  - round 2: b4d95f7
 stash: –
