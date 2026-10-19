@@ -1,15 +1,19 @@
 # Spola
 
-Ett ramverk för Java 25 som gör det Spring Boot och Lombok gör, utan magi och utan ett enda
-beroende utanför JDK:n.
+> **Ett hobby- och labbprojekt.** Spola byggs på fritiden av en person och skrivs av AI-agenter
+> (Claude Code) i loopen som beskrivs under [Hur ramverket byggs](#hur-ramverket-byggs).
+> Version 0.x, inte redo för produktion och utan support. Säkerhetsmodulerna (`spola.security`,
+> `spola.security.web`) är inte granskade av en människa: använd dem inte för att skydda något
+> på riktigt. Spola har ingen koppling till Spring, VMware eller Broadcom (se
+> [Varumärken](#varumärken)).
+>
+> *A hobby and lab project, written by AI agents (Claude Code). Version 0.x: not for production,
+> no support, and the security modules have not been reviewed by a human. Not affiliated with
+> Spring, VMware or Broadcom. Documentation is in Swedish; see [In English](#in-english).*
 
-*A Java 25 framework that replaces Spring Boot and Lombok with explicit code and zero
-third-party dependencies. Documentation is in Swedish.*
-
-> **Status: version 0.x, inte redo för produktion.** Spola växer efter behov: en modul byggs när
-> ett riktigt projekt behöver något som Spring eller Lombok hade gett det.
-> Säkerhetsmodulerna (`spola.security`, `spola.security.web`) är inte granskade av en människa
-> än. Använd dem inte för att skydda något på riktigt.
+Ett ramverk för Java 25 som gör det ett webb-API behöver från Spring Boot och Lombok, utan magi
+och utan ett enda beroende utanför JDK:n. Spola växer efter behov: en modul byggs när ett
+riktigt projekt behöver något som Spring eller Lombok hade gett det.
 
 ## Varför
 
@@ -25,7 +29,7 @@ Du behöver JDK 25 och inget annat.
 
 ```bash
 cd framework
-java Build.java          # kompilerar, kör guardrails och alla tester, ca 90 s
+java Build.java          # kompilerar, kör guardrails och alla tester, några minuter
 ```
 
 Jar-filerna hamnar i `framework/out/`, en per modul. Du kan också hämta dem från en
@@ -99,9 +103,10 @@ för vad som hör hemma i Spola, modulkatalogen och API-mönstren står i
 [`framework/MONSTER.md`](framework/MONSTER.md). Mallen för `CLAUDE.md` i ditt eget projekt finns
 i [`docs/app-claude.md`](docs/app-claude.md).
 
-Klart: bygge, testkörare, DI, konfiguration, util, JSON, HTTP med TLS, web, validering och
-grundläggande säkerhet. Idéer som byggs när de behövs, till exempel JWT, PostgreSQL och
-schemaläggning, står i [`uppdrag/PLAN.md`](uppdrag/PLAN.md).
+Klart: bygge, testkörare, DI, konfiguration, util, JSON, HTTP med TLS, web, validering, en
+HTTP-klient och säkerhet med lösenordshashning, sessioner och CSRF-skydd. Idéer som byggs när
+de behövs, till exempel JWT, PostgreSQL och schemaläggning, står i
+[`uppdrag/PLAN.md`](uppdrag/PLAN.md).
 
 ## Versioner och releaser
 
@@ -120,7 +125,7 @@ finns i git och i körningsloggarna.
 | Katalog | Innehåll |
 | --- | --- |
 | `framework/` | Ramverket |
-| `docs/` | [Säljmaterial](docs/saljmaterial.md) och [mallen för appars `CLAUDE.md`](docs/app-claude.md) |
+| `docs/` | [Säljmaterial](docs/saljmaterial.md), skrivet som en övning, och [mallen för appars `CLAUDE.md`](docs/app-claude.md) |
 | `uppdrag/` | Uppdragen, behoven i `uppdrag/behov/` och idélistan i `PLAN.md` |
 | `gauntlet/` | `LOG.md` med en rad per iteration och körningarna i `runs/` |
 | `scripts/gauntlet.sh` | Den yttre loopen |
@@ -134,6 +139,33 @@ Hur loopen körs står i [`CLAUDE.md`](CLAUDE.md).
 > (`--dangerously-skip-permissions`). Det är rimligt bakom containerns brandvägg men inte direkt
 > på din egen dator.
 
+## In English
+
+Spola is a Java 25 framework that does what a web API needs from Spring Boot and Lombok, without
+annotations, classpath scanning or reflection at startup, and without a single dependency
+outside the JDK. All wiring is plain Java that you can follow with "Go to definition".
+
+- **Status:** version 0.x, a hobby and lab project. Not for production and no support. The
+  security modules have not been reviewed by a human. To report a vulnerability, see
+  [`SECURITY.md`](SECURITY.md).
+- **How it is built:** a loop of AI agents (Claude Code). A planner picks the next mission, a
+  builder writes the code, three critics with fresh context try to break it, and a judge weighs
+  their findings. Only rounds where the build and every test pass are committed.
+- **How it grows:** a module is built when a real project needs something that Spring or Lombok
+  would have given it.
+- **Try it:** with JDK 25, `cd framework && java Build.java` compiles every module, checks the
+  rules and runs the tests. Each module's `README.md` shows the Spring code and the Spola code
+  side by side (in Swedish).
+- **License:** Apache License 2.0.
+
+## Varumärken
+
+Spola har ingen koppling till, och är inte godkänt av, projekten och företagen bakom det som det
+jämförs med, till exempel Spring, Lombok, Jackson, Tomcat och JUnit. Spring och Spring Boot är
+varumärken som tillhör Broadcom Inc. Namnen används bara för att beskriva vad Spola ersätter.
+
 ## Licens
 
-Ingen licens är vald ännu. Tills det finns en `LICENSE`-fil förbehålls alla rättigheter.
+Apache License 2.0, se [`LICENSE`](LICENSE). Copyright 2026 Ola Karlsson.
+
+Hur du rapporterar en sårbarhet står i [`SECURITY.md`](SECURITY.md).
