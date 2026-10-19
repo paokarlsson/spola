@@ -1,20 +1,24 @@
 # Spola – säljmaterial
 
-*Ola Karlsson · läget 2026-10-03*
+*Ola Karlsson · läget 2026-10-19*
+
+> Det här är en övning i att presentera ett hobbyprojekt. Spola är version 0.x, skrivet av
+> AI-agenter och inte redo för produktion. Spola har ingen koppling till Spring, VMware eller
+> Broadcom; Spring och Spring Boot är varumärken som tillhör Broadcom Inc.
 
 ## Pitch
 
-**Spola är ett Java 25-ramverk som gör det Spring Boot och Lombok gör, men utan magi och utan ett enda beroende utanför JDK:n.** Allt som kopplar ihop din applikation står i vanlig Java-kod som du kan följa med "Go to definition".
+**Spola är ett Java 25-ramverk som gör det ett webb-API behöver från Spring Boot och Lombok, men utan magi och utan ett enda beroende utanför JDK:n.** Allt som kopplar ihop din applikation står i vanlig Java-kod som du kan följa med "Go to definition".
 
 Tre budskap bär allt annat:
 
 1. **Inget dolt.** Inga annoteringar som gör saker i bakgrunden, ingen classpath-scanning, ingen reflektion i uppstarten. Det du läser är det som körs.
 2. **Fel tidigt, inte i produktion.** Saknade beroenden, cykler och felaktig konfiguration upptäcks av kompilatorn eller vid start, alla på en gång och med rad angiven.
-3. **Noll tredjepartsberoenden.** Ingen Maven-katalog att granska, inga CVE:er i transitiva bibliotek, inga versionskonflikter. Bara JDK 25.
+3. **Noll tredjepartsberoenden.** Inga transitiva bibliotek att bevaka för sårbarheter och inga versionskonflikter mellan dem. Bara JDK 25.
 
-## Problemet
+## Avvägningen
 
-Spring Boot och Lombok sparar tid de första veckorna och tar tillbaka den resten av systemets livstid. Det märks på fyra ställen:
+Spring Boot och Lombok sparar mycket tid, och för de flesta team är de rätt val. Priset är konventioner och beroenden, och det märks på fyra ställen. Spola är ett experiment med den andra avvägningen:
 
 - **Magi som måste läras ut.** En klass blir en böna för att den har rätt annotering och ligger i rätt paket. Nya utvecklare lär sig konventioner i stället för kod, och "Go to definition" leder till ramverket, inte till svaret.
 - **Fel som syns sent.** Ett saknat beroende eller en cykel märks först när kontexten startar, och felet pekar på en klass, inte på var kopplingen gjordes.
@@ -73,20 +77,21 @@ Konfigurationen fungerar likadant. Du anger källorna och deras ordning i koden,
 
 ## Vad som finns i dag
 
-Tretton moduler med 2 204 tester, cirka 32 000 rader källkod och 24 000 rader test. Allt bygger grönt med `java Build.java`. Det räcker för ett webb-API med HTTPS, JSON, validering och inloggning.
+Fjorton moduler med 3 568 tester, cirka 39 000 rader källkod och 40 000 rader test (med kommentarer och Javadoc). Allt bygger grönt med `java Build.java`. Det räcker för ett webb-API med HTTPS, JSON, validering, inloggning med session och CSRF-skydd, och för att anropa andra JSON-API:er.
 
 | Modul | Ersätter | Tester |
 | --- | --- | --- |
-| `spola.web` | Spring MVC: routing som kod, filter, felhantering, JSON, cookies, formulär | 730 |
+| `spola.web` | Spring MVC: routing som kod, filter, felhantering, JSON, cookies, formulär, sessioner, proxyhuvuden | 1 156 |
+| `spola.client` | Springs `RestClient`: JSON-API:er över `java.net.http`, utan att läcka nycklar i fel | 447 |
 | `spola.json` | Jackson: strikt RFC 8259-parser och explicit mappning till records | 417 |
-| `spola.http` | Tomcat/Netty: HTTP/1.1 på virtuella trådar, TLS, gränser mot missbruk | 283 |
+| `spola.security` | Spring Security (kärna): PBKDF2- och BCrypt-hashning, autentisering | 346 |
+| `spola.http` | Tomcat/Netty: HTTP/1.1 på virtuella trådar, TLS, gränser mot missbruk | 290 |
+| `spola.security.web` | Spring Security (webb): filter, HTTP Basic, åtkomstregler, inloggning med session, CSRF | 287 |
 | `spola.validation` | Bean Validation: komponerbara validatorer och felrapporter | 251 |
-| `spola.security` | Spring Security (kärna): PBKDF2-hashning, autentisering | 103 |
 | `spola.util` | Lombok och Spring-loggning: `Log`, `Lazy`, `ToString` | 80 |
 | `spola.test` | JUnit: tester som lambdas | 77 |
 | `spola.config` | `application.properties`, `@Value`, profiler | 68 |
 | `spola.di` | Spring Core: explicit DI, scopes, livscykel | 48 |
-| `spola.security.web` | Spring Security (webb): filter, HTTP Basic, åtkomstregler | 46 |
 | `spola.demo` | Exempelprogram som använder modulerna tillsammans | 43 |
 | `spola.codegen` | Lombok `@Builder`, `@With`: genererad källkod | 41 |
 | `spola.guardrails` | Regelkontroller i bygget | 17 |
@@ -110,18 +115,19 @@ flowchart LR
     C -- "FAIL: fynden blir nästa runda, högst 5" --> B
 ```
 
-Bara rundor där bygget och alla tester går grönt committas, så varje version i historiken fungerar. Hittills har 18 uppdrag och drygt 60 commits passerat loopen på två dygn. Varje beslut finns spårbart i git och i körningsloggarna.
+Bara rundor där bygget och alla tester går grönt committas, så varje version i historiken fungerar. Hittills har 29 uppdrag passerat loopen sedan starten den 2 oktober 2026. Varje beslut finns spårbart i git och i körningsloggarna.
 
-## För vem och värdet
+## Vem det kan intressera
 
-Spola passar team som vill äga sin kod helt och hållet och som hellre skriver tre rader till än lär sig en konvention.
+Spola är ett experiment, inte ett ramverk att bygga en verksamhet på. Det kan intressera den som hellre skriver tre rader till än lär sig en konvention.
 
-| Målgrupp | Vad de vinner |
+| Läsare | Vad det finns att hämta |
 | --- | --- |
-| Team med höga krav på leveranskedjan (offentlig sektor, finans, hälsa) | Inga tredjepartsberoenden att granska, licensera eller patcha. Allt kommer från JDK:n. |
-| Drift och plattform | Moduler utan beroenden kan packas med `jlink` till en egen liten Java-runtime, för små containrar och snabb start. Ingen scanning eller reflektion vid uppstart. |
-| Team med många nya utvecklare | Ingen dold magi att lära ut. "Go to definition" leder hela vägen, och felmeddelanden pekar på rätt rad. |
-| Arkitekter som vill ha modern Java | Records, sealed interfaces, virtuella trådar och scoped values används fullt ut, inte som tillägg till ett äldre ramverk. |
+| Den som vill se hur långt JDK:n räcker | Ett webb-API med HTTPS, JSON, validering, sessioner och CSRF-skydd utan ett enda bibliotek utanför JDK 25. |
+| Den som vill förstå ett ramverk inifrån | Ingen dold magi. "Go to definition" leder hela vägen, och felmeddelanden pekar på rätt rad. |
+| Den som är nyfiken på AI-agenter som skriver kod | Varje uppdrag, kritik och utslag finns i `gauntlet/runs/`, och inget committas utan grönt bygge. |
+| Drift och plattform | Moduler utan beroenden kan packas med `jlink` till en egen liten Java-runtime. Ingen scanning eller reflektion vid uppstart. |
+| Den som vill se modern Java | Records, sealed interfaces, virtuella trådar och scoped values används fullt ut, inte som tillägg till ett äldre ramverk. |
 
 Priset är lite mer kod på de ställen där Spring gissar, till exempel i kopplingen mellan komponenter och i JSON-mappningen. Integrationstestet visade var det blir ordrikt, och de punkterna byggs bort när ett projekt behöver det.
 
@@ -132,16 +138,18 @@ Spola är version 0.x och inte redo för produktion än. Ramverket byggs efter b
 | Område | Läge |
 | --- | --- |
 | Bygge, test, DI, konfiguration, util, JSON | Klart |
-| HTTP-server med TLS, web, validering | Klart |
-| Säkerhet: hashning, filter, Basic, åtkomstregler | Klart, väntar på mänsklig granskning |
-| JWT, sessioner, PostgreSQL, schemaläggning, observability, starter | Idéer, byggs när ett projekt behöver dem |
+| HTTP-server med TLS, web, validering, HTTP-klient | Klart |
+| Säkerhet: PBKDF2 och BCrypt, filter, Basic, åtkomstregler, inloggning med session, CSRF | Klart, väntar på mänsklig granskning |
+| Omförsök vid tillfälliga fel (Spring Retry) | Beställt av ett projekt, inte byggt än |
+| JWT, PostgreSQL, schemaläggning, observability, starter | Idéer, byggs när ett projekt behöver dem |
 
 Kända begränsningar:
 
 - **Säkerhetskoden ska granskas av en människa** innan den används på riktigt. Loopen har redan hittat och rättat ett sådant fel: en metodregel med gemener, som `method("get")`, matchade aldrig och släppte igenom anropet till nästa regel.
 - **Leverans via GitHub-releaser.** Varje version publiceras med en jar och en källkods-jar per modul och `SHA256SUMS`. Det finns inget Maven-repo, så projekten hämtar jar-filerna själva.
 - **DI blir ordrik** när ett beroende har en kvalificerare, eftersom alla beroenden då måste skrivas som `Key`. En API-förbättring är planerad.
-- **Bygget tar ungefär 90 sekunder** och växer med testerna.
+- **Skrivet av AI-agenter.** Koden är skriven och granskad av agenterna i loopen. Testerna och reglerna i bygget är skyddsnätet, men ingen människa har läst all kod.
+- **Bygget tar några minuter** och växer med testerna.
 
 ## Nästa steg
 
