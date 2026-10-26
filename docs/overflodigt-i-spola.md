@@ -3,6 +3,9 @@
 En genomgång av modulerna, mot vad som faktiskt används och vad JDK 25 redan ger. Ordnat efter
 hur överflödigt det är. Skriven 2026-10-26.
 
+**Läget:** `spola.di`, `ToString` och `Unchecked` med `Throwing*` är borttagna inför 0.3.0
+(se `docs/plan-rensning.md`). Resten av genomgången står kvar som den skrevs.
+
 ## Mest överflödigt
 
 **1. `spola.di` (cirka 1 600 rader)**

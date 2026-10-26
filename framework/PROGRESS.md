@@ -55,7 +55,7 @@
 - Bygget tar ungefär 9 s (testerna ungefär 2 s, varav timeout-testerna 1,7 s; exit-vaktens
   två barn-JVM:ar ungefär 2–3 s).
 
-### Uppdrag 03: DI-kärna
+### Uppdrag 03: DI-kärna (borttagen i 0.3.0, se "Rensning inför 0.3.0")
 - Modulen `spola.di` (`modules/di/`, inga `requires`): typsäkra nycklar (`Key<T>`) med
   kvalificerare som vanliga värden, moduler (`ContainerModule`, `Binder.install`), bindningar
   med typad form (`to(A.class, B.class, Service::new)`, 0–5 beroenden) och resolverform
@@ -1169,6 +1169,19 @@
   (22 fel), ingen Base64-avkodning (9 fel), ingen kontroll av punktsegment (36 fel) och segment
   utan gränsen vid `;` (6 fel); varje mutation fångades.
 
+### Rensning inför 0.3.0 (gjort för hand, utanför loopen)
+- `spola.di` är borttagen (`modules/di/` och raden i `MODULES`). `spola.demo` kopplar ihop
+  komponenterna med konstruktorer i `InventoryWiring.process`; `Channel` och `CheckKind`
+  behövdes bara som kvalificerare och är borttagna, liksom testet för ett wiring-fel
+  (ett saknat beroende är nu ett kompileringsfel). Ett revisionsspår som inte går att stänga
+  ger exitkod 74.
+- I `spola.util` är `ToString`, `Unchecked`, `UncheckedException` och
+  `ThrowingRunnable/Supplier/Function/Consumer` borttagna med sina tester. `AuditSettings`
+  skriver över `toString()` själv. `Lazy`, `Log`, `Logging` och `LoggingSettings` är
+  oförändrade.
+- `MONSTER.md` säger nu att det som Java 25 redan ger med rimlig ergonomi inte byggs.
+  Bakgrund: `docs/overflodigt-i-spola.md`, plan: `docs/plan-rensning.md`.
+
 ### Versioner och releaser (gjort för hand, utanför loopen)
 - `VERSION` i `Build.java` (nu `0.1.0`) sätts som modulversion i varje jar
   (`jar --module-version`). `java Build.java version` skriver ut den.
@@ -1190,14 +1203,12 @@
   transaktioner, query-DSL, migreringar, schemaläggning, observability, starter) byggs när ett
   behov kommer.
 - **Kvar från friktionsrapporten i 05c** (`modules/demo/README.md`, avsnitt "Friktion"):
-  - **DI:** den typade formen av `to(...)` går inte att blanda `Class` och `Key` i; ett enda
-    kvalificerat beroende gör att alla måste skrivas `Key.of(...)` (punkt 3).
   - **Konfiguration:** konfigurationsfilens plats är själv konfiguration och kräver en första
     omgång med samma källor och känsliga nycklar upprepade; ingen källa vars sökväg läses från
     en nyckel (punkt 4).
-  - **Uppstart:** konfiguration, loggning, container och översättning av feltyper till
-    meddelande och exitkod skrivs för hand (ingen gemensam supertyp för felen,
-    `Container.create` tar bara varargs); hör till idén starter (punkt 5).
+  - **Uppstart:** konfiguration, loggning, komponenter och översättning av feltyper till
+    meddelande och exitkod skrivs för hand (ingen gemensam supertyp för felen); hör till idén
+    starter (punkt 5).
   - **Loggning:** `Logging.configure` är global för JVM:en; ett program som tar sin
     logg-ström som parameter måste konfigurera och återställa runt anropet, och två samtidiga
     anrop delar loggning (punkt 6).
@@ -1612,14 +1623,6 @@
   Platshållare i profilnyckelns värde ersätts inte. Kastar bindningsfunktionen efter att
   problem registrerats släpps dess undantag (det kan innehålla värden). Enum-namn matchas
   exakt (skiftlägeskänsligt). Bara properties-format (JSON i uppdrag 06).
-- **DI (spola.di):** i resolverformen upptäcks ett odeklarerat beroende först när
-  komponenten skapas (inte vid `Container.create`); den typade formen har inte problemet.
-  Nycklar bär en `Class<T>`, så generiska typer (`List<String>`) kan inte vara nycklar
-  direkt; slå in dem i en egen typ eller record. Ingen `Provider`/lat injektion: en
-  singleton som behöver en anropsscopad komponent per anrop måste själv bli `CALL` eller
-  `PROTOTYPE`, eller hämtas via containern i anropet. Prototyper och `toInstance`-instanser
-  stängs inte av containern. Cykelsökningen rapporterar minst en cykel per cyklisk del av
-  grafen, inte alla elementära cykler.
 - **Tester (spola.test):** ett test som inte stannar när det avbryts efter sin timeout
   överges på en daemon-tråd; dess `afterEach` körs bara om tråden någon gång blir klar och
   kan då gå samtidigt med senare tester. Ett test som anropar `System.exit` ger rött bygge

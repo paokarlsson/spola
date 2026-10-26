@@ -3,7 +3,6 @@ package spola.demo;
 import java.nio.file.Path;
 import java.util.Objects;
 import java.util.Optional;
-import spola.util.ToString;
 
 /**
  * The audit trail (keys {@code audit.*}).
@@ -23,6 +22,6 @@ record AuditSettings(Optional<Path> file, String secret) {
     /** Like a record's own {@code toString}, but without the secret. */
     @Override
     public String toString() {
-        return ToString.of("AuditSettings").add("file", file).secret("secret", secret).toString();
+        return "AuditSettings[file=" + file + ", secret=***]";
     }
 }

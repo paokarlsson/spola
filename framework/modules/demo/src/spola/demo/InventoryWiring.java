@@ -1,5 +1,6 @@
 package spola.demo;
 
+import java.io.IOException;
 import java.io.PrintStream;
 import java.lang.System.Logger.Level;
 import java.nio.file.Path;
@@ -11,15 +12,13 @@ import spola.config.Config;
 import spola.config.Converter;
 import spola.config.Section;
 import spola.config.Source;
-import spola.di.ContainerModule;
-import spola.di.Key;
 import spola.util.LoggingSettings;
 
 /**
  * The program's wiring: where the configuration comes from, how it is bound to the settings
- * records and how the components are bound in the container. Together with
- * {@link InventoryApp} the only code that knows {@code Config} and the container; the
- * components get plain records and each other through their constructors.
+ * records and how the components are created. Together with {@link InventoryApp} the only code
+ * that knows {@code Config}; the components get plain records and each other through their
+ * constructors, called by hand in {@link #process}.
  */
 final class InventoryWiring {
 
@@ -137,42 +136,18 @@ final class InventoryWiring {
         return levels;
     }
 
-    /** The settings records, and the stream the summary is written to. */
-    static ContainerModule settings(AppSettings app, PrintStream summary) {
-        return binder -> {
-            binder.bind(InventorySettings.class).toInstance(app.inventory());
-            binder.bind(RuleSettings.class).toInstance(app.rules());
-            binder.bind(AuditSettings.class).toInstance(app.audit());
-            binder.bind(Key.of(PrintStream.class, Channel.SUMMARY)).toInstance(summary);
-        };
-    }
-
-    /** The stock and the audit trail. */
-    static final ContainerModule STOCK = binder -> {
-        binder.bind(Stock.class).to(InventorySettings.class, Stock::new);
-        binder.bind(AuditTrail.class).to(InventorySettings.class, AuditSettings.class, AuditTrail::new);
-    };
-
-    /** The order checks, told apart by {@link CheckKind}. */
-    static final ContainerModule CHECKS = binder -> {
-        binder.bind(Key.of(OrderCheck.class, CheckKind.QUANTITY)).to(RuleSettings.class, QuantityLimit::new);
-        binder.bind(Key.of(OrderCheck.class, CheckKind.BLOCKED)).to(RuleSettings.class, BlockedSkus::new);
-    };
-
-    /** The processor and the report. */
-    static final ContainerModule PROCESSING = binder -> {
-        binder.bind(OrderProcessor.class).to(
-                Key.of(InventorySettings.class),
-                Key.of(Stock.class),
-                Key.of(OrderCheck.class, CheckKind.QUANTITY),
-                Key.of(OrderCheck.class, CheckKind.BLOCKED),
-                Key.of(AuditTrail.class),
-                OrderProcessor::new);
-        binder.bind(ReportWriter.class).to(Key.of(PrintStream.class, Channel.SUMMARY), ReportWriter::new);
-    };
-
-    /** Every module of the program. */
-    static List<ContainerModule> modules(AppSettings app, PrintStream summary) {
-        return List.of(settings(app, summary), STOCK, CHECKS, PROCESSING);
+    /**
+     * Creates the components, processes the order file and writes the summary to
+     * {@code summary}. The audit trail is closed when this returns, also after a failure.
+     *
+     * @throws IOException if the audit trail cannot be closed
+     */
+    static void process(AppSettings app, PrintStream summary) throws IOException {
+        var stock = new Stock(app.inventory());
+        try (var audit = new AuditTrail(app.inventory(), app.audit())) {
+            var processor = new OrderProcessor(app.inventory(), stock,
+                    new QuantityLimit(app.rules()), new BlockedSkus(app.rules()), audit);
+            new ReportWriter(summary).write(processor.process());
+        }
     }
 }

@@ -1,5 +1,5 @@
 /**
- * Spola's small helpers that replace the non-builder parts of Lombok, plus console logging
+ * Spola's small helpers that replace the parts of Lombok Java 25 does not already cover, plus console logging
  * that replaces Spring Boot's default log format and {@code logging.level.*}.
  *
  * <ul>
@@ -10,11 +10,11 @@
  *       the {@code java.util.logging} root logger and sets levels per logger-name prefix.</li>
  *   <li>{@link spola.util.Lazy}: a thread-safe, compute-once value; replaces
  *       {@code @Getter(lazy = true)}.</li>
- *   <li>{@link spola.util.Unchecked}: throwing functional interfaces and adapters that wrap
- *       checked exceptions; replaces {@code @SneakyThrows} without a sneaky throw.</li>
- *   <li>{@link spola.util.ToString}: a record-style {@code toString} builder that hides secret
- *       values; replaces {@code @ToString.Exclude}.</li>
  * </ul>
+ *
+ * <p>Lombok's {@code @ToString} and {@code @SneakyThrows} have no counterpart here: a record's
+ * own {@code toString} (overridden where a value is secret) and a plain {@code try}/{@code catch}
+ * with {@link java.io.UncheckedIOException} already cover them in Java 25.
  *
  * <p>Nothing is configured as a side effect of loading a class or of logging: the console
  * format and the levels exist only after the application calls

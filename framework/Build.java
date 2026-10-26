@@ -54,8 +54,6 @@ static final List<ModuleDir> MODULES = List.of(
                 new TestEntry("spola.guardrails.GuardrailsTests", "suite")),
         new ModuleDir("spola.test", Path.of("modules/test"),
                 new TestEntry("spola.test.RunnerTests", "suite")),
-        new ModuleDir("spola.di", Path.of("modules/di"),
-                new TestEntry("spola.di.DiTests", "suite")),
         new ModuleDir("spola.config", Path.of("modules/config"),
                 new TestEntry("spola.config.ConfigTests", "suite")),
         new ModuleDir("spola.util", Path.of("modules/util"),

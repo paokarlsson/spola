@@ -82,8 +82,7 @@ jlink -p lib:out --add-modules hello --launcher hello=hello/hello.Main \
 | `spola.security` | Spring Security: PBKDF2- och BCrypt-hashning (`BCryptPasswordHasher`, hashar från Springs `BCryptPasswordEncoder`), delegerande hasher med `{id}`-prefix (`PasswordHasher.delegating`), autentisering |
 | `spola.security.web` | Spring Security: säkerhetsfilter, HTTP Basic, åtkomstregler, inloggning med session (`WebSecurity.login`/`logout`), CSRF-skydd för en SPA (`Csrf`, `XSRF-TOKEN`) |
 | `spola.config` | `application.properties`, `@Value`, profiler |
-| `spola.di` | Spring Core: explicit DI, scopes, livscykel |
-| `spola.util` | Lombok och loggning: `Log`, `Lazy`, `ToString` |
+| `spola.util` | Lombok och loggning: `Log`, `Lazy` |
 | `spola.codegen` | Lombok `@Builder` och `@With` som genererad, incheckad källkod |
 | `spola.test` | JUnit: tester som lambdas |
 | `spola.guardrails` | Kontroller i bygget som upprätthåller reglerna |
@@ -103,7 +102,7 @@ för vad som hör hemma i Spola, modulkatalogen och API-mönstren står i
 [`framework/MONSTER.md`](framework/MONSTER.md). Mallen för `CLAUDE.md` i ditt eget projekt finns
 i [`docs/app-claude.md`](docs/app-claude.md).
 
-Klart: bygge, testkörare, DI, konfiguration, util, JSON, HTTP med TLS, web, validering, en
+Klart: bygge, testkörare, konfiguration, util, JSON, HTTP med TLS, web, validering, en
 HTTP-klient och säkerhet med lösenordshashning, sessioner och CSRF-skydd. Idéer som byggs när
 de behövs, till exempel JWT, PostgreSQL och schemaläggning, står i
 [`uppdrag/PLAN.md`](uppdrag/PLAN.md).

@@ -25,7 +25,7 @@ import spola.util.Log;
  * </pre>
  *
  * <p>Opens (and truncates) the file when created; {@link #close()} writes the last line and
- * closes the file. The container closes it when the program ends, also after a failure.
+ * closes the file. {@link InventoryWiring#process} closes it when the program ends, also after a failure.
  */
 final class AuditTrail implements AutoCloseable {
 
@@ -46,7 +46,7 @@ final class AuditTrail implements AutoCloseable {
      */
     AuditTrail(InventorySettings inventory, AuditSettings settings) {
         this.file = file(inventory, settings);
-        // InventoryApp checks this before the container starts, to report it as a configuration
+        // InventoryApp checks this before the components are created, to report it as a configuration
         // error; this check is the safety net for anyone else who creates the trail.
         if (overwritesOrders(inventory, settings)) {
             throw new IllegalArgumentException("audit.file " + file + " is the order file; it would be overwritten");

@@ -63,19 +63,6 @@ final class FailureTests {
                                 InventoryApp.CONFIG_ERROR, "'--rules.max.quantity' has no '=value'");
                     }
                 }),
-                test("a wiring error: the component and its missing dependency are named", () -> {
-                    try (var shop = Shop.create()) {
-                        ProgramTests.standardShop(shop);
-                        var run = Shop.Run.of(streams -> InventoryApp.run(List.of(shop.settingsArgument()),
-                                Shop.environment(), streams.out(), streams.log(),
-                                (app, summary) -> List.of(InventoryWiring.settings(app, summary),
-                                        InventoryWiring.STOCK, InventoryWiring.PROCESSING)));
-                        assertFailure(run, InventoryApp.SOFTWARE_ERROR, "wiring error",
-                                "spola.demo.OrderProcessor", "spola.demo.OrderCheck[QUANTITY]",
-                                "spola.demo.OrderCheck[BLOCKED]", "which is not bound");
-                        assertEquals("", run.out());
-                    }
-                }),
                 test("an audit trail that cannot be opened: audit.file and the path are named, exit 74", () -> {
                     try (var shop = Shop.create()) {
                         ProgramTests.standardShop(shop);
