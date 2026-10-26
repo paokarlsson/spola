@@ -98,7 +98,7 @@ static final String VERSION_COMMAND = "version";
 /// as its module version; a release is tagged `v<version>`. Kept here rather than in a file of
 /// its own because guardrails allows only `.java` and `.md` files in framework/. Changed by
 /// scripts/release.sh only.
-static final String VERSION = "0.2.0";
+static final String VERSION = "0.3.0";
 static final Pattern VERSION_FORMAT =
         Pattern.compile("(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)(-[0-9A-Za-z]+(\\.[0-9A-Za-z]+)*)?");
 
