@@ -1,7 +1,7 @@
 # spola.demo
 
 En lagertjänst för en liten webbutik, skriven som en applikationsutvecklare skulle skriva den
-med `spola.di`, `spola.config` och `spola.util`. Programmet läser en orderfil (`sku;antal`, en
+med `spola.config` och `spola.util`, och med komponenterna ihopkopplade för hand i vanlig Java. Programmet läser en orderfil (`sku;antal`, en
 order per rad), drar av varje order från lagersaldot och skriver en sammanfattning: behandlade
 ordrar, avvisade ordrar med orsak och slutsaldot per artikel. Varje beslut skrivs också till
 ett revisionsspår som signeras med en hemlig nyckel.
@@ -105,8 +105,8 @@ sammanslagna konfigurationen (maskerad) och varje lagerförändring.
 |---|---|
 | 0 | orderfilen är behandlad (avvisade ordrar räknas inte som fel) |
 | 65 | en trasig rad i orderfilen; filen och radnumret står i meddelandet |
-| 70 | ett wiring-fel, en komponent som inte kunde skapas eller stängas, eller ett oväntat fel |
-| 74 | orderfilen kunde inte läsas, eller revisionsspåret kunde inte öppnas (t.ex. en katalog som saknas i `audit.file`) |
+| 70 | ett oväntat fel |
+| 74 | orderfilen kunde inte läsas, eller revisionsspåret kunde inte öppnas eller stängas (t.ex. en katalog som saknas i `audit.file`) |
 | 78 | saknad eller ogiltig konfiguration (också `audit.file` som pekar på orderfilen); varje felande nyckel står i meddelandet |
 
 Ett fel skrivs som ett meddelande utan stackspår:
@@ -156,24 +156,31 @@ class QuantityLimit implements OrderCheck { ... }
 class AuditTrail implements AutoCloseable { ... }   // stängs av kontexten (inferred destroy method)
 ```
 
-I Spola står samma sak i vanlig kod. Ingången (`InventoryApp`) bygger konfigurationen,
-binder den till records, konfigurerar loggningen och skapar containern; wiring-modulen
-(`InventoryWiring`) säger vilka källor som finns och hur komponenterna kopplas:
+I Spola står samma sak i vanlig kod, utan container. Ingången (`InventoryApp`) bygger
+konfigurationen, binder den till records och konfigurerar loggningen; `InventoryWiring` säger
+vilka källor som finns och skapar komponenterna med deras konstruktorer:
 
 ```java
 Config config = InventoryWiring.config(args, environment);    // källorna i prioritetsordning
 AppSettings settings = InventoryWiring.settings(config);      // ett ConfigException med alla fel
 Logging.configure(LoggingSettings.defaults().withLevels(settings.logLevels()).withOutput(log));
-try (var container = Container.create(InventoryWiring.modules(settings, out).toArray(ContainerModule[]::new))) {
-    var summary = container.get(OrderProcessor.class).process();
-    container.get(ReportWriter.class).write(summary);
-}                                                             // AuditTrail stängs här, även vid fel
+InventoryWiring.process(settings, out);
+
+// i InventoryWiring:
+static void process(AppSettings app, PrintStream summary) throws IOException {
+    var stock = new Stock(app.inventory());
+    try (var audit = new AuditTrail(app.inventory(), app.audit())) {
+        var processor = new OrderProcessor(app.inventory(), stock,
+                new QuantityLimit(app.rules()), new BlockedSkus(app.rules()), audit);
+        new ReportWriter(summary).write(processor.process());
+    }                                                         // AuditTrail stängs här, även vid fel
+}
 ```
 
 Komponenterna (`Stock`, `QuantityLimit`, `BlockedSkus`, `AuditTrail`, `OrderProcessor`,
-`ReportWriter`) vet inget om containern eller konfigurationen; de får records och varandra i
-konstruktorn. De två `OrderCheck`-implementationerna skiljs åt med kvalificeraren
-`CheckKind`, och strömmen för sammanfattningen med `Channel.SUMMARY`.
+`ReportWriter`) vet inget om konfigurationen; de får records och varandra i konstruktorn. De
+två `OrderCheck`-implementationerna behöver ingen kvalificerare: de skickas som två argument.
+Glöms ett beroende bort kompilerar koden inte.
 
 ## Friktion
 
@@ -238,26 +245,11 @@ Test: `BindingTests` "keys lists the relative keys below a section ...", "keys b
 whose values are checked in the same report" och "keys cannot be used after the binding has
 finished". Dokumenterat i Javadoc, i README för `spola.config` och i `ARCHITECTURE.md`.
 
-### 3. Ett kvalificerat beroende gör att alla måste skrivas som `Key` (**Kvar**)
+### 3. Ett kvalificerat beroende gör att alla måste skrivas som `Key` (**Löst**)
 
-Den typade formen av `to(...)` finns med bara `Class`-parametrar eller bara `Key`-parametrar.
-`OrderProcessor` behöver två kvalificerade `OrderCheck`, och då måste även de tre
-okvalificerade beroendena skrivas som `Key.of(...)`:
-
-```java
-binder.bind(OrderProcessor.class).to(
-        Key.of(InventorySettings.class),
-        Key.of(Stock.class),
-        Key.of(OrderCheck.class, CheckKind.QUANTITY),
-        Key.of(OrderCheck.class, CheckKind.BLOCKED),
-        Key.of(AuditTrail.class),
-        OrderProcessor::new);
-```
-
-Det fungerar och är typsäkert, men det är ordrikt. Att lägga till blandade överlagringar
-skulle ge 2^n varianter per antal beroenden (62 för 1–5), vilket inte är en liten ändring.
-Alternativen (t.ex. att `Class` och `Key` får ett gemensamt gränssnitt för "beroende") är en
-API-ändring i `spola.di` och hör inte hit.
+Gällde DI-containern `spola.di`, där ett kvalificerat beroende tvingade alla beroenden att
+skrivas som `Key.of(...)`. Containern togs bort i 0.3.0, och demon kopplar ihop komponenterna
+med konstruktorer, så friktionen finns inte längre.
 
 ### 4. Konfigurationsfilens plats kräver två omgångar (**Kvar**)
 
@@ -286,23 +278,20 @@ En lösning (t.ex. en källa vars sökväg läses från en nyckel, på samma sä
 ### 5. Uppstarten och felöversättningen skrivs för hand (**Kvar**)
 
 Ingången är ungefär 50 rader: bygg konfigurationen, bind den, konfigurera loggningen, skapa
-containern, kör, och översätt varje feltyp till ett meddelande och en exitkod. Felen från de
-tre modulerna har ingen gemensam supertyp, så varje typ fångas för sig:
+komponenterna, kör, och översätt varje feltyp till ett meddelande och en exitkod. Felen har
+ingen gemensam supertyp, så varje typ fångas för sig:
 
 ```java
-} catch (WiringException e) {
-    return fail(log, SOFTWARE_ERROR, "wiring error: " + e.getMessage());
 } catch (OrderFileException e) {
     return fail(log, DATA_ERROR, "broken order file: " + e.getMessage());
 } catch (UncheckedIOException e) {
     return fail(log, IO_ERROR, e.getMessage() + ": " + e.getCause());
-} catch (ResolutionException | CloseException e) {
-    return fail(log, SOFTWARE_ERROR, e.getMessage());
+} catch (IOException e) {
+    return fail(log, IO_ERROR, "cannot close the audit trail: " + e);
 }
 ```
 
-Dessutom tar `Container.create` moduler som varargs, så en lista måste göras om till en array
-(`toArray(ContainerModule[]::new)`). Allt detta är vad en starter ska ta hand om (uppdrag 19
+Allt detta är vad en starter ska ta hand om (uppdrag 19
 i `PLAN.md`); här skrivs det för hand, enligt uppdraget.
 
 ### 6. Loggningen är global för JVM:en (**Kvar**)
@@ -360,8 +349,8 @@ inventory.properties does not hide the first setting". Dokumenterat i Javadoc, i
 
 ### Det som fungerade bra
 
-- **Config-records in i containern med `toInstance`,** precis som README för `spola.config`
-  visar. Komponenterna tar records och vet inget om varifrån värdena kommer.
+- **Config-records rakt in i konstruktorerna,** precis som README för `spola.config` visar.
+  Komponenterna tar records och vet inget om varifrån värdena kommer.
 - **En rapport för alla konfigurationsfel.** Ett saknat `inventory.orders` och ett ogiltigt
   `rules.max.quantity` kommer i samma meddelande, och en ersättnings-`null` som får en
   record-konstruktor att kasta döljs bakom rapporten i stället för att ge ett
@@ -369,9 +358,7 @@ inventory.properties does not hide the first setting". Dokumenterat i Javadoc, i
 - **Hemligheter.** `sensitive(...)` maskerar `audit.secret` i `describe()` och i fel, också
   när värdet kopieras med en platshållare (`--rules.max.quantity=${audit.secret}` ger ett fel
   utan hemligheten). Det gäller dumpen och konverteringsfelen; ett kopierat värde som binds
-  utan fel (t.ex. som sökväg) är vanlig data efter det. `ToString.secret` döljer den i `AuditSettings.toString()`.
-- **Wiring-fel före start.** Glöms en modul bort säger `Container.create` vilken komponent som
-  saknar vilket beroende och var bindningen gjordes, innan något har skapats.
-- **Stängning vid fel.** try-with-resources på containern stänger `AuditTrail` både när
+  utan fel (t.ex. som sökväg) är vanlig data efter det. `AuditSettings` skriver över sin `toString()` så att hemligheten inte syns.
+- **Stängning vid fel.** try-with-resources stänger `AuditTrail` både när
   programmet lyckas och när en trasig rad avbryter det, utan någon extra kod.
 - **Loggnivåer per paket** fungerar som i Spring Boot, från fil, profil, miljö eller argument.

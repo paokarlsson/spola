@@ -106,25 +106,16 @@ the configuration binding has 3 problems:
 Motsvarigheten till `@Profile("dev")` på bönor är vanlig Java-kod:
 `if (config.profiles().contains("dev")) { ... }`.
 
-### Koppla in i spola.di
+### Koppla ihop med komponenterna
 
-`spola.config` beror inte på `spola.di`. Applikationen bygger sitt config-record först och
-binder det med `toInstance`; komponenterna tar det färdiga recordet i konstruktorn.
+Applikationen bygger sitt config-record först och skickar delarna till komponenternas
+konstruktorer i `main`. Komponenterna tar det färdiga recordet och vet inget om `Config`.
 
 ```java
 AppConfig app = config.bind("", c -> new AppConfig(...));   // bindningen ovan; ConfigException om något saknas
 
-ContainerModule configModule = binder -> {
-    binder.bind(DbConfig.class).toInstance(app.db());
-    binder.bind(ServerConfig.class).toInstance(app.server());
-};
-ContainerModule shop = binder -> {
-    binder.bind(DataSource.class).to(DbConfig.class, PooledDataSource::new);
-    binder.bind(Server.class).to(ServerConfig.class, DataSource.class, Server::new);
-};
-
-try (var container = Container.create(configModule, shop)) {
-    container.get(Server.class).start();
+try (var dataSource = new PooledDataSource(app.db())) {
+    new Server(app.server(), dataSource).start();
 }
 ```
 

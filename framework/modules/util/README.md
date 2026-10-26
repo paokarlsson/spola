@@ -10,8 +10,8 @@ kodgenerering, ingen reflektion. Modulen har inga `requires` på andra Spola-mod
 | `@Slf4j`, `@Log` | `Log.forClass(Order.class)` i ett `static final`-fält |
 | Spring Boots konsolformat, `logging.level.*` | `Logging.configure(LoggingSettings)` |
 | `@Getter(lazy = true)` | `Lazy.of(() -> ...)` |
-| `@SneakyThrows` | `Unchecked.run/get/function/consumer/supplier/runnable` |
-| `@ToString.Exclude` | `ToString.of("User").add(...).secret(...)` |
+| `@SneakyThrows` | inget: `try`/`catch` och `UncheckedIOException` från JDK:n |
+| `@ToString.Exclude` | inget: skriv över recordets `toString()` |
 
 Builders och with-metoder för records (Lomboks `@Builder`, `@Builder(toBuilder = true)` och
 `@With`) finns i modulen `spola.codegen` som genererad, incheckad källkod; se
@@ -174,72 +174,36 @@ Skillnader mot Lombok: ett undantag från leverantören sparas inte (nästa `get
 igen), `null` är ett fel (`NullPointerException`; använd `Optional`), och leverantören släpps
 när värdet är uträknat.
 
-## Checked exceptions: `@SneakyThrows` och `Unchecked`
+## Checked exceptions: `@SneakyThrows`
 
-### Lombok
-
-`@SneakyThrows` kastar det checked undantaget vidare utan att det deklareras. Kompilatorn ser
-det inte, och en `catch (IOException e)` längre upp går inte att skriva.
+Spola har ingen motsvarighet. Fånga undantaget där det uppstår och slå in det med JDK:ns egna
+typer, till exempel `UncheckedIOException`, i en liten hjälpmetod:
 
 ```java
-@SneakyThrows
-String read(Path path) {
-    return Files.readString(path);
+static String read(Path path) {
+    try {
+        return Files.readString(path);
+    } catch (IOException e) {
+        throw new UncheckedIOException(e);
+    }
 }
 
-List<String> texts = paths.stream().map(this::read).toList();
+List<String> texts = paths.stream().map(Example::read).toList();
 ```
 
-### Spola
+## Hemliga fält: `@ToString.Exclude`
 
-Undantaget slås in i stället, så det syns som ett vanligt unchecked undantag med originalet
-som `cause`: `IOException` blir `UncheckedIOException`, `InterruptedException` sätter
-trådens avbrottsflagga igen och slås in i `UncheckedException`, övriga checked undantag slås
-in i `UncheckedException`. `RuntimeException` och `Error` släpps igenom orörda.
-
-```java
-String read(Path path) {
-    return Unchecked.get(() -> Files.readString(path));
-}
-
-List<String> texts = paths.stream().map(Unchecked.function(Files::readString)).toList();
-paths.forEach(Unchecked.consumer(Files::delete));
-Unchecked.run(() -> Thread.sleep(100));
-```
-
-Gränssnitten som får kasta heter `ThrowingSupplier`, `ThrowingFunction`, `ThrowingConsumer`
-och `ThrowingRunnable`.
-
-## Hemliga fält: `@ToString.Exclude` och `ToString`
-
-### Lombok
-
-```java
-@Value
-class User {
-    String name;
-    @ToString.Exclude String password;
-}
-// User(name=ada)
-```
-
-### Spola
-
-En record skriver alla komponenter i `toString()`. Har den en hemlighet skriver du över
-`toString()` med `ToString`, som ger samma form som recorden själv men döljer värdet:
+Spola har ingen motsvarighet. En record skriver alla komponenter i `toString()`. Har den en
+hemlighet skriver du över `toString()` med en rad:
 
 ```java
 record User(String name, String password) {
     @Override
     public String toString() {
-        return ToString.of("User").add("name", name).secret("password", password).toString();
+        return "User[name=" + name + ", password=***]";
     }
 }
-// User[name=ada, password=***]
 ```
-
-`secret` visar aldrig värdet eller dess längd och anropar inte dess `toString()`. Ett
-`null`-värde visas som `null`, så det syns om hemligheten saknas.
 
 ## Vad records redan ersätter
 

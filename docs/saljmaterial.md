@@ -52,32 +52,26 @@ class OrderService {
 var context = new AnnotationConfigApplicationContext("shop");
 ```
 
-I Spola står kopplingen i koden. Klasserna har inga annoteringar och vet inget om containern:
+I Spola står kopplingen i vanlig Java. Klasserna har inga annoteringar, och det finns ingen container:
 
 ```java
 record OrderService(OrderRepo repo, PaymentGateway gateway) { }
 
-ContainerModule orders = binder -> {
-    binder.bind(Key.of(PaymentGateway.class, Region.EU)).to(EuGateway::new);
-    binder.bind(OrderRepo.class).to(DataSource.class, JdbcOrderRepo::new);
-    binder.bind(OrderService.class).to(
-            Key.of(OrderRepo.class), Key.of(PaymentGateway.class, Region.EU), OrderService::new);
-};
-try (var container = Container.create(orders, configModule)) { ... }
+public static void main(String[] args) {
+    var settings = ShopSettings.from(config);
+    var repo = new JdbcOrderRepo(settings.dataSource());
+    var orders = new OrderService(repo, new EuGateway(settings.payments()));
+    ...
+}
 ```
 
-Saknas en koppling stoppar `Container.create` innan något har skapats och pekar på raden:
-
-```text
-spola.di.WiringException: the container has 1 wiring problem:
-  - shop.OrderService (bound at shop.Modules.lambda$orders$1(Modules.java:14)) depends on shop.OrderRepo, which is not bound
-```
+Saknas en koppling kompilerar koden inte, och "Go to definition" leder till raden där allt skapas.
 
 Konfigurationen fungerar likadant. Du anger källorna och deras ordning i koden, binder till records och får alla fel i ett enda undantag vid start. Lösenord maskeras i felmeddelanden.
 
 ## Vad som finns i dag
 
-Fjorton moduler med 3 568 tester, cirka 39 000 rader källkod och 40 000 rader test (med kommentarer och Javadoc). Allt bygger grönt med `java Build.java`. Det räcker för ett webb-API med HTTPS, JSON, validering, inloggning med session och CSRF-skydd, och för att anropa andra JSON-API:er.
+Tretton moduler med 3 490 tester, cirka 37 000 rader källkod och 40 000 rader test (med kommentarer och Javadoc). Allt bygger grönt med `java Build.java`. Det räcker för ett webb-API med HTTPS, JSON, validering, inloggning med session och CSRF-skydd, och för att anropa andra JSON-API:er.
 
 | Modul | Ersätter | Tester |
 | --- | --- | --- |
@@ -88,11 +82,10 @@ Fjorton moduler med 3 568 tester, cirka 39 000 rader källkod och 40 000 rader t
 | `spola.http` | Tomcat/Netty: HTTP/1.1 på virtuella trådar, TLS, gränser mot missbruk | 290 |
 | `spola.security.web` | Spring Security (webb): filter, HTTP Basic, åtkomstregler, inloggning med session, CSRF | 287 |
 | `spola.validation` | Bean Validation: komponerbara validatorer och felrapporter | 251 |
-| `spola.util` | Lombok och Spring-loggning: `Log`, `Lazy`, `ToString` | 80 |
+| `spola.util` | Lombok och Spring-loggning: `Log`, `Lazy` | 51 |
 | `spola.test` | JUnit: tester som lambdas | 77 |
 | `spola.config` | `application.properties`, `@Value`, profiler | 68 |
-| `spola.di` | Spring Core: explicit DI, scopes, livscykel | 48 |
-| `spola.demo` | Exempelprogram som använder modulerna tillsammans | 43 |
+| `spola.demo` | Exempelprogram som använder modulerna tillsammans | 42 |
 | `spola.codegen` | Lombok `@Builder`, `@With`: genererad källkod | 41 |
 | `spola.guardrails` | Regelkontroller i bygget | 17 |
 
@@ -137,7 +130,7 @@ Spola är version 0.x och inte redo för produktion än. Ramverket byggs efter b
 
 | Område | Läge |
 | --- | --- |
-| Bygge, test, DI, konfiguration, util, JSON | Klart |
+| Bygge, test, konfiguration, util, JSON | Klart |
 | HTTP-server med TLS, web, validering, HTTP-klient | Klart |
 | Säkerhet: PBKDF2 och BCrypt, filter, Basic, åtkomstregler, inloggning med session, CSRF | Klart, väntar på mänsklig granskning |
 | Omförsök vid tillfälliga fel (Spring Retry) | Beställt av ett projekt, inte byggt än |
@@ -147,7 +140,6 @@ Kända begränsningar:
 
 - **Säkerhetskoden ska granskas av en människa** innan den används på riktigt. Loopen har redan hittat och rättat ett sådant fel: en metodregel med gemener, som `method("get")`, matchade aldrig och släppte igenom anropet till nästa regel.
 - **Leverans via GitHub-releaser.** Varje version publiceras med en jar och en källkods-jar per modul och `SHA256SUMS`. Det finns inget Maven-repo, så projekten hämtar jar-filerna själva.
-- **DI blir ordrik** när ett beroende har en kvalificerare, eftersom alla beroenden då måste skrivas som `Key`. En API-förbättring är planerad.
 - **Skrivet av AI-agenter.** Koden är skriven och granskad av agenterna i loopen. Testerna och reglerna i bygget är skyddsnätet, men ingen människa har läst all kod.
 - **Bygget tar några minuter** och växer med testerna.
 
@@ -155,7 +147,7 @@ Kända begränsningar:
 
 Det snabbaste sättet att bedöma Spola är att läsa en modul bredvid sin Spring-motsvarighet. Varje modul har en README med båda sidor.
 
-1. **Läs:** börja med [`modules/di/README.md`](../framework/modules/di/README.md) och [`modules/demo/README.md`](../framework/modules/demo/README.md), som har en ärlig friktionsrapport från integrationen.
+1. **Läs:** börja med [`modules/web/README.md`](../framework/modules/web/README.md) och [`modules/demo/README.md`](../framework/modules/demo/README.md), som har en ärlig friktionsrapport från integrationen.
 2. **Kör:** med JDK 25 installerat bygger och testar `java Build.java` i `framework/` hela ramverket utan något annat verktyg.
 3. **Prova:** kör demoprogrammet med `java -p framework/out/classes -m spola.demo/spola.demo.InventoryApp`.
 4. **Bidra:** säkerhetsgranskning av modulerna 10–13 och synpunkter på API:ernas ergonomi gör störst skillnad just nu.

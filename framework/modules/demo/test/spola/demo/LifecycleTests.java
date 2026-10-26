@@ -9,7 +9,7 @@ import java.util.List;
 import spola.test.Suite;
 
 /**
- * The audit trail is {@code AutoCloseable}; the container closes it when the program ends,
+ * The audit trail is {@code AutoCloseable}; the program closes it with try-with-resources when it ends,
  * after success and after a failure. Closing writes the trail's last line and logs it, before
  * the program reports its result.
  */

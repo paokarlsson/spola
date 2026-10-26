@@ -19,8 +19,6 @@ public final class UtilTests {
                 LogTests.tests(),
                 LogFailureTests.tests(),
                 LoggingTests.tests(),
-                LazyTests.tests(),
-                UncheckedTests.tests(),
-                ToStringTests.tests());
+                LazyTests.tests());
     }
 }

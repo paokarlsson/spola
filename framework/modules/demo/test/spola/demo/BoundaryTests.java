@@ -17,7 +17,7 @@ import spola.test.Suite;
 /**
  * What the module's structure promises, checked on the sources (tests run with
  * {@code framework/} as the working directory): only the entry and the wiring know the
- * container and the configuration, and nothing depends on {@code spola.demo}.
+ * configuration, and nothing depends on {@code spola.demo}.
  */
 final class BoundaryTests {
 
@@ -26,19 +26,19 @@ final class BoundaryTests {
 
     static final Path MODULE = Path.of("modules/demo");
 
-    /** The only files allowed to name the container, the binder or the configuration. */
+    /** The only files allowed to name the configuration. */
     static final Set<String> WIRING = Set.of("InventoryApp.java", "InventoryWiring.java");
 
     /**
-     * The names of the container, the binder and the configuration (also as part of a longer name,
-     * like the configuration's exception), and imports from the packages of {@code spola.di} and
-     * {@code spola.config}. Written with character classes so that this file does not match itself.
+     * The name of the configuration (also as part of a longer name, like the configuration's
+     * exception), and imports from the package of {@code spola.config}. Written with character
+     * classes so that this file does not match itself.
      */
-    static final Pattern FORBIDDEN = Pattern.compile("Contain[e]r|Bind[e]r|Conf[i]g|import\\s+(?:static\\s+)?spola\\.(?:d[i]|conf[i]g)\\.");
+    static final Pattern FORBIDDEN = Pattern.compile("Conf[i]g|import\\s+(?:static\\s+)?spola\\.conf[i]g\\.");
 
     static Suite tests() {
         return suite("module boundaries",
-                test("only the entry and its wiring name the container, the binder or the configuration", () -> {
+                test("only the entry and its wiring name the configuration", () -> {
                     var offenders = new ArrayList<String>();
                     var checked = 0;
                     try (Stream<Path> files = Stream.concat(Files.walk(MODULE.resolve("src")), Files.walk(MODULE.resolve("test")))) {
@@ -59,9 +59,9 @@ final class BoundaryTests {
                     assertTrue(checked >= 20, "checked " + checked + " files");
                     assertEquals(List.of(), offenders);
                 }),
-                test("spola.demo requires di, config and util, and no other module requires spola.demo", () -> {
+                test("spola.demo requires config and util, and no other module requires spola.demo", () -> {
                     var own = Files.readString(MODULE.resolve("src/module-info.java"));
-                    for (var required : List.of("spola.di", "spola.config", "spola.util")) {
+                    for (var required : List.of("spola.config", "spola.util")) {
                         assertTrue(own.contains("requires " + required + ";"), required);
                     }
                     var requiresDemo = Pattern.compile("requires\\s+(?:transitive\\s+|static\\s+)*spola\\.demo\\s*;");

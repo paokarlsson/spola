@@ -2,6 +2,9 @@
 
 Bygger på `docs/overflodigt-i-spola.md`. Skriven 2026-10-26.
 
+**Läget:** steg 1 och 2 är gjorda för hand i stället för i loopen (borttagningen och
+dokumentationen). Kvar: release 0.3.0 och uppgradering av psykologen.
+
 Spola är `0.x` och den enda appen som använder det är psykologen. Går psykologen sönder vid en
 uppgradering anpassas den efteråt. Det finns inget skyddsnät före releasen. När seriösare appar
 börjar bero på Spola bör vi vara försiktigare (se sist).

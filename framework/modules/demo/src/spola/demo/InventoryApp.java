@@ -1,17 +1,12 @@
 package spola.demo;
 
+import java.io.IOException;
 import java.io.PrintStream;
 import java.io.UncheckedIOException;
 import java.util.List;
 import java.util.Map;
-import java.util.function.BiFunction;
 import spola.config.Config;
 import spola.config.ConfigException;
-import spola.di.CloseException;
-import spola.di.Container;
-import spola.di.ContainerModule;
-import spola.di.ResolutionException;
-import spola.di.WiringException;
 import spola.util.Log;
 import spola.util.Logging;
 import spola.util.LoggingSettings;
@@ -44,10 +39,10 @@ public final class InventoryApp {
     /** A broken line in the order file ({@code EX_DATAERR} in BSD's sysexits). */
     public static final int DATA_ERROR = 65;
 
-    /** A wiring error, a component that could not be created or closed, or an unexpected failure ({@code EX_SOFTWARE}). */
+    /** An unexpected failure ({@code EX_SOFTWARE}). */
     public static final int SOFTWARE_ERROR = 70;
 
-    /** The order file could not be read or the audit trail could not be opened ({@code EX_IOERR}). */
+    /** The order file could not be read or the audit trail could not be opened or closed ({@code EX_IOERR}). */
     public static final int IO_ERROR = 74;
 
     /** Missing or invalid configuration ({@code EX_CONFIG}). */
@@ -83,12 +78,6 @@ public final class InventoryApp {
      * @return the exit code: {@link #OK} or one of the error codes
      */
     public static int run(List<String> args, Map<String, String> environment, PrintStream out, PrintStream log) {
-        return run(args, environment, out, log, InventoryWiring::modules);
-    }
-
-    /** Like {@link #run(List, Map, PrintStream, PrintStream)}, with the container's modules given by {@code wiring}. */
-    static int run(List<String> args, Map<String, String> environment, PrintStream out, PrintStream log,
-                   BiFunction<AppSettings, PrintStream, List<ContainerModule>> wiring) {
         Config config;
         AppSettings settings;
         try {
@@ -109,24 +98,14 @@ public final class InventoryApp {
         try {
             config.describe().lines().forEach(line -> LOG.debug("config: {}", line));
             LOG.debug("settings: {}", settings);
-            try (var container = Container.create(wiring.apply(settings, out).toArray(ContainerModule[]::new))) {
-                var summary = container.get(OrderProcessor.class).process();
-                container.get(ReportWriter.class).write(summary);
-            }
+            InventoryWiring.process(settings, out);
             return OK;
-        } catch (WiringException e) {
-            return fail(log, SOFTWARE_ERROR, "wiring error: " + e.getMessage());
         } catch (OrderFileException e) {
             return fail(log, DATA_ERROR, "broken order file: " + e.getMessage());
-        } catch (UncheckedIOException e) {
-            return ioFailure(log, e);
-        } catch (ResolutionException e) {
-            if (e.getCause() instanceof UncheckedIOException io) { // e.g. audit.file in a missing directory
-                return ioFailure(log, io);
-            }
-            return fail(log, SOFTWARE_ERROR, e.getMessage());
-        } catch (CloseException e) {
-            return fail(log, SOFTWARE_ERROR, e.getMessage());
+        } catch (UncheckedIOException e) { // e.g. audit.file in a missing directory
+            return fail(log, IO_ERROR, e.getMessage() + ": " + e.getCause());
+        } catch (IOException e) { // the audit trail could not be closed
+            return fail(log, IO_ERROR, "cannot close the audit trail: " + e);
         } catch (RuntimeException e) {
             LOG.debug("unexpected failure", e);
             return fail(log, SOFTWARE_ERROR, "unexpected failure: " + e);
@@ -134,10 +113,6 @@ public final class InventoryApp {
             out.flush();
             Logging.reset();
         }
-    }
-
-    private static int ioFailure(PrintStream log, UncheckedIOException e) {
-        return fail(log, IO_ERROR, e.getMessage() + ": " + e.getCause());
     }
 
     private static int fail(PrintStream log, int code, String message) {

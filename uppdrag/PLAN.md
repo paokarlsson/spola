@@ -10,9 +10,9 @@ bygger. Loopen tar handskrivna uppdrag i `uppdrag/` och behov från appprojekt i
 |---|---|---|
 | 01 | bygge-och-guardrails | `java Build.java`, regelkontroller för annoteringar och beroenden |
 | 02 | testkorare | Ersätter JUnit, tester som lambdas |
-| 03 | di-karna | Explicit DI, scopes, livscykel, validering vid uppstart |
+| 03 | di-karna | Explicit DI, scopes, livscykel, validering vid uppstart (borttagen i 0.3.0: wiring görs för hand) |
 | 04 | config | Typsäker konfiguration från filer, miljövariabler, argument, profiler |
-| 05 | util | Lombok-ersättare: builders, with-metoder, loggning på `System.Logger` |
+| 05 | util | Lombok-ersättare: builders, with-metoder, loggning på `System.Logger` (`ToString` och `Unchecked` borttagna i 0.3.0) |
 | 06 | json | Parser och serialisering med explicit mappning |
 | 07 | http-server | HTTP/1.1 på virtual threads, TLS, keep-alive, gränser mot missbruk |
 | 08 | web-routing | Routing som kod, request/response-modell, felhantering, JSON-integration |

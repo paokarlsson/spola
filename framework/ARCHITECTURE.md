@@ -12,7 +12,6 @@ framework/
   modules/<modul>/src/      källkod för en modul, med module-info.java överst
   modules/<modul>/test/     modulens tester, i modulens egna paket, utan module-info.java
   modules/guardrails/fixtures/   medvetet felaktiga exempel för guardrails självtest
-  modules/di/README.md      exempel för spola.di bredvid motsvarande Spring-kod
   modules/config/README.md  exempel för spola.config bredvid motsvarande Spring Boot-kod
   modules/util/README.md    exempel för spola.util bredvid motsvarande Lombok- och Spring Boot-kod
   modules/codegen/README.md arbetsflödet för genererade builders/with-metoder, bredvid Lombok
@@ -375,100 +374,13 @@ Beslut:
   varav ett fel ger två ok och ett fel), timeout (sovande och avbrottsokänsliga tester,
   ärvd timeout), nästlade sviter, rapporten och `TestTool`.
 
-## DI-containern (`spola.di`)
+## Ingen DI-container (borttagen i 0.3.0)
 
-Uppdrag 03. Ersätter Spring Core. Modulen har inga `requires` (bara `java.base`); testerna
-läser `spola.test` som alla andra moduler. Exempel bredvid Spring: `modules/di/README.md`.
-
-### API (paket `spola.di`)
-
-| Typ | Roll |
-|---|---|
-| `Key<T>` | record: typ + valfri kvalificerare (vilket värde som helst med värdebaserad `equals`: enum, record, sträng; inte array, inte primitiv typ) |
-| `ContainerModule` | funktionellt gränssnitt `configure(Binder)`: en återanvändbar grupp bindningar |
-| `Binder` | `bind(Class)`/`bind(Key)` → `BindingBuilder`, `install(module)`; bara `Container.create` skapar den, oanvändbar efteråt |
-| `BindingBuilder<T>` | `to(...)`: typad form (0–5 beroenden som `Class` eller `Key`), resolverform `to(Dependencies, Factory)`, `toInstance(T)` |
-| `Binding` | `in(Scope)`, högst en gång |
-| `Scope` | `SINGLETON` (lat, standard), `EAGER_SINGLETON`, `PROTOTYPE`, `CALL` |
-| `Factory<T>` | `create(Resolver) throws Exception`; `Factory.Of0`–`Of5` för den typade formen |
-| `Resolver` | `get(Key)`/`get(Class)`: bara deklarerade beroenden, bara medan fabriken körs |
-| `Dependencies` | deklarationen för resolverformen: `of(Class...)`, `of(Key...)`, `and(...)`, `none()` |
-| `Container` | `create(modules...)`, `get`, `runInCallScope`, `callInCallScope`, `close` |
-| `WiringException` | grafen är ogiltig; `problems()` listar alla fel; inget har skapats |
-| `ResolutionException` | något kunde inte hämtas eller skapas; meddelandet börjar med kedjan `cannot resolve A -> B: ...` |
-| `CloseException` | en eller flera `close` misslyckades; felen är `suppressed`, i stängningsordning |
-
-### Beslut
-
-- **Hur beroenden deklareras (kravet "svårt att deklarera fel").** Valideringen utan
-  reflektion kräver att varje bindning säger vad den behöver. Två former:
-  - *Typad form, den föredragna:* `to(OrderRepo.class, Clock.class, OrderService::new)`.
-    Nycklarna är fabrikens argument: containern hämtar dem och anropar fabriken med dem.
-    Fabriken får ingen resolver och når alltså inget annat, och kompilatorn kontrollerar att
-    varje nyckels typ passar parametern. Deklarationen och användningen är samma uttryck och
-    kan inte glida isär. Glömmer man ett beroende kompilerar det inte (konstruktorn får för få
-    argument). Gränsen är fem beroenden; fler är i regel ett tecken på en klass som bör delas.
-  - *Resolverform,* som uppdragets exempel: `to(Dependencies.of(OrderRepo.class), r -> new
-    OrderService(r.get(OrderRepo.class)))`. Här kan deklarationen och användningen skilja
-    sig, så resolvern är begränsad: den lämnar bara ut deklarerade nycklar (annars
-    `ResolutionException` med det deklarerade i meddelandet) och bara medan fabriken körs
-    (en sparad resolver ger fel). Att be om något odeklarerat upptäcks därför första gången
-    komponenten skapas, inte vid `create`; det är priset för formen, och skälet till att den
-    typade formen föredras. Att deklarera för mycket är ofarligt (strängare kontroll).
-  - Dessutom vägrar `Container.get` att köras inifrån en fabrik i samma container (en
-    `ScopedValue` är bunden medan fabriken körs), så att en fabrik som fångat containern inte
-    går förbi deklarationen.
-  - Alternativ som valdes bort: att köra fabrikerna med en inspelande resolver vid `create`
-    (skapar objekt och kör sidoeffekter innan grafen är godkänd), kodgenerering (utanför
-    scope) och reflektion över konstruktorer (förbjudet).
-- **Validering vid `create`,** innan någon fabrik körs, på de deklarerade beroendena. Alla
-  fel samlas i en `WiringException`, i ordningen: dubbla bindningar, bindningar utan mål,
-  saknade beroenden (vem saknar vad, och andra bindningar av samma typ som ledtråd), cykler
-  (hela kedjan, `A -> B -> C -> A`), singletons som fångar `CALL`-komponenter. Varje
-  bindning minns var `bind` anropades (`StackWalker`, bara klass-, metod- och filnamn och
-  rad; ingen `Class`-referens, ingen reflektion), och felen visar det.
-- **Cykelsökning:** djupet först från varje bindning i bindningsordning; ett beroende som
-  redan ligger på stigen sluter en cykel, som rapporteras från där den gick in i stigen. Varje
-  nod avslutas en gång, så varje cykel rapporteras en gång och varje cyklisk del av grafen
-  ger minst en rapport (alla elementära cykler räknas inte upp).
-- **Fångade anropsscopade objekt (captive dependency):** en singleton (lat eller ivrig) som
-  beror på en `CALL`-komponent, direkt eller via prototyper, skulle behålla instansen från
-  det första anropsscopet. Det är ett fel vid `create`. En singleton → singleton → `CALL`
-  rapporteras på den inre singletonen.
-- **Trådsäkra singletons:** en `Slot` per singleton med dubbelkontrollerad låsning (volatile
-  fält + `ReentrantLock`). Virtuella trådar som väntar på låset lämnar sin bärartråd. Tråden
-  håller låset medan fabriken körs och kan då ta beroendenas lås; det kan inte låsa sig
-  eftersom grafen är acyklisk och fabriker bara når deklarerade beroenden. Kastar fabriken
-  sparas inget och nästa `get` försöker igen. Samma `Slot` används för `CALL`-instanser
-  inom ett scope (trådar som forkas med `StructuredTaskScope` delar scopet).
-- **Anropsscope:** varje container har en egen `ScopedValue<CallScope>`;
-  `runInCallScope`/`callInCallScope` binder ett nytt scope (instanser + egen livscykel) och
-  stänger dess `AutoCloseable`-instanser i omvänd ordning när kroppen är klar. Kastade
-  kroppen läggs stängningsfelen till som `suppressed`. Nästlade scope är oberoende. Utanför
-  ett scope ger en `CALL`-komponent `ResolutionException`.
-- **Livscykel:** en instans räknas som skapad när dess fabrik returnerar, så dess beroenden
-  är skapade före den och stängs efter den. `close()` stänger i omvänd skapandeordning, fångar
-  varje fel (alla `Throwable`) och fortsätter, och kastar sedan en `CloseException` med felen
-  som `suppressed`. Upprepad `close()` gör inget; `get` efter `close` ger
-  `IllegalStateException`. Blir en lat singleton klar efter att containern stängts stängs den
-  direkt och anroparen får ett fel i stället för ett stängt objekt. Misslyckas en ivrig
-  singleton i `create` stängs det som redan skapats.
-- **Vad containern inte stänger:** prototyper (containern vet inte när anroparen är klar, och
-  att hålla dem skulle läcka minne; som i Spring och Guice) och instanser från `toInstance`
-  (den som skapade dem äger dem).
-- **Moduler:** en `ContainerModule` installeras högst en gång per container (likhet med
-  `equals`, så en record-modul som installeras från två ställen körs en gång, och rekursiv
-  installation tar slut). Bindningar av samma nyckel från två moduler är ett fel, inte en
-  överskrivning: överskrivning är magi som döljer misstag.
-- **Ingen fallback mellan nycklar:** `Key.of(T.class)` och `Key.of(T.class, q)` är olika
-  nycklar, och en bindning av en subtyp gäller inte för supertypen. Det som binds är det som
-  hämtas.
-- **Fabriker får kasta checked exceptions** (`throws Exception`), så att konstruktorer som
-  kastar `IOException` kan användas som method references. Containern lindar in felet i
-  `ResolutionException` med kedjan och felet som `cause`; ett `ResolutionException` från ett
-  djupare beroende släpps igenom oförändrat (det har redan den längre kedjan).
-- **Nyckelnamn i meddelanden** är typens kanoniska namn (binärt namn för lokala och anonyma
-  klasser), så två typer med samma enkla namn inte kan förväxlas.
+Uppdrag 03 byggde en DI-container, `spola.di`. Den togs bort i 0.3.0, eftersom ingen
+ramverksmodul och ingen app använde den. Wiring görs i stället med konstruktorer i `main`,
+som `spola.demo` visar. Kompilatorn fångar ett saknat beroende, cykler går inte att skriva med
+`final`-fält, try-with-resources stänger i omvänd ordning och `ScopedValue` ger värden per
+anrop. Se `docs/overflodigt-i-spola.md`.
 
 ## Konfiguration (`spola.config`)
 
@@ -567,8 +479,10 @@ testerna läser `spola.test`. Exempel bredvid Spring Boot: `modules/config/READM
 
 ## Util del 1: loggning och hjälpare (`spola.util`)
 
-Uppdrag 05a. Ersätter Lomboks `@Slf4j`/`@Log`, `@Getter(lazy = true)`, `@SneakyThrows` och
-`@ToString.Exclude`, samt Spring Boots konsolformat och `logging.level.*`. Modulen kräver bara
+Uppdrag 05a. Ersätter Lomboks `@Slf4j`/`@Log` och `@Getter(lazy = true)`, samt Spring Boots
+konsolformat och `logging.level.*`. (`Unchecked`, `Throwing*`, `UncheckedException` och
+`ToString`, som motsvarade `@SneakyThrows` och `@ToString.Exclude`, togs bort i 0.3.0: en
+`try`/`catch` med `UncheckedIOException` och ett records egen `toString()` räcker.) Modulen kräver bara
 `java.logging` (för konsolformateringen) och inga andra Spola-moduler; testerna läser
 `spola.test`. Exempel bredvid Lombok och Spring Boot: `modules/util/README.md`.
 
@@ -585,10 +499,6 @@ del 2" nedan).
 | `Logging` | `configure(LoggingSettings)`, `reset()` |
 | `LoggingSettings` | record: nivå per prefix, utström, tidszon; `defaults()`, `withLevel`, `withLevels`, `withOutput`, `withZone`; `parseLevel(namn)` (sedan 05c) |
 | `Lazy<T>` | `of(Supplier)`, `get()`, `isComputed()`; implementerar `Supplier<T>` |
-| `Unchecked` | `run`, `get`, `runnable`, `supplier`, `function`, `consumer`, `wrap(Exception)` |
-| `ThrowingRunnable/Supplier/Function/Consumer` | funktionella gränssnitt med `throws Exception` |
-| `UncheckedException` | inslaget checked undantag; `getCause()` är originalet |
-| `ToString` | `of(namn)`, `add(namn, värde)`, `secret(namn, värde)`, `toString()` |
 
 Paketprivat: `MessageFormatter` (platshållarna), `LineFormatter` och `LineHandler`
 (konsolformatet), `Failures` (regeln för vilka fel loggningen släpper igenom).
@@ -688,18 +598,6 @@ Paketprivat: `MessageFormatter` (platshållarna), `LineFormatter` och `LineHandl
   Rekursiv `get()` från den egna leverantören ger `IllegalStateException` i stället för
   oändlig rekursion. `toString()` räknar inte ut och visar inte värdet. `StableValue` är
   preview i JDK 25 och används inte.
-- **`Unchecked` utan sneaky throw:** ett checked undantag kastas aldrig odeklarerat (det
-  döljer det för kompilatorn och omöjliggör `catch`). `IOException` → `UncheckedIOException`,
-  `InterruptedException` → avbrottsflaggan sätts igen och undantaget slås in i
-  `UncheckedException`, övriga checked → `UncheckedException` med originalet som `cause`,
-  `RuntimeException`/`Error` släpps igenom som samma instans. Gränssnitten deklarerar
-  `throws Exception` (inte `Throwable`), så bara `Exception` behöver slås in.
-  `InterruptedIOException` är en `IOException` och blir `UncheckedIOException` utan att
-  flaggan rörs.
-- **`ToString`:** samma form som en records `toString` (`Namn[a=1, b=2]`, värden med
-  `String.valueOf`, arrayer expanderas inte). `secret` skriver `***` för ett värde som inte är
-  `null` och anropar aldrig dess `toString()`, så varken värde eller längd läcker; `null` visas
-  som `null` (avslöjar bara om hemligheten finns, vilket hjälper vid felsökning).
 
 ## Util del 2: builders och with-metoder för records (`spola.codegen`)
 
@@ -752,7 +650,7 @@ Paketprivat: `RecordReader` (parsning och kontroller), `RecordModel` (det som ge
   importer följer med (`import module`, on-demand och statiska); en enkel import vars namn
   ingen komponenttyp eller gräns använder tas bort. Det ändrar ingen namnupplösning (en enkel
   import påverkar bara sitt eget namn) och gör att den genererade filen inte beror på det
-  recordets övriga kod använder (t.ex. `spola.util.ToString` i en `toString`). Begränsning:
+  recordets övriga kod använder (t.ex. en hjälpklass i en `toString`). Begränsning:
   medlemstyper som ärvs från en supertyp syns inte i syntaxträdet och kvalificeras inte.
   Komponenter är recordets icke-statiska fält i trädet (parsern gör dem till fält; andra
   instansfält är inte tillåtna i ett record).
@@ -799,7 +697,8 @@ Paketprivat: `RecordReader` (parsning och kontroller), `RecordModel` (det som ge
 ## Integration: kärnmodulerna i ett program (`spola.demo`)
 
 Uppdrag 05c. En lagertjänst för en liten webbutik (orderfil in, sammanfattning ut) som
-använder `spola.di`, `spola.config` och `spola.util` tillsammans. Syftet är att pröva
+använder `spola.config` och `spola.util` tillsammans, med komponenterna ihopkopplade för hand
+(fram till 0.3.0 med containern `spola.di`). Syftet är att pröva
 ergonomin innan fler moduler bygger på API:erna; utfallet är programmet och friktionsrapporten
 i `modules/demo/README.md` (avsnitt "Friktion").
 
@@ -807,13 +706,13 @@ i `modules/demo/README.md` (avsnitt "Friktion").
 
 - `InventoryApp` är ingången: `main(String[])` och
   `run(List<String> args, Map<String,String> miljö, PrintStream ut, PrintStream logg)` som
-  returnerar en exitkod. Den bygger konfigurationen, binder den, konfigurerar loggningen,
-  skapar containern i en try-with-resources, kör och översätter fel till ett meddelande och en
-  exitkod (sysexits: 65 trasig orderfil, 70 wiring/komponent/oväntat, 74 I/O, 78
-  konfiguration).
-- `InventoryWiring` är wiring-modulen: källornas ordning, bindningen till records och
-  containermodulerna (`settings(app, ut)`, `STOCK`, `CHECKS`, `PROCESSING`).
-- Bara de två nämner `Container`, `Binder` eller `Config`; komponenterna (`Stock`,
+  returnerar en exitkod. Den bygger konfigurationen, binder den, konfigurerar loggningen, kör
+  och översätter fel till ett meddelande och en exitkod (sysexits: 65 trasig orderfil, 70
+  oväntat, 74 I/O, 78 konfiguration).
+- `InventoryWiring` är wiringen: källornas ordning, bindningen till records och
+  `process(app, ut)`, som skapar komponenterna med deras konstruktorer och stänger
+  revisionsspåret med try-with-resources.
+- Bara de två nämner `Config`; komponenterna (`Stock`,
   `OrderCheck` med `QuantityLimit`/`BlockedSkus`, `AuditTrail`, `OrderProcessor`,
   `ReportWriter`) tar records och varandra i konstruktorn. Ett test (`BoundaryTests`)
   kontrollerar det på källkoden.
@@ -827,10 +726,9 @@ i `modules/demo/README.md` (avsnitt "Friktion").
   visa hemligheten. Friktionen står i rapporten (**Kvar**).
 - **Settings-records heter `*Settings`, inte `*Config`,** så att en sökning efter `Config`
   bara träffar ingången och wiring-modulen.
-- **Wiring-felet nås genom ingången.** Ett wiring-fel är ett programmeringsfel, inte något en
-  slutanvändare kan framkalla med konfiguration. Ingången har därför en paketprivat överlagring
-  som tar containermodulerna som funktion; testet utelämnar `CHECKS` och kör programmet genom
-  ingången. `main` och den publika `run` använder alltid `InventoryWiring::modules`.
+- **Inga wiring-fel vid körning.** Ett saknat beroende är ett kompileringsfel, eftersom
+  komponenterna skapas med sina konstruktorer. Ett revisionsspår som inte går att stänga
+  (`IOException` från `close`) ger exitkod 74.
 - **Orderfilen är extern data och valideras vid inläsningen** (REGLER §4). Ett byte order mark
   först i filen hoppas över. En artikel får bara innehålla synliga tecken
   (`OrderLine.visible`: inte Cc, Cf, Zl, Zp, Zs, surrogat eller otilldelade); annars är raden
@@ -838,7 +736,7 @@ i `modules/demo/README.md` (avsnitt "Friktion").
   sammanfattningen och det signerade revisionsspåret bara innehåller artiklar som går att
   läsa och jämföra, och så att det finns en enda plats att kontrollera.
 - **`audit.file` får inte vara orderfilen.** Att öppna spåret tömmer filen, så ingången
-  avvisar det som konfigurationsfel innan containern skapas (`AuditTrail.overwritesOrders`,
+  avvisar det som konfigurationsfel innan komponenterna skapas (`AuditTrail.overwritesOrders`,
   som konstruktorn också kontrollerar). Ett spår som inte kan öppnas blir
   `UncheckedIOException` i komponenten och exitkod 74 i ingången.
 - **Loggningen gäller under anropet.** `run` anropar `Logging.configure` med logg-strömmen och
@@ -1604,7 +1502,7 @@ stället för körfel (REGLER §4). `pathParamSegments` är catch-allens lista (
   namn och form; en catch-all i prefixet är fel om gruppen har routes under den.
 - **Validering vid `build()`.** Alla problem samlas och kastas i en
   `RouterDefinitionException` (en `IllegalArgumentException`), en rad per problem med
-  metod och mönster, i registreringsordning (samma princip som `Container.create`).
+  metod och mönster, i registreringsordning.
   Problem: felaktiga mönster och gruppprefix (ett felaktigt prefix rapporteras en gång, och
   routes i gruppen kontrolleras då bara mot sina egna mönster), metod som inte är `token`
   (RFC 9110 §5.6.2), två routes med samma metod och form (formen är mönstret med variabler

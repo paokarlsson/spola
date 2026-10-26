@@ -27,7 +27,10 @@ projekten som en vanlig Spring-app drar in. Tre villkor till:
   undvika. Ett protokoll som annars kräver ett bibliotek (PostgreSQL, SMTP) byggs på JDK:ns
   primitiver och testas mot specifikationen.
 - **Det täcks inte redan.** Går det att göra med en befintlig modul är svaret ett exempel, inte
-  en ny modul.
+  en ny modul. Det som Java 25 redan ger med rimlig ergonomi byggs inte heller, även om Spring
+  eller Lombok har det: records ger `toString`, `equals` och `hashCode`, wiring görs med
+  konstruktorer i `main`, try-with-resources stänger i omvänd ordning och `ScopedValue` ger
+  värden per anrop.
 - **Ett annat projekt skulle ha nytta av det.** Affärslogik, ett visst företags API och
   appens egna regler hör hemma i appen, även om de liknar något i Spring.
 
@@ -43,14 +46,15 @@ projekten som en vanlig Spring-app drar in. Tre villkor till:
 | Räkna moms enligt appens regler | – | Nej, affärslogik |
 | Klient för ett visst SaaS-API | – | Nej, appspecifikt |
 | Ett komplett React-gränssnitt | – | Nej, ingen motsvarighet i Spring |
+| DI-container | Spring Core, `ApplicationContext` | Nej, konstruktorer i `main` räcker |
+| `toString` som döljer ett fält | Lomboks `@ToString.Exclude` | Nej, skriv över recordets `toString()` |
 
 ## Modulkatalog
 
 | Modul | Motsvarar | Ingångar | Kräver |
 |---|---|---|---|
-| `spola.di` | Spring Core: `ApplicationContext`, `@Component`, `@Autowired`, scopes | `Container`, `Key<T>` | – |
 | `spola.config` | `application.properties`, `@Value`, `@ConfigurationProperties`, profiler | `Config`, `Source`, `Section` | – |
-| `spola.util` | Lombok (`@Slf4j`, `@Getter(lazy)`, `@ToString`), Boots loggformat | `Log`, `Logging`, `Lazy`, `ToString` | – |
+| `spola.util` | Lombok (`@Slf4j`, `@Getter(lazy)`), Boots loggformat | `Log`, `Logging`, `Lazy` | – |
 | `spola.codegen` | Lombok `@Builder`, `@With` för records | `java Build.java codegen`, `<Record>With` | – |
 | `spola.json` | Jackson | `Json`, `JsonValue`, `JsonCodec` | – |
 | `spola.http` | Inbäddad Tomcat: HTTP/1.1, TLS | `HttpServer`, `Handler`, `Request`, `Response` | – |

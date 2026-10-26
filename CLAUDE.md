@@ -8,7 +8,7 @@ oberoende kritiker försöker sänka det, en domare väger fynden, och varje run
 committas.
 
 ## Namn
-Ramverket heter **Spola**. JPMS-moduler heter `spola.<modul>` (t.ex. `spola.di`, `spola.guardrails`), och paketen börjar med `spola.<modul>`.
+Ramverket heter **Spola**. JPMS-moduler heter `spola.<modul>` (t.ex. `spola.web`, `spola.guardrails`), och paketen börjar med `spola.<modul>`.
 
 ## Viktiga filer
 | Fil | Vad |
